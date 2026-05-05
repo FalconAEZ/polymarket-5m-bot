@@ -1,0 +1,12 @@
+target-version = "py311"
+line-length = 100
+extend-exclude = ["pdfs", "references", "state", "ticks", "build", "dist"]
+
+[lint]
+select = ["E", "F", "W", "I", "B", "UP", "ASYNC", "RUF", "S", "PT"]
+ignore = ["E501"]
+
+[lint.per-file-ignores]
+"tests/*" = ["S101"]
+"scripts/*" = ["S101"]
+"runbooks/scripts/*" = ["S101"]

@@ -1,0 +1,51 @@
+# Secrets — never commit
+.envrc
+.envrc.local
+*.age
+env req.rtf
+env*.rtf
+secrets.*
+
+# Claude Code: keep project-level settings.json + CLAUDE.md tracked,
+# but local overrides stay personal
+.claude/settings.local.json
+.claude/cache/
+
+# Reference repos (mining-only, gitignored)
+references/
+
+# Project state (bot-written runbooks, postmortems, sessions, dashboards)
+state/
+
+# Captured market data (Phase 2+)
+ticks/
+
+# Database files
+trades.db
+*.db-shm
+*.db-wal
+
+# Python
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Build script byproducts (we keep MASTERPLAN.pdf etc. tracked)
+*.pyc

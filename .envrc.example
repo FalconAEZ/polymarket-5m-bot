@@ -1,0 +1,25 @@
+# Polymarket BTC 5-Min Bot — environment template.
+# Copy to .envrc, fill in real values, then run `direnv allow`.
+# .envrc is gitignored. Never commit secrets.
+
+# === Anthropic API (Phase 0+) ===
+export ANTHROPIC_API_KEY="sk-ant-..."
+
+# === Telegram alerts (Phase 0+) ===
+# Get token from @BotFather; chat_id from /getUpdates after messaging your bot.
+export TELEGRAM_BOT_TOKEN=""
+export TELEGRAM_CHAT_ID=""
+
+# === Polygon RPC (Phase 2+) ===
+# Default: Alchemy free tier. Use the WSS URL, not HTTPS.
+export POLYGON_RPC_URL=""
+
+# === Polymarket Signer wallet (Phase 1 — DO NOT FILL UNTIL PHASE 1) ===
+# Derived from Signer private key via py-clob-client setup_creds.py.
+# Funder private key NEVER goes in this file. Funder lives in ~/secrets/polymarket-5m/funder.age.
+export POLY_PRIVATE_KEY=""
+export POLY_API_KEY=""
+export POLY_API_SECRET=""
+export POLY_API_PASSPHRASE=""
+export POLY_FUNDER_ADDRESS=""
+export POLY_SIGNATURE_TYPE="1"

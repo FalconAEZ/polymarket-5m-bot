@@ -1,0 +1,14 @@
+[importlinter]
+root_package = polymarket_bot
+
+[importlinter:contract:layered]
+name = production never imports paper
+type = forbidden
+source_modules = polymarket_bot._live
+forbidden_modules = polymarket_bot._paper
+
+[importlinter:contract:layered2]
+name = paper never imports live infra
+type = forbidden
+source_modules = polymarket_bot._paper
+forbidden_modules = polymarket_bot._live

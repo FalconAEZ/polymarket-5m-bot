@@ -1,0 +1,14 @@
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.8.0
+    hooks:
+      - id: ruff
+      - id: ruff-format
+  - repo: local
+    hooks:
+      - id: forbid-todos
+        name: forbid TODO/FIXME/hack in committed code
+        entry: bash -c '! grep -rEn "TODO|FIXME|//\s*hack" src/ tests/ design/ 2>/dev/null'
+        language: system
+        pass_filenames: false
+        always_run: true
