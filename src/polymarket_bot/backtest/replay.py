@@ -106,7 +106,14 @@ class ReplayEngine:
         return out
 
     def _decode_file(self, path: Path) -> list[MarketEvent]:
-        df = pl.read_parquet(path)
+        try:
+            df = pl.read_parquet(path)
+        except Exception:
+            # Open-but-unreadable parquet is normal during a live capture
+            # (the writer hasn't finalised the footer yet). Skip the file
+            # and continue; subsequent backtests will pick it up after
+            # the capture closes it cleanly.
+            return []
         events: list[MarketEvent] = []
         for row in df.iter_rows(named=True):
             source = row.get("source")

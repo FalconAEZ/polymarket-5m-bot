@@ -1,0 +1,107 @@
+Phase 3.1.5d — end-to-end backtest smoke against captured data
+==============================================================
+Captured: 2026-05-07 (UTC) on bold-galileo-2d56ca worktree.
+
+PURPOSE
+  First end-to-end exercise of the Phase 3 backtest pipeline against real
+  captured data. Validates: parquet read, source-column-driven decoding,
+  Gamma-backed TokenSideIndex, replay event ordering, strategy state
+  machine, fill simulator, P&L calculation. NOT a strategy tuning run —
+  that's Phase 3.3.
+
+INPUTS
+  ticks_root = ticks/2026-05-06/  (12 parquet files, ~50min of capture
+    across 3 launches: 1778104038, 1778105272, 1778105917)
+  events: 64,568 binance + 20,401 coinbase + 101 oracle + 1,802,107 polymarket
+  date range: 2026-05-06 (UTC), 12 unique 5m windows starting at
+    1778103900 .. 1778107200
+
+GAMMA INDEX BUILD
+  TokenSideIndex.warm() called Gamma 12 times (one per window slug).
+  All 12 returned events with valid clobTokenIds + outcomes.
+  24 tokens mapped (2 per window, UP + DOWN).
+  Cached to state/token_side_index.json for re-use.
+
+REPLAY DIAGNOSTIC (no strategy):
+  total events emitted: 3,493,559
+  by kind:
+    boundary: 12   (one per window)
+    book: 3,408,477   (price_change fanout × 2 sides + book/best_bid_ask)
+    spot_binance: 64,568
+    spot_coinbase: 20,401
+    oracle: 101
+
+STRATEGY DIAGNOSTIC (DeterministicStrategy with all guards relaxed):
+  max |composite_pct| seen, per window:
+    1778103900: +0.0590pp
+    1778104200: +0.0540pp
+    1778104500: -0.0709pp
+    1778104800: -0.0799pp
+    1778105100: -0.0854pp     ← largest abs
+    1778105400: +0.0400pp
+    1778105700: -0.0766pp
+    1778106000: -0.0447pp
+    1778106300: -0.0504pp
+    1778106600: +0.0655pp
+    1778106900: +0.0292pp
+    1778107200: +0.0271pp
+
+  Even the largest window-window move was 0.085 percentage points.
+  BTC was very quiet during this 50-minute capture period.
+
+  Phase 3 gate target threshold (locked decision #6) = 0.6pp. With this
+  capture's volatility, that threshold would NEVER fire. Calibration is
+  a Phase 3.3 deliverable — for the smoke we lower threshold to surface
+  the pipeline behaviour.
+
+BACKTEST RESULTS at threshold_pct=0.6 (the locked decision #6 default):
+  n_fired: 0   n_filled: 0   total_pnl_usd: +0.0000
+
+BACKTEST RESULTS at threshold_pct=0.10:
+  n_fired: 0   n_filled: 0   total_pnl_usd: +0.0000
+
+BACKTEST RESULTS at threshold_pct=0.03 (proof-of-pipeline):
+  n_windows: 12
+  n_fired: 7   n_filled: 1   n_won: 1   win_rate: 100% (n=1)
+  total_pnl_usd: +$0.0958   avg_pnl_per_filled: +$0.0958
+
+  The single filled window:
+    window_ts=1778104200  side=UP  resolution=UP  fill_px=0.9810  pnl=+$0.0958
+    rationale: composite=+0.033pct (|.|>=0.03) ttl=30s side=UP
+
+  6 of 7 fires didn't fill — limit price (set at decision-time best_ask)
+  was below effective_ask at later book updates within the TTL. Phase 3.3
+  may want to widen the limit (limit = best_ask + small_cushion) to
+  improve fill rate; for now this is the conservative-paper-fill model.
+
+PIPELINE COMPONENTS EXERCISED
+  ✅ ReplayEngine.stream() yields 3.5M events in ts_utc_ns order
+  ✅ TokenSideIndex.warm() persists/loads cache, dedupes warmed windows
+  ✅ extract_side_map() handles JSON-encoded clobTokenIds + outcomes
+  ✅ DeterministicStrategy.on_event() fires per (composite, ttl) gate
+  ✅ FillSimulator.attempt_fill() honours limit + impact + asset_id match
+  ✅ Runner._close_window() snapshots open/close oracle, computes P&L
+  ✅ aggregate_metrics() produces n_*, win_rate, total_pnl_usd
+
+REPLAY ENGINE RESILIENCE
+  One parquet file (polymarket_1778107491.parquet, the live capture's
+  currently-open file) had no footer; ReplayEngine skipped it cleanly
+  per the try/except added in this session. Capture continues running
+  in the background while backtest runs.
+
+VERIFICATION
+  $ uv run pytest -q
+  155 passed in 1.65s    (was 142 before this session: +13 side_index tests)
+
+  $ uv run mypy --strict src/
+  Success: no issues found in 24 source files
+
+  $ uv run ruff check src/ tests/ scripts/
+  All checks passed!
+
+NEXT (Phase 3.1.6 + 3.2)
+  - Walk-forward harness (windows() + WalkForwardRunner) for the
+    21-day rolling backtest.
+  - Phase 3.2: design/agents.md + 3 LLM agents + meta + cost tracker.
+    Real LLM calls deferred pending operator $-approval (locked
+    decision #14 budget = $50 across 4 passes).
