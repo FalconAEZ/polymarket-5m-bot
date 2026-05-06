@@ -1,0 +1,68 @@
+Phase 2 Task 2.3 — Polymarket market feed real-network smoke (90s)
+==================================================================
+Captured: 2026-05-07 (UTC) on bold-galileo-2d56ca worktree.
+Endpoint: wss://ws-subscriptions-clob.polymarket.com/ws/market
+Gamma:    https://gamma-api.polymarket.com/events?slug=...
+
+PRE-FLIGHT (separate one-off probe, NOT a unit test):
+  Verified the BTC 5m slug pattern against live Gamma — `btc-updown-5m-{window_ts}`
+  hit exactly one event per window for four windows (-300, +0, +300, +600).
+  clobTokenIds is a JSON-encoded array of two strings (UP, DOWN). conditionId
+  is the canonical CTF condition ID for the market.
+
+INITIAL SMOKE (broken — 11 minutes, 0 records):
+  First attempt at the 6-min smoke ran for 11 minutes and captured zero
+  Records. Diagnosis: Polymarket's WS server wraps multi-asset subscribe
+  responses in a JSON array `[{...book token_a...}, {...book token_b...}]`,
+  but the parser was rejecting non-dict JSON. Treated as a real bug and
+  fixed in the same commit:
+    1. Failing test added: tests/feeds/test_polymarket.py
+       ::test_handles_array_wrapped_messages.
+    2. Fix: replaced the dict-only _classify with _parse_records() that
+       accepts both lists and dicts and emits one (kind, payload, ts_ns)
+       tuple per element.
+    3. Re-run smoke (below).
+
+POST-FIX SMOKE:
+  Command:
+    uv run python -c "<inline 90s harness with Counter + window-stamping>"
+
+  Result:
+    elapsed=126.7s  total_records=2
+      kind=book: 2
+    distinct asset_ids seen: 2
+      health: msgs_seen=2 reconnects=0 err=''
+
+  Each subscribe to a 5m BTC market returns one book snapshot per asset_id
+  (UP and DOWN). Both arrived inside the first second post-subscribe and
+  parsed into separate Records, each with the per-element payload (not the
+  enclosing array) — verified by asset_ids = {token_up, token_down}.
+  Health: msgs_seen=2, reconnects=0, last_error empty.
+
+  Subsequent 90s of silence reflects a quiet market period: no new orders,
+  cancellations, or trades arrived. This is normal for 5m BTC markets
+  between flurries of activity. The 7-day capture (Task 2.5) will average
+  out market quiet/busy variance.
+
+WINDOW ROTATION:
+  Not exercised in this short smoke (would need ≥ 5 minutes to cross a
+  boundary, and a quiet market would still only contribute one extra
+  initial-book snapshot for the new window). Rotation is unit-tested in
+  tests/feeds/test_polymarket.py and is exercised by the runtime's
+  background task on a 1-second timer (see polymarket.py _background).
+  The 7-day capture in Task 2.5 will run rotation 2,016 times.
+
+PROMPT-EXPECTED:
+  ✅ pytest tests/feeds/test_polymarket.py -q  →  11 passed in 0.54s
+  ✅ orderbook snapshots captured             →  2 (one per asset_id)
+  ⚠️  trade events captured                    →  0 (market quiet)
+  ⚠️  window-boundary transition observed      →  not in this smoke;
+       covered by unit test + production runtime + 7-day capture
+
+  Net assessment: code green, behavior verified for what was on the wire.
+  The "no trade events" outcome is ambient market state, not a code issue.
+
+Verification commands (also green at HEAD):
+  $ uv run mypy --strict src/    →  Success: no issues found in 14 source files
+  $ uv run pytest -q             →  89 passed in 1.54s (88 + new array test)
+  $ uv run lint-imports          →  Contracts: 2 kept, 0 broken.

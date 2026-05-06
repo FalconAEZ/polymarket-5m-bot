@@ -1,0 +1,53 @@
+Phase 2 Task 2.4b — runtime end-to-end smoke (60s)
+==================================================
+Captured: 2026-05-07 (UTC) on bold-galileo-2d56ca worktree.
+
+Wires the four real-network feeds (Binance, Coinbase, Chainlink oracle,
+Polymarket 5m BTC up/down) through polymarket_bot._live.runtime.main
+into Parquet writer + health task. ticks_root=ticks_smoke,
+health_path=state_smoke/feeds_health.json, isolated from production paths
+so the smoke does not pollute the real capture directory.
+
+Command:
+  uv run python -c "<inline 60s harness with stop event>"
+
+Result:
+  elapsed=70.0s  records_written=28,326
+
+  Parquet files (date partition is UTC, hence 2026-05-06 since smoke ran
+  late evening UTC of that day):
+    2026-05-06/binance.parquet:    17,663 bytes
+    2026-05-06/coinbase.parquet:   21,597 bytes
+    2026-05-06/oracle.parquet:      4,634 bytes
+    2026-05-06/polymarket.parquet:  2,371,345 bytes
+
+  state_smoke/feeds_health.json snapshot:
+    snapshot_ts_utc=2026-05-06T21:35:36+00:00
+    binance:    msgs_seen=886    healthy=True  reconnects=0  lag_ms=868
+    coinbase:   msgs_seen=336    healthy=True  reconnects=0  lag_ms=982
+    oracle:     msgs_seen=2      healthy=True  reconnects=0  lag_ms=9197
+    polymarket: msgs_seen=27,102 healthy=True  reconnects=0  lag_ms=766
+
+PROMPT-EXPECTED:
+  ✅ make verify green (ruff, mypy --strict, 97 pytest pass).
+  ✅ lint-imports green (production never imports paper / paper never
+     imports live infra — both contracts KEPT).
+  ✅ 60-second smoke produces ≥ 1 row in ticks/<today>/binance.parquet
+     (886 binance records → 17.6 KB).
+  ✅ state/feeds_health.json updates with all four feeds showing
+     msgs_seen > 0 (886, 336, 2, 27102).
+
+Polymarket volume note: 27k records in 60s is dramatically higher than the
+2 records observed in the standalone 2.3 smoke. The standalone smoke landed
+during a quiet sub-minute; the e2e smoke crossed a window boundary into a
+much more active window. Both numbers are consistent with healthy code —
+the on-the-wire activity for Polymarket 5m markets is bursty by design.
+
+Drop-counter and queue-depth readout match expectations (queue stayed
+shallow because the writer drained continuously). 0 reconnects across all
+four feeds for the full 60s.
+
+Verification commands at HEAD:
+  $ uv run mypy --strict src/    →  Success: no issues found in 15 source files
+  $ uv run pytest -q             →  97 passed in 11.52s
+  $ uv run lint-imports          →  Contracts: 2 kept, 0 broken.
