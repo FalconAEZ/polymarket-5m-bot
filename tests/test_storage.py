@@ -172,5 +172,5 @@ async def test_writer_task_rotates_on_utc_midnight(tmp_path: Path) -> None:
         launch_id="test",
     )
     assert total == 3
-    files = {p.relative_to(tmp_path).as_posix() for p in tmp_path.rglob("*.parquet")}
-    assert files == {"2026-05-07/binance_test.parquet", "2026-05-08/binance_test.parquet"}
+    files = sorted(p.relative_to(tmp_path).as_posix() for p in tmp_path.rglob("*.parquet"))
+    assert set(files) == {"2026-05-07/binance_test.parquet", "2026-05-08/binance_test.parquet"}
