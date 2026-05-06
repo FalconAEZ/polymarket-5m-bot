@@ -39,6 +39,49 @@ def fetch_market_by_condition_id(
     return dict(rows[0])
 
 
+def fetch_event_by_slug_simple(
+    slug: str,
+    *,
+    client: httpx.Client | None = None,
+) -> dict[str, Any] | None:
+    """Resolve a slug to its event (with markets[]) via the Gamma API.
+
+    For BTC 5-min markets, slug pattern is `btc-updown-5m-<window_ts>`. The
+    event record contains a `markets` array (singleton for binary markets)
+    with `conditionId`, `outcomes`, `outcomePrices`, `closed`, etc.
+    """
+    cli = client or httpx.Client(timeout=DEFAULT_TIMEOUT)
+    resp = cli.get(f"{GAMMA_API}/events", params={"slug": slug})
+    resp.raise_for_status()
+    rows = resp.json()
+    if not rows:
+        return None
+    return dict(rows[0])
+
+
+def fetch_user_trades_on_market(
+    user_address: str,
+    condition_id: str,
+    *,
+    limit: int = 500,
+    client: httpx.Client | None = None,
+) -> list[dict[str, Any]]:
+    """Pull all trades by `user_address` on a single market (`condition_id`).
+
+    Combined-filter `/trades?market=&user=` narrows the query enough that we
+    get every trade in one call (bonereaper's per-market footprint is tens of
+    trades, well under the 500 cap). Returns empty list if the wallet didn't
+    trade this market.
+    """
+    cli = client or httpx.Client(timeout=DEFAULT_TIMEOUT)
+    resp = cli.get(
+        f"{DATA_API}/trades",
+        params={"market": condition_id, "user": user_address, "limit": str(limit)},
+    )
+    resp.raise_for_status()
+    return list(resp.json())
+
+
 def fetch_user_trades(
     address: str,
     *,

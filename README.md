@@ -22,7 +22,11 @@ Highlights: Anthropic API only · 3 agents + meta-decider · Telegram via BotFat
 
 ## Status
 
-Pre-Phase 0. Bootstrap in progress. See `state/sessions/` for daily logs.
+- Bootstrap: ✅ done.
+- Phase A (bonereaper pre-flight): ✅ closed — **ABORT**. 7-day audit measured 52.65% win-rate (95% CI [52.24%, 53.06%]) over 56,972 BTC 5m trades, below the locked 60% gate. Cloning research stream dropped; main-bot plan unaffected. See `runbooks/study/preflight-decision.md`.
+- Next: operator opens `RUNBOOK.md` Phase 0 (Foundations).
+
+See `state/sessions/` for daily logs.
 
 ## Local dev
 
