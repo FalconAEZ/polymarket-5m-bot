@@ -1,0 +1,70 @@
+Phase 2 Task 2.2 — oracle watcher real-network smoke run (5 min)
+================================================================
+Captured: 2026-05-07 (UTC) on bold-galileo-2d56ca worktree.
+RPC: wss://polygon-mainnet.g.alchemy.com/... (POLYGON_RPC_URL)
+
+Command:
+  uv run python -c "<inline 5-min OracleFeed harness>"
+
+Result:
+  elapsed=309.5s  events=10
+  inter-event gaps (s): 33.0 33.0 33.0 34.0 33.0 33.0 33.0 32.0 33.0
+  median gap: 33.0s
+    health: msgs_seen=10 reconnects=0 last_error=''
+
+Per-event timestamps (utc_ns event-time as decoded from log.data, recv_ns from
+local clock, both aligned within ~2s):
+  [  11.7s] ts=1778100951000000000  recv=1778100949095374000
+  [  45.1s] ts=1778100984000000000  recv=1778100982469722000
+  [  78.4s] ts=1778101017000000000  recv=1778101015756698000
+  [ 111.4s] ts=1778101050000000000  recv=1778101048830482000
+  [ 144.9s] ts=1778101084000000000  recv=1778101082316022000
+  [ 178.0s] ts=1778101117000000000  recv=1778101115422004000
+  [ 211.2s] ts=1778101150000000000  recv=1778101148606991000
+  [ 244.5s] ts=1778101183000000000  recv=1778101181885051000
+  [ 276.2s] ts=1778101215000000000  recv=1778101213618150000
+  [ 309.4s] ts=1778101248000000000  recv=1778101246780326000
+
+Prompt-expected from the dispatch:
+  "Running 5 min logs at least 4 oracle updates with timestamps spaced ~60s
+   (BTC/USD on Polygon Chainlink is configured to 60s heartbeat + 0.5%
+   deviation, so ~60s gaps are expected)."
+
+Observed:
+  ✅ ≥ 4 updates (10 captured).
+  ✅ event_ts decoded correctly from data field (uint256 unix-seconds).
+  ✅ Reconnects = 0; underlying aggregator resolved on first try via
+     proxy.aggregator() eth_call; subscription accepted by Alchemy.
+  ⚠️  Inter-update gap median = 33.0s, not ~60s. All ten gaps cluster
+     tightly in [32, 34]s — strongly suggests a fixed heartbeat at ~33s
+     rather than deviation-triggered jitter. This contradicts the thesis
+     anchor stated in MASTERPLAN.md line 31 ("60s heartbeat with no
+     deviation threshold"). It also fails the Phase 2 gate criteria as
+     specified in the dispatch:
+       - Median inter-update gap ∈ [55s, 65s]   →  observed 33.0s, FAIL
+       - Sub-60s updates < 5% of total          →  observed 100%,  FAIL
+       - Zero sub-30s updates                   →  observed 0,     pass
+       - Zero gaps > 180s                       →  observed 0,     pass
+
+THESIS-RELEVANT OBSERVATION (load-bearing for Phase 3):
+
+A 33s heartbeat is half the assumed 60s and materially changes the lag
+window the strategy depends on. If sustained over 7 days the thesis must
+be re-derived before Phase 3 backtests. Surfaced to operator before
+Phase 2.3 commits.
+
+Note: this is a 5-minute sample at a single moment of day. The 7-day
+capture (Task 2.5) and analysis (Phase 2.6 next session) is the
+authoritative measurement. A constant 33s gap during one window does
+not necessarily mean the cadence is 33s 24/7 — Chainlink can re-deploy
+or change the feed config. Phase 2.6 verifies against the full week.
+
+Verification commands (also green at HEAD):
+  $ uv run mypy --strict src/
+  Success: no issues found in 10 source files
+
+  $ uv run pytest tests/feeds/test_oracle.py -q
+  6 passed in 0.06s
+
+  $ uv run pytest -q
+  67 passed in 0.80s
