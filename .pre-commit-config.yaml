@@ -7,8 +7,8 @@ repos:
   - repo: local
     hooks:
       - id: forbid-todos
-        name: forbid TODO/FIXME/hack in committed code
-        entry: bash -c '! grep -rEn "TODO|FIXME|//\s*hack" src/ tests/ design/ 2>/dev/null'
+        name: forbid TODO/FIXME/hack in committed code (code only — design docs may document them)
+        entry: bash -c '! grep -rEn "TODO|FIXME|//\s*hack" src/ tests/ scripts/ 2>/dev/null'
         language: system
         pass_filenames: false
         always_run: true
