@@ -1,0 +1,85 @@
+"""Meta-decider (Sonnet 4.6 with adaptive thinking).
+
+Synthesises 3 specialist votes plus the deterministic composite into a
+final FIRE/ABSTAIN action. Prompt is in prompts/meta.md.
+
+Per the Anthropic API skill: Sonnet 4.6 supports adaptive thinking + the
+effort parameter. We use `thinking={"type": "adaptive"}` and
+`effort="medium"` — fast enough for the 5m cadence, deep enough to
+synthesise across 3 specialists + a composite.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from polymarket_bot.agents._base import load_prompt
+from polymarket_bot.agents.anthropic_client import AnthropicAdapter
+from polymarket_bot.agents.cache import cache_blocks
+from polymarket_bot.agents.protocol import (
+    AgentContext,
+    AgentVote,
+    MetaDecision,
+)
+
+DEFAULT_MODEL = "claude-sonnet-4-6"
+DEFAULT_MAX_TOKENS = 1024
+DEFAULT_EFFORT = "medium"
+PROMPT_NAME = "meta"
+
+
+class MetaDecider:
+    """Synthesise specialist votes + deterministic composite into a final action."""
+
+    def __init__(
+        self,
+        adapter: AnthropicAdapter,
+        *,
+        model: str = DEFAULT_MODEL,
+        max_tokens: int = DEFAULT_MAX_TOKENS,
+        effort: str | None = DEFAULT_EFFORT,
+        adaptive_thinking: bool = True,
+        prompt_path: str | Path | None = None,
+    ) -> None:
+        self._adapter = adapter
+        self.name: str = "meta"
+        self.model: str = model
+        self._max_tokens = max_tokens
+        self._effort = effort
+        self._thinking: dict[str, object] | None = (
+            {"type": "adaptive"} if adaptive_thinking else None
+        )
+        self._system = cache_blocks(load_prompt(PROMPT_NAME, prompt_path))
+
+    async def decide(self, ctx: AgentContext, votes: dict[str, AgentVote]) -> MetaDecision | None:
+        user_payload = {
+            "context": ctx.model_dump(),
+            "votes": [
+                {
+                    "agent": agent_name,
+                    "side": vote.side,
+                    "confidence": vote.confidence,
+                    "rationale": vote.rationale,
+                }
+                for agent_name, vote in sorted(votes.items())
+            ],
+        }
+        user_json = json.dumps(user_payload, sort_keys=True, default=str)
+        result, _usage = await self._adapter.parse(
+            model=self.model,
+            system=self._system,
+            user=user_json,
+            output_format=MetaDecision,
+            thinking=self._thinking,
+            effort=self._effort,
+            max_tokens=self._max_tokens,
+        )
+        if not isinstance(result, MetaDecision):
+            return None
+        # Schema-level invariant the prompt also commits to.
+        if result.action == "FIRE" and result.side is None:
+            return None
+        if result.action == "ABSTAIN" and result.side is not None:
+            return None
+        return result

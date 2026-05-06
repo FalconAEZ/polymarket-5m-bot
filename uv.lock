@@ -1732,11 +1732,13 @@ name = "polymarket-bot"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "anthropic" },
     { name = "eth-account" },
     { name = "httpx" },
     { name = "polars" },
     { name = "py-clob-client" },
     { name = "pyarrow" },
+    { name = "pydantic" },
     { name = "websockets" },
 ]
 
@@ -1758,11 +1760,13 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "anthropic", specifier = ">=0.98.1" },
     { name = "eth-account", specifier = ">=0.13.7" },
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "polars", specifier = ">=1.40.1" },
     { name = "py-clob-client", specifier = ">=0.34.6" },
     { name = "pyarrow", specifier = ">=24.0.0" },
+    { name = "pydantic", specifier = ">=2.13.3" },
     { name = "websockets", specifier = ">=16.0" },
 ]
 
