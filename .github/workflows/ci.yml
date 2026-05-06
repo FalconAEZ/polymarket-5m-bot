@@ -1,0 +1,35 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+      - name: install python
+        run: uv python install 3.11
+      - name: sync deps
+        run: uv sync --frozen
+      - name: ruff
+        run: uv run ruff check src/ tests/ scripts/
+      - name: ruff format
+        run: uv run ruff format --check src/ tests/ scripts/
+      - name: mypy --strict
+        run: uv run mypy --strict src/
+      - name: pytest
+        run: uv run pytest -q
+      - name: forbid TODO/FIXME/hack in src/tests/scripts
+        run: |
+          ! grep -rEn 'TODO|FIXME|//\s*hack' src/ tests/ scripts/ 2>/dev/null
+      - name: enforce module headers
+        run: uv run python runbooks/scripts/check_headers.py src/
+      - name: import boundary check
+        run: uv run lint-imports

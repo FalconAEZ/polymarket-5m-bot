@@ -1,0 +1,68 @@
+== PHASE 0 GATE EVIDENCE ==
+  date: 2026-05-06T06:40:23Z
+  rev:  dbc33a4675818f19c2dcaa5b18bd6a30202dfd14
+
+[gate-0.1] python ≥ 3.11 (uv-managed)
+    3.11.15
+
+[gate-0.2] make verify (ruff + mypy --strict + pytest)
+uv run ruff check src/ tests/ scripts/ 2>/dev/null || uv run ruff check src/ tests/
+All checks passed!
+uv run mypy --strict src/
+Success: no issues found in 1 source file
+uv run pytest -q
+.                                                                        [100%]
+1 passed in 0.00s
+
+[gate-0.3] github remote configured
+https://github.com/FalconAEZ/polymarket-5m-bot
+origin	https://github.com/FalconAEZ/polymarket-5m-bot.git (fetch)
+
+[gate-0.4] agent-skills present at ~/.claude/skills/agent-skills/
+    ✓ authentication.md
+    ✓ gasless.md
+
+[gate-0.5] reference repos cloned (gitignored)
+    ✓ references/py-clob-client
+    ✓ references/agents
+    ✓ references/poly-market-maker
+    ✓ references/prediction-market-backtesting
+    ✓ references/Polymarket-BTC-15-Minute-Trading-Bot
+    ✓ references/polymarket-bot-arena
+    ✓ references/archetapp-5m-bot
+
+[gate-0.6] secrets loaded (shape-checked, never printed)
+    ✓ TELEGRAM_BOT_TOKEN  (46 chars)
+    ✓ TELEGRAM_CHAT_ID    (1939610457)
+    ✓ ANTHROPIC_API_KEY   (108 chars, prefix sk-ant-api...)
+    ✓ POLYGON_RPC_URL     (wss://polygon-mainnet.g.alchemy.com...)
+
+[gate-0.7] Telegram smoke message (will arrive on phone)
+    sent: ok=True message_id=4
+
+[gate-0.8] Polygon RPC live (chain_id check)
+    ✓ chain_id 0x89 (137 = Polygon mainnet)
+
+[gate-0.9] required project files exist
+    ✓ pyproject.toml
+    ✓ uv.lock
+    ✓ mypy.ini
+    ✓ ruff.toml
+    ✓ .importlinter
+    ✓ Makefile
+    ✓ .pre-commit-config.yaml
+    ✓ .envrc.example
+    ✓ .gitignore
+    ✓ CLAUDE.md
+    ✓ README.md
+    ✓ RUNBOOK.md
+    ✓ MASTERPLAN.md
+    ✓ .github/workflows/ci.yml
+    ✓ runbooks/scripts/check_headers.py
+    ✓ runbooks/contacts.md
+    ✓ state/runbooks/README.md
+
+[gate-0.10] no secrets staged for commit
+    ✓ no secrets staged
+
+PHASE 0 GATE PASSED 2026-05-06T06:40:27Z  dbc33a4675818f19c2dcaa5b18bd6a30202dfd14

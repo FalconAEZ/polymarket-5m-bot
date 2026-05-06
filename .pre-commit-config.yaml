@@ -12,3 +12,9 @@ repos:
         language: system
         pass_filenames: false
         always_run: true
+      - id: file-headers
+        name: enforce module docstrings on every src/*.py
+        entry: uv run python runbooks/scripts/check_headers.py src/
+        language: system
+        pass_filenames: false
+        always_run: true
