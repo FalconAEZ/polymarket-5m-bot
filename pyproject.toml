@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "eth-account>=0.13.7",
+    "py-clob-client>=0.34.6",
 ]
 
 [build-system]
