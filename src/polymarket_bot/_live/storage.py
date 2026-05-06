@@ -37,24 +37,44 @@ DEFAULT_FLUSH_INTERVAL_S = 5.0
 DEFAULT_TICKS_DIR = "ticks"
 
 
+def default_launch_id() -> str:
+    """Per-launch identifier baked into Parquet filenames.
+
+    Format: `<unix_seconds>` of process start. A laptop sleep + restart
+    produces a new launch_id, so the new ParquetWriter instances open
+    distinct files (e.g. `binance_1715000123.parquet` alongside the
+    earlier `binance_1715000045.parquet`) and the day's earlier data
+    survives intact. The Phase 2.6 analysis and gate scripts glob
+    `<source>*.parquet` to read all of a day's parts.
+    """
+    return str(int(time.time()))
+
+
 class ParquetWriter:
     """Holds open writers for active (date, source) pairs and appends batches.
 
     Per design/data_plane.md §5: filesystem layout is
-    <root>/<UTC-YYYY-MM-DD>/<source>.parquet. Each call to write_batch
-    creates the directory if needed, opens a fresh ParquetWriter on first
-    use of a (date, source) pair, and writes a single Arrow table per call.
-    close() flushes and closes every open writer.
+    <root>/<UTC-YYYY-MM-DD>/<source>_<launch_id>.parquet. The launch_id
+    suffix means a re-launch (laptop sleep, crash recovery) NEVER
+    truncates the previous launch's parquet file for the same day; each
+    launch writes its own file. Tests pin launch_id to "test" so the
+    paths read clean in fixtures.
     """
 
-    def __init__(self, root: str | Path = DEFAULT_TICKS_DIR) -> None:
+    def __init__(
+        self,
+        root: str | Path = DEFAULT_TICKS_DIR,
+        *,
+        launch_id: str | None = None,
+    ) -> None:
         self._root = Path(root)
+        self._launch_id = launch_id if launch_id is not None else default_launch_id()
         self._writers: dict[tuple[str, str], pq.ParquetWriter] = {}
 
     def _path_for(self, utc_date: str, source: str) -> Path:
         day_dir = self._root / utc_date
         day_dir.mkdir(parents=True, exist_ok=True)
-        return day_dir / f"{source}.parquet"
+        return day_dir / f"{source}_{self._launch_id}.parquet"
 
     def _writer_for(self, utc_date: str, source: str) -> pq.ParquetWriter:
         key = (utc_date, source)
@@ -105,6 +125,7 @@ async def writer_task(
     flush_interval_s: float = DEFAULT_FLUSH_INTERVAL_S,
     monotonic: Callable[[], float] = time.monotonic,
     today_fn: Callable[[], str] = utc_today,
+    launch_id: str | None = None,
 ) -> int:
     """Async writer loop. Drains queue into Parquet, rotates at UTC midnight.
 
@@ -115,7 +136,7 @@ async def writer_task(
     arrives. monotonic and today_fn are injected so tests can drive the
     flush-on-time and date-rotation paths deterministically.
     """
-    writer = ParquetWriter(root=root)
+    writer = ParquetWriter(root=root, launch_id=launch_id)
     pending: dict[tuple[str, str], list[Record]] = {}
     last_flush = monotonic()
     total_written = 0
@@ -155,7 +176,12 @@ async def writer_task(
                     writer.write_batch(current_date, rec.source, pending[key])
                     total_written += len(pending[key])
                     pending[key] = []
-                    last_flush = monotonic()
+                    # NOTE: deliberately do NOT reset last_flush here.
+                    # Per-key batch flushes are independent of the time-based
+                    # _flush_all sweep that catches slow feeds (e.g. the
+                    # oracle's 33s heartbeat will never reach batch_size of
+                    # 200 in a single capture day, so it relies on the time
+                    # sweep to land its records on disk).
             now = monotonic()
             if now - last_flush >= flush_interval_s:
                 total_written += _flush_all()
