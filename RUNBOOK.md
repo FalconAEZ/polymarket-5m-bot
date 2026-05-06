@@ -476,6 +476,16 @@ Update `MEMORY.md` to point at this checkpoint.
 
 # PHASE 1 — Wallet & Auth
 
+> **Phase 1 is split into 1A (no money) and 1B (funded).** See locked
+> decision #20 and [`design/gasless.md`](design/gasless.md) §6. Phase 1A
+> covers tasks 1.0, 1.1, 1.2, 1.3, 1.6 and gates via
+> `runbooks/gates/phase-1a.sh` (tag `phase-1a-pass`); zero on-chain
+> footprint. Phase 1B covers tasks 1.4 (fund + sweep) and 1.5 ($5 test
+> order) and gates via `runbooks/gates/phase-1.sh` (tag `phase-1-pass`);
+> 1B fires immediately before Phase 6 go-live, after Phase 4 paper testing
+> closes. The pre-flight checklist below applies in full only at 1B time;
+> 1A needs only the Phase 0 tag and the agent-skills reads.
+
 **Owner intent.** Generate the Funder + Signer wallet pair, derive Polymarket L2 credentials, **prove signing works before funding any wallet**, then fund minimally and execute one gasless test order. By the end of this phase you have demonstrated the full auth + order flow with $5 at risk.
 
 ## Pre-flight checklist

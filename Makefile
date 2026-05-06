@@ -1,4 +1,4 @@
-.PHONY: verify lint format type test gate-0 gate-1 gate-2 gate-3 gate-4 gate-5 gate-6 study-A study-B study-C study-D study-E study-F study-G clean
+.PHONY: verify lint format type test gate-0 gate-1a gate-1 gate-2 gate-3 gate-4 gate-5 gate-6 study-A study-B study-C study-D study-E study-F study-G clean
 
 # Default target — full local verification (mirrors CI)
 verify: lint type test
@@ -18,6 +18,8 @@ test:
 # === Phase gates (each runs the matching gate script) ===
 gate-0:
 	@bash runbooks/gates/phase-0.sh
+gate-1a:
+	@bash runbooks/gates/phase-1a.sh
 gate-1:
 	@bash runbooks/gates/phase-1.sh
 gate-2:
