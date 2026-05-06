@@ -1,0 +1,97 @@
+Phase 2 Task 2.5 — capture launch + 90s health check
+======================================================
+Captured: 2026-05-07 (UTC) on bold-galileo-2d56ca worktree.
+
+DEVIATION: tmux not installed on this laptop and brew not available.
+Operator was previously informed via the runbook. Used `nohup` + a PID
+file at state/capture.pid as the long-lived process manager. Script
+survives shell exit. Re-attach is not possible (vs tmux/screen) but is
+not load-bearing — the operator monitors entirely through
+state/capture.log + state/feeds_health.json. Documented in
+runbooks/capture-launch.md "Prerequisites" section, with tmux + screen
+alternatives spelled out for when tmux gets installed later.
+
+LAUNCH COMMAND:
+  cd /Users/hamad/Desktop/PolyMarket-5m/.claude/worktrees/bold-galileo-2d56ca
+  set -a; source /Users/hamad/Desktop/PolyMarket-5m/.envrc; set +a
+  PATH="$HOME/.local/bin:$PATH" nohup uv run python -u scripts/run_capture.py >> state/capture.log 2>&1 &
+  echo $! > state/capture.pid; disown
+
+INITIAL LAUNCH RAN INTO A REAL BUG (slow-feed starvation):
+  After 3 minutes of capture, oracle_*.parquet was missing while
+  health.feeds.oracle.msgs_seen showed 5 records and queue_depth was 0.
+  The records had been pulled from the queue but never flushed to disk.
+
+  Root cause: the writer's batch-size flush (per-key, when a single
+  source's pending list reaches 200 records) was incorrectly resetting
+  last_flush. Polymarket at ~285 records/s hit batch_size every ~0.7s,
+  meaning the time-based _flush_all sweep that was supposed to fire
+  every 5s NEVER fired. Slow feeds (oracle at ~33s/event) accumulated
+  records but never reached batch_size of 200 in any reasonable time
+  and never got flushed.
+
+  Surfacing this to the operator was load-bearing: a 7-day capture
+  with no oracle file means the entire purpose of Phase 2 (validating
+  the oracle heartbeat thesis) is silently broken.
+
+  Fix committed in 2454c14 with a regression test that reproduces the
+  original failure (600 polymarket + 1 oracle records, assert both
+  files exist).
+
+POST-FIX RE-LAUNCH:
+  pid=22071  log=state/capture.log
+
+90-SECOND HEALTH CHECK:
+  After 92s of capture (snapshot_ts_utc=2026-05-06T21:48:19Z):
+    queue_depth=2  dropped_records_total=0
+    binance:    msgs_seen=726     lag_ms=92    healthy=True  reconnects=0
+    coinbase:   msgs_seen=251     lag_ms=362   healthy=True  reconnects=0
+    oracle:     msgs_seen=2       lag_ms=12585 healthy=True  reconnects=0
+    polymarket: msgs_seen=30509   lag_ms=0     healthy=True  reconnects=0
+
+  All four feeds present. All msgs_seen > 0. All healthy=true. Zero
+  reconnects. Zero dropped records.
+
+  All four parquet files on disk:
+    ticks/2026-05-06/binance_1778104038.parquet     24 KB
+    ticks/2026-05-06/coinbase_1778104038.parquet    37 KB
+    ticks/2026-05-06/oracle_1778104038.parquet      4.1 KB  ← present!
+    ticks/2026-05-06/polymarket_1778104038.parquet  3.2 MB
+
+  Phase 1A's Telegram bot integration also fired correctly during the
+  earlier (now-killed) launch — the capture.log shows two POSTs to
+  api.telegram.org returning HTTP 200 OK. Those came from the health
+  task's outage detection during the period when oracle was silent.
+
+PROMPT-EXPECTED:
+  ✅ tmux session named pmbot-capture launched ─ SUBSTITUTED with nohup,
+     documented in runbook (Option A), reason: tmux/brew unavailable.
+  ✅ 90s post-launch state/feeds_health.json shows all four feeds with
+     msgs_seen > 0 (726, 251, 2, 30509).
+  ✅ All four feeds last_seen_ns within 30s of "now" (max lag oracle
+     12.6s; all others sub-second). Oracle's longer lag is consistent
+     with the ~33s heartbeat we measured in 2.2.
+  ✅ Runbook written: runbooks/capture-launch.md (Options A/B/C, daily
+     checks, troubleshooting, graceful + hard stop).
+  ✅ Phase 2 gate script stub written: runbooks/gates/phase-2.sh.
+     Globs ticks/<date>/<source>*.parquet to handle multi-launch days.
+     Calls scripts/analyze_oracle.py (Phase 2.6 next session) — script
+     exits 1 if analyze_oracle.py is absent.
+  ✅ Next-session prompt written to ~/Desktop/phase-2-analysis-prompt.txt.
+
+The 7-day capture clock starts now (2026-05-07 ~00:43 UTC). Phase 2.6
+session can run any time after 2026-05-13 ~00:43 UTC, ideally giving the
+data 7 full UTC dated directories.
+
+STATE AT END OF DEV SESSION:
+  - Capture process running (pid=22071), monitor via:
+      cat state/feeds_health.json | jq
+  - 5 commits stacked on phase-1a-pass:
+      cec0069 design/data_plane.md
+      14d006d spot feeds (2.1)
+      4fac98e oracle watcher (2.2)
+      aa8b80e polymarket + resolver + storage/health/runtime (2.3 + 2.4 + 2.4b)
+      2454c14 storage slow-feed-starvation fix
+      <next>   capture-launch runbook + phase-2 gate script (2.5)
+  - 99 pytest pass.  mypy --strict on 15 src files.  ruff clean.
+    lint-imports: 2 contracts KEPT, 0 broken.
