@@ -1,0 +1,49 @@
+== PHASE 1A GATE EVIDENCE ==
+  date: 2026-05-06T20:17:28Z
+  rev:  eb9d4d5bbd5f0b565d095840c2d9d57ab0adf918
+  secrets-dir: /Users/hamad/secrets/polymarket-5m
+
+[gate-1a.1] make verify (ruff + mypy --strict + pytest)
+uv run ruff check src/ tests/ scripts/ 2>/dev/null || uv run ruff check src/ tests/
+All checks passed!
+uv run mypy --strict src/
+Success: no issues found in 1 source file
+uv run pytest -q
+.............................................                            [100%]
+45 passed in 0.27s
+
+[gate-1a.2] both .age files exist with valid age v1 armor
+    ✓ funder.age  age-armored, 248 bytes
+    ✓ signer.age  age-armored, 248 bytes
+
+[gate-1a.3] secrets directory mode is 0700
+    ✓ /Users/hamad/secrets/polymarket-5m mode = 700
+
+[gate-1a.4] .envrc mode is 0600
+    ✓ .envrc mode = 600  (/Users/hamad/Desktop/PolyMarket-5m/.envrc)
+
+[gate-1a.5] required POLY_* env vars present
+    ✓ POLY_PRIVATE_KEY      (66 chars)
+    ✓ POLY_API_KEY      (36 chars)
+    ✓ POLY_API_SECRET      (44 chars)
+    ✓ POLY_API_PASSPHRASE      (64 chars)
+
+[gate-1a.6] forbidden Funder env vars are NOT set
+    ✓ POLY_FUNDER_PRIVATE_KEY  not set (correct)
+    ✓ POLY_FUNDER_ADDRESS  not set (correct)
+
+[gate-1a.7] forbidden Funder lines are NOT in .envrc
+    ✓ no POLY_FUNDER_* lines in .envrc
+
+[gate-1a.8] forbidden Funder material is NOT in any tracked file
+    ✓ no POLY_FUNDER_* references in tracked code
+
+[gate-1a.9] no secrets staged for commit
+    ✓ no secrets staged
+
+[gate-1a.10] scripts/test_auth.py exits 0 (full L1+L2 auth check)
+  ✓ local signer address: 0x8d9759A73D65aD32cd858eb3AdE46ce56F5F2B4A
+  ✓ L2 round-trip OK (api_key matches)
+  Signer: 0x8d9759A73D65aD32cd858eb3AdE46ce56F5F2B4A
+
+PHASE 1A GATE PASSED 2026-05-06T20:17:29Z  eb9d4d5bbd5f0b565d095840c2d9d57ab0adf918

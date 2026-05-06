@@ -12,18 +12,31 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
 
+# Locate .envrc. In a regular checkout it sits at $ROOT. In a git worktree
+# the actual .envrc lives in the parent project, so walk upward (mirroring
+# direnv's hierarchical search).
+ENVRC=""
+SEARCH="$ROOT"
+while [ "$SEARCH" != "/" ] && [ "$SEARCH" != "" ]; do
+  if [ -f "$SEARCH/.envrc" ]; then
+    ENVRC="$SEARCH/.envrc"
+    break
+  fi
+  SEARCH="$(dirname "$SEARCH")"
+done
+
 # Make sure direnv-loaded vars are available even when invoked from a fresh shell.
-if [ -f "$ROOT/.envrc" ] && command -v direnv >/dev/null 2>&1; then
+if [ -n "$ENVRC" ] && command -v direnv >/dev/null 2>&1; then
   set -a
   # shellcheck source=/dev/null
   source <(direnv export bash 2>/dev/null) || true
   set +a
 fi
 # Fallback: source .envrc directly if env vars still not set.
-if [ -z "${POLY_PRIVATE_KEY:-}" ] && [ -f "$ROOT/.envrc" ]; then
+if [ -z "${POLY_PRIVATE_KEY:-}" ] && [ -n "$ENVRC" ]; then
   set -a
   # shellcheck source=/dev/null
-  source "$ROOT/.envrc"
+  source "$ENVRC"
   set +a
 fi
 
@@ -62,12 +75,12 @@ SECRETS_DIR="${PHASE_1A_SECRETS_DIR:-$HOME/secrets/polymarket-5m}"
   echo
 
   echo "[gate-1a.4] .envrc mode is 0600"
-  test -f "$ROOT/.envrc" \
-    || (echo "    ✗ .envrc missing" && exit 1)
-  ENVRC_MODE=$(stat -f '%Lp' "$ROOT/.envrc")
+  test -n "$ENVRC" \
+    || (echo "    ✗ .envrc not found in $ROOT or any parent" && exit 1)
+  ENVRC_MODE=$(stat -f '%Lp' "$ENVRC")
   test "$ENVRC_MODE" = "600" \
-    && echo "    ✓ .envrc mode = 600" \
-    || (echo "    ✗ .envrc mode = $ENVRC_MODE (expected 600)" && exit 1)
+    && echo "    ✓ .envrc mode = 600  ($ENVRC)" \
+    || (echo "    ✗ $ENVRC mode = $ENVRC_MODE (expected 600)" && exit 1)
   echo
 
   echo "[gate-1a.5] required POLY_* env vars present"
@@ -89,8 +102,8 @@ SECRETS_DIR="${PHASE_1A_SECRETS_DIR:-$HOME/secrets/polymarket-5m}"
   echo
 
   echo "[gate-1a.7] forbidden Funder lines are NOT in .envrc"
-  if grep -E '^\s*export\s+POLY_FUNDER' "$ROOT/.envrc" >/dev/null 2>&1; then
-    echo "    ✗ POLY_FUNDER_* line found in .envrc — must not be there"
+  if grep -E '^\s*export\s+POLY_FUNDER' "$ENVRC" >/dev/null 2>&1; then
+    echo "    ✗ POLY_FUNDER_* line found in $ENVRC — must not be there"
     exit 1
   else
     echo "    ✓ no POLY_FUNDER_* lines in .envrc"

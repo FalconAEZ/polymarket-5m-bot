@@ -308,8 +308,6 @@ export POLY_PRIVATE_KEY=""
 export POLY_API_KEY=""
 export POLY_API_SECRET=""
 export POLY_API_PASSPHRASE=""
-export POLY_FUNDER_ADDRESS=""
-export POLY_SIGNATURE_TYPE="1"
 
 # Polygon RPC (filled in Phase 2)
 export POLYGON_RPC_URL=""

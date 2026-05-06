@@ -17,11 +17,12 @@ here under any circumstance.
 
 | Role | Address | Encrypted backup | Privkey lives in |
 |---|---|---|---|
-| **Funder** | `<FILL IN AFTER 1.1>` | `~/secrets/polymarket-5m/funder.age` | offline `.age` only — **never** on the bot host, **never** in `.envrc` |
-| **Signer** | `<FILL IN AFTER 1.1>` | `~/secrets/polymarket-5m/signer.age` | `.envrc` as `POLY_PRIVATE_KEY` (mode 0600) **and** the offline `.age` |
+| **Funder** | `0x512DA3825E69A8c19d2e0D00b66dd23d3ec95d22` | `~/secrets/polymarket-5m/funder.age` | offline `.age` only — **never** on the bot host, **never** in `.envrc` |
+| **Signer** | `0x8d9759A73D65aD32cd858eb3AdE46ce56F5F2B4A` | `~/secrets/polymarket-5m/signer.age` | `.envrc` as `POLY_PRIVATE_KEY` (mode 0600) **and** the offline `.age` |
 
-Generated `<DATE>` (UTC) by `scripts/genwallets.py`. Replace placeholders by
-hand after running 1.1; commit the addresses only — never the keys.
+Generated `2026-05-06` (UTC) by `scripts/genwallets.py`. Both addresses are
+public and safe to commit; the keys are protected by `age -p` passphrase
+encryption (and, in the Signer's case, `.envrc` mode 0600 + gitignored).
 
 ## 2. Hard rules — never violate
 
