@@ -24,7 +24,8 @@ Highlights: Anthropic API only · 3 agents + meta-decider · Telegram via BotFat
 
 - Bootstrap: ✅ done.
 - Phase A (bonereaper pre-flight): ✅ closed — **ABORT**. 7-day audit measured 52.65% win-rate (95% CI [52.24%, 53.06%]) over 56,972 BTC 5m trades, below the locked 60% gate. Cloning research stream dropped; main-bot plan unaffected. See `runbooks/study/preflight-decision.md`.
-- Next: operator opens `RUNBOOK.md` Phase 0 (Foundations).
+- **Phase 0 (Foundations): ✅ closed — gate green at commit `3195d2c`, tag `phase-0-pass`.** All 10 checks pass: Python 3.11.15, `make verify` green, GitHub remote live, agent-skills + 7 reference repos cloned, secrets loaded, Telegram smoke delivered, Polygon RPC chain_id 0x89 confirmed, 17 required project files present.
+- Next: operator opens `RUNBOOK.md` Phase 1 (Wallet & Auth).
 
 See `state/sessions/` for daily logs.
 
