@@ -48,13 +48,26 @@ class RedisQueueImpl:
             return self._client
         from redis.asyncio import Redis
 
-        self._client = Redis.from_url(self._url, socket_timeout=5.0)
+        # No socket_timeout on BRPOP path — redis-py treats socket_timeout
+        # as a hard read deadline that fires before BRPOP's server-side
+        # timeout when the queue is idle, raising TimeoutError instead of
+        # returning None. Health-check pings keep the connection alive.
+        self._client = Redis.from_url(self._url, health_check_interval=30)
         return self._client
 
     async def brpop(self, timeout: float) -> bytes | None:  # noqa: ASYNC109
-        """BRPOP one entry; on connection error, sleep + retry forever."""
+        """BRPOP one entry; on connection error, sleep + retry forever.
+
+        Returns `None` when the BRPOP times out on the server side without
+        finding an entry — the outer drain loop calls brpop again on its
+        next tick. A redis-py `TimeoutError` (idle socket deadline) is also
+        treated as "nothing arrived" rather than a connection error, since
+        the queue is well-defined empty and reconnect would just rebuild
+        the same connection.
+        """
         from redis.exceptions import ConnectionError as RedisConnectionError
         from redis.exceptions import RedisError
+        from redis.exceptions import TimeoutError as RedisTimeoutError
 
         while True:
             try:
@@ -69,6 +82,10 @@ class RedisQueueImpl:
                 if isinstance(value, bytes):
                     return value
                 return bytes(value)
+            except RedisTimeoutError:
+                # Idle wait — queue is empty, no entry yet. Caller loops.
+                self._backoff_s = BACKOFF_INITIAL_S
+                return None
             except (RedisConnectionError, OSError) as exc:
                 LOG.warning(
                     "redis brpop connection error: %s; backing off %.1fs",
