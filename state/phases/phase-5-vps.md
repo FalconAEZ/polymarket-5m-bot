@@ -106,10 +106,16 @@ Tag `phase-5-pass` by hand on green. Phase 6 (real money) gates next, blocked be
 
 ## What's next (post-5.5 GREEN)
 
-1. **Wait for the 24h staging clock.** bot-staging started 2026-05-07 19:32:54 UTC; gate-eligible 2026-05-08 19:32:54 UTC. The bot is on its own — no code work between now and then.
-2. **At ~24h elapsed:** run `bash runbooks/gates/phase-5.sh` from the VPS. Gate criteria #1, #2, #3, #4, #5, #6 already pass; #7 (24h zero exceptions) and #8 (litestream) are the remaining checks. Litestream binary is installed but not yet configured — that's a small task to wire before tagging.
-3. **Tag `phase-5-pass`** on green by hand at the commit that captures the gate evidence.
-4. **Then 5.6 (Signer key)** — age-encrypt the Signer EOA, scp to VPS, decrypt into `.envrc` as `POLY_PRIVATE_KEY`. Locked decision #11 still in force (Funder NEVER leaves laptop). Doesn't unblock anything unless going to Phase 6.
-5. **Then Phase 1B funding decision** — only if the operator looks at 7-14 days of paper-soak data and decides to flip live. Per anti-vibe rules, this gets its own gate, its own decision doc, its own incident-response plan. **Do not skip the soak.**
+1. **Wait for the 24h staging clock.** bot-staging started 2026-05-07 19:32:54 UTC; gate-eligible 2026-05-08 19:32:54 UTC. The bot is on its own — no code work strictly required between now and then.
+2. **Optional parallel work — backtest replay calibration** (drove from operator's "what's the point lol" 2026-05-08 framing pushback): use Phase 3's existing replay engine over the last 7-14 days of captured BTC ticks with threshold sweep `{0.3, 0.4, 0.5, 0.6}`. Output fire-rate × win-rate × net-P&L (fees + slippage included) per threshold. **Only justification for revising decision #6's threshold.** See [[../sessions/2026-05-08]] Option B; ~30 min code.
+3. **Optional parallel work — wire litestream** (gate criterion #8). Binary installed, needs Backblaze B2 bucket + config + systemd unit. ~1h.
+4. **At ~24h elapsed:** run `bash runbooks/gates/phase-5.sh` from the VPS. Gate criteria #1, #2, #3, #4, #5, #6 already pass; #7 (24h zero exceptions) and #8 (litestream) are the remaining checks.
+5. **Tag `phase-5-pass`** on green by hand at the commit that captures the gate evidence.
+6. **Then 5.6 (Signer key) only when ready to flip live** — age-encrypt the Signer EOA, scp to VPS, decrypt into `.envrc` as `POLY_PRIVATE_KEY`. Locked decision #11 still in force (Funder NEVER leaves laptop). Operator chose to defer until pre-live.
+7. **Then Phase 1B funding decision** — only after looking at 7-14 days of paper-soak data + the backtest calibration. Per anti-vibe rules, gets its own gate, its own decision doc, its own incident-response plan. **Do not skip the soak.**
 
-Honest reminder: the decision to go live is a separate gate from "infrastructure works." 5.5 GREEN means the kill-switch and observability work, not that the strategy makes money. The deterministic baseline at threshold 0.6 may go many windows without firing — that's not a bug, that's the strategy. Look at `state/staging/decisions/*.jsonl` over multiple days to see if any decisions actually fire AND settle in your favor before raising stakes.
+Honest reminders:
+- 5.5 GREEN means the kill-switch and observability work, not that the strategy makes money.
+- The deterministic baseline at threshold 0.6 may go many windows without firing — **that is the strategy, not a bug.** See [[../../memory/project_strategy_intent.md]].
+- "Trade every window" = guaranteed loss to fees. If after 24-48h zero decisions fire, the diagnostic is the backtest replay (item 2 above), not vibes-based threshold lowering.
+- Each addition (Claude ensemble, more aggressive volume, etc.) needs its own gate. Don't skip.
