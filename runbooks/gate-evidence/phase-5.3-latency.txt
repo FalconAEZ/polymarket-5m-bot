@@ -1,0 +1,89 @@
+# Phase 5.3 CLOB latency — 2026-05-07T17:19:30.708670+00:00
+# endpoint: wss://ws-subscriptions-clob.polymarket.com/ws/market
+# host: ip-172-26-6-176 — expected: AWS Lightsail eu-west-1 (Dublin)
+
+[1/3] handshake (TCP + TLS + WS upgrade) ...
+handshake (informational)                n=  20  min= 30.91  p50= 45.36  p95= 61.70  p99= 61.70  max= 61.70  mean= 46.52  (ms)
+
+[2/3] PING/PONG round-trip on established connection ...
+PING/PONG RTT (GATE METRIC)              n= 100  min= 12.40  p50= 13.10  p95= 33.60  p99= 90.90  max= 90.90  mean= 16.16  (ms)
+
+[3/3] subscribe -> first message ...
+  resolved 2 token_ids for current 5m window
+subscribe -> first msg                   n=  10  min= 14.40  p50= 15.68  p95= 16.90  p99= 16.90  max= 16.90  mean= 15.62  (ms)
+
+========================================================================
+GATE CRITERIA (PING/PONG RTT): p50<5ms=FAIL (13.10ms), p99<15ms=FAIL (90.90ms)  -> FAIL
+========================================================================
+
+# JSON-OUT-START
+{
+  "phase": "5.3",
+  "started_utc": "2026-05-07T17:19:30.708670+00:00",
+  "endpoint": "wss://ws-subscriptions-clob.polymarket.com/ws/market",
+  "verdict": "FAIL",
+  "gate_p50_ms": 5.0,
+  "gate_p99_ms": 15.0,
+  "handshake": {
+    "n": 20.0,
+    "min": 30.90554600021278,
+    "p50": 45.3628960003698,
+    "p95": 61.70067699986248,
+    "p99": 61.70067699986248,
+    "max": 61.70067699986248,
+    "mean": 46.52337120014636
+  },
+  "ping_pong_rtt": {
+    "n": 100.0,
+    "min": 12.396232999890344,
+    "p50": 13.097086000016134,
+    "p95": 33.603730000322685,
+    "p99": 90.89808000044286,
+    "max": 90.89808000044286,
+    "mean": 16.163098000015452
+  },
+  "subscribe_first_msg": {
+    "n": 10.0,
+    "min": 14.402926999537158,
+    "p50": 15.676472000450303,
+    "p95": 16.90383400000428,
+    "p99": 16.90383400000428,
+    "max": 16.90383400000428,
+    "mean": 15.617905600174709
+  }
+}
+# JSON-OUT-END
+
+
+# ----------------------------------------------------------------------
+# Supplementary triangulation evidence (added 2026-05-07 17:21 UTC)
+# Captured separately from the script to corroborate the structural floor.
+# ----------------------------------------------------------------------
+
+# ICMP ping (network-layer RTT to Cloudflare edge IPv6)
+# 5 packets, rtt min/avg/max/mdev = 1.084/1.153/1.283/0.068 ms
+
+# DNS resolution
+# 2a06:98c1:3104::6812:22cd  (Cloudflare AS13335)
+# 2a06:98c1:3100::ac40:9933  (Cloudflare AS13335)
+
+# HTTPS handshake to wss origin (3 cold samples, full TCP+TLS+body):
+# sample 1: dns=0.000700s connect=0.001894s tls=0.038129s total=0.070369s
+# sample 2: dns=0.000789s connect=0.001977s tls=0.038252s total=0.068029s
+# sample 3: dns=0.000693s connect=0.002064s tls=0.038474s total=0.081291s
+
+# REST keep-alive to clob.polymarket.com/time (1 cold + 4 warm in same curl):
+# tcp=0.001863s tls=0.038367s ttfb=0.056148s total=0.056219s   <- cold
+# tcp=0.000000s tls=0.000000s ttfb=0.018099s total=0.018130s   <- warm
+# tcp=0.000000s tls=0.000000s ttfb=0.017726s total=0.017757s   <- warm
+# tcp=0.000000s tls=0.000000s ttfb=0.017122s total=0.017152s   <- warm
+# tcp=0.000000s tls=0.000000s ttfb=0.017865s total=0.017894s   <- warm
+
+# Interpretation:
+# - Network RTT (ICMP/TCP) to Cloudflare edge: ~1-2 ms (Dublin region IS optimal for edge proximity)
+# - Application RTT (REST warm, WS PING, WS subscribe): ~13-17 ms (origin proxy hop dominates)
+# - The 13ms floor is structural, not a Dublin issue: Cloudflare anycast lands us
+#   on the closest edge (1ms) and proxies to Polymarket origin (~12-15ms more).
+# - Gate criteria as written (p50<5ms, p99<15ms applied to PING/PONG) appear
+#   unachievable from any AWS region because the Cloudflare->origin hop is fixed.
+# - Tightest, most representative metric: subscribe -> first message = 14.4-16.9 ms range.
