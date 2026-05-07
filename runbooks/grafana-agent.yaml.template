@@ -1,0 +1,71 @@
+# grafana-agent v0.40+ config — Phase 5.5
+#
+# Source-of-truth for /etc/grafana-agent.yaml on the VPS. Apply via:
+#
+#   ssh -i ~/Downloads/LightsailDefaultKey-eu-west-1.pem -p 2222 ops@108.132.51.116 \
+#     'set -a; source /home/ops/polymarket-5m-bot/.envrc; set +a; \
+#      envsubst < /home/ops/polymarket-5m-bot/runbooks/grafana-agent.yaml.template \
+#      > /tmp/grafana-agent.yaml && \
+#      sudo install -m 600 -o grafana-agent -g grafana-agent \
+#        /tmp/grafana-agent.yaml /etc/grafana-agent.yaml && \
+#      rm /tmp/grafana-agent.yaml && \
+#      sudo systemctl restart grafana-agent'
+#
+# Variables expanded from .envrc:
+#   - GRAFANA_PROM_URL    — remote_write endpoint (https://prometheus-prod-…/api/prom/push)
+#   - GRAFANA_PROM_USER   — numeric instance ID
+#   - GRAFANA_PROM_TOKEN  — glc_… write token (scope: metrics:write only)
+#
+# Scrape targets (all loopback — UFW blocks them externally):
+#   - prometheus-node-exporter on :9100 (system metrics: cpu/mem/disk/net)
+#   - bot-staging on :9101                — exists once Phase 5.5 alerter lands
+#   - bot.service  on :9102                — exists once Phase 6 lands; agent ignores misses
+#   - tg-alerter   on :9103                — exists once Phase 5.5 alerter lands
+
+server:
+  log_level: info
+
+metrics:
+  global:
+    scrape_interval: 15s
+    external_labels:
+      instance: 5m-Polymarket-bot
+      region: eu-west-1
+      env: staging
+
+  configs:
+    - name: integrations
+      remote_write:
+        - url: ${GRAFANA_PROM_URL}
+          basic_auth:
+            username: ${GRAFANA_PROM_USER}
+            password: ${GRAFANA_PROM_TOKEN}
+      scrape_configs:
+        - job_name: node-exporter
+          static_configs:
+            - targets: ['127.0.0.1:9100']
+              labels:
+                job: node-exporter
+
+        # Bot metrics endpoints land in Phase 5.5 / Phase 6.
+        # Listed now so adding the endpoints later is a no-op.
+        # Until then, the agent logs scrape failures at debug level only.
+        - job_name: bot-staging
+          static_configs:
+            - targets: ['127.0.0.1:9101']
+              labels:
+                job: bot-staging
+                mode: paper
+
+        - job_name: bot-live
+          static_configs:
+            - targets: ['127.0.0.1:9102']
+              labels:
+                job: bot-live
+                mode: live
+
+        - job_name: tg-alerter
+          static_configs:
+            - targets: ['127.0.0.1:9103']
+              labels:
+                job: tg-alerter
