@@ -8,7 +8,16 @@ source_modules = polymarket_bot._live
 forbidden_modules = polymarket_bot._paper
 
 [importlinter:contract:layered2]
-name = paper never imports live infra
+# Phase 4 narrowed this: _paper may import _live.feeds (read-only) so the
+# paper runtime can subscribe to the same WS upstreams the production bot
+# uses. Everything else under _live (runtime, health, storage, and the
+# future _live.execution module that lands in Phase 6) stays off-limits.
+# This is an allowlist enforced as a denylist of the non-_live.feeds modules.
+name = paper never imports live runtime, health, storage, or execution
 type = forbidden
 source_modules = polymarket_bot._paper
-forbidden_modules = polymarket_bot._live
+forbidden_modules =
+    polymarket_bot._live.runtime
+    polymarket_bot._live.health
+    polymarket_bot._live.storage
+    polymarket_bot._live.execution

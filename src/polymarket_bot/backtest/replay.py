@@ -124,6 +124,25 @@ class ReplayEngine:
         return events
 
 
+def decode_record(record: object, side_resolver: SideResolver) -> list[MarketEvent]:
+    """Public wrapper: decode a feeds.protocols.Record into MarketEvents.
+
+    Phase 4 paper-mode (polymarket_bot._paper.runner) reuses the same
+    decoder the backtest uses for Parquet rows, by passing live Records
+    straight through. record must expose .ts_utc_ns, .source, .payload_json
+    attributes — the production Record dataclass and any test fake do.
+    Empty list when the record is malformed or has no top-of-book content.
+    """
+    source = getattr(record, "source", None)
+    if not isinstance(source, str):
+        return []
+    row: dict[str, Any] = {
+        "ts_utc_ns": getattr(record, "ts_utc_ns", 0),
+        "payload_json": getattr(record, "payload_json", ""),
+    }
+    return _decode_row(source, row, side_resolver)
+
+
 def _decode_row(source: str, row: dict[str, Any], side_resolver: SideResolver) -> list[MarketEvent]:
     """Decode one Parquet row into zero or more MarketEvents.
 
