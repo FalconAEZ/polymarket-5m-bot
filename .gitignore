@@ -14,14 +14,22 @@ secrets.*
 # Reference repos (mining-only, gitignored)
 references/
 
-# Project state (bot-written runbooks, postmortems, sessions, dashboards)
-state/
+# Project state (mixed: some files git-tracked, some not).
+# Strategy: do NOT exclude state/ wholesale (git docs: "it is not
+# possible to re-include a file if a parent directory is excluded").
+# Instead, exclude the specific machine-local patterns and let
+# everything else be tracked.
 state-demo/
-# Phase 4.5 exception: keep decision-log JSONL in git so the dashboard
-# has data the moment the repo is cloned on a new machine. Per
-# design/dashboard.md §5. Everything else under state/ stays excluded.
-!state/decisions/
-!state/decisions/*.jsonl
+state/*.parquet
+state/*.log
+state/*.err.log
+state/*.pid
+state/feeds_health.json
+state/.obsidian/             # Obsidian workspace config (machine-specific)
+# Per locked decision #18 (revised 2026-05-07): vault markdown notes
+# (sessions, postmortems, operator runbooks) ARE git-tracked, plus
+# Phase 4.5 decision-log JSONL. These ARE NOT excluded above, so they
+# get tracked by default. See state/runbooks/decision-18-revision.md.
 
 # Captured market data (Phase 2+)
 ticks/
