@@ -1151,6 +1151,10 @@ Transfer via age-encrypted file over SSH. Do NOT copy via clipboard. Confirm `.e
 ### 5.7 — 24h staging run
 Start `bot-staging.service`. Watch metrics + Telegram alerts. After 24h with zero unhandled exceptions, gate passes.
 
+**Status (2026-05-08):** bot-staging soaking since 2026-05-07 19:32:54 UTC; gate-eligible 2026-05-08 19:32:54 UTC. Criteria #1-#6 already passed (operator-confirmed e2e Telegram + /halt smoke at 19:31 UTC). Criterion #7 (24h zero exceptions) probable pass — journal clean to date. **Criterion #8 (litestream → S3-compatible) is the only remaining blocker; binary installed in 5.2 but config + systemd timer + restore-test not yet wired.**
+
+**Realistic 24h-deliverable expectation:** decisions fired = ZERO. The 2026-05-08 replay calibration (`runbooks/gate-evidence/replay-calibration-2026-05-08.md`) showed the deterministic composite signal does not cross 0.3pp on real BTC 5-min tick data. Live behaviour will reproduce. Dashboard reads "CUMULATIVE PNL —, silence is normal at 0.6pp threshold." NOT a gate failure (#7 is exception-freeness, not profitability) but is the strategy-design problem the parallel Bonereaper investigation chain has informed (`runbooks/research/bonereaper-spot-vs-book-30d-2026-05-08.md`).
+
 ## Gate command
 
 `bash runbooks/gates/phase-5.sh` asserts (run from VPS):

@@ -90,6 +90,8 @@ Tag `phase-5-pass` by hand on green. Phase 6 (real money) gates next, blocked be
 - *2026-05-07 phase 5.5 chunk 2 session — `httpx` INFO logs leaked Telegram bot token to journal.* httpx logs every HTTP request URL at INFO. The Telegram Bot API embeds the token in the path, so each `getUpdates` long-poll wrote the bare token to `journalctl -u tg-alerter`. Fix: `logging.getLogger("httpx").setLevel(WARNING)` in `run_alerter._configure_logging`. Past journal lines cannot be redacted; pre-existing token-rotation reminder still applies. Lesson: always set httpx (and any HTTP-client) logger to WARNING in production daemons that hit token-bearing URLs.
 - *2026-05-07 phase 5.5 chunk 2 session — pre-commit ruff (v0.8.0) ≠ local ruff (0.15+).* Local ruff has `ASYNC240` (no `pathlib.Path` in async); pre-commit ruff doesn't, so a `# noqa: ASYNC240` parses as `RUF100 unused noqa` in pre-commit. Worked around by lifting the `os.path.exists` call into a sync `_sentinel_present` helper outside the async function — clean for both versions, no `# noqa` needed. Long-term: bump pre-commit ruff or pin local to match. Filed as icebox follow-up.
 - *2026-05-08 framing pushback — operator excitement vs scope reality.* After 5.5 closed, operator asked "did we just build a high-volume Bonereaper-clone using the Claude API?" — answer was **no**: locked decision #19 archived Bonereaper after the 52.65% backtest; `bot-staging` runs `DeterministicStrategy` only (one $5 bet per 5-min window, threshold ≥0.6 composite); Phase 3 LLM A/B verdict was CUT (decision #16); no Anthropic spend in chunks 1+2. The 3-agent + Sonnet-meta ensemble is **designed** (decision #5), not coded. Lesson: when a stakeholder asks an enthusiastic-but-wrong question, mark them. Distinguishing "shipped infra + baseline" from "shipped Bonereaper-clone" matters when friends and family are watching.
+- *2026-05-08 Bonereaper investigation chain — three hypothesis turns.* Operator's "they enter every window for high win rate" prompted three sequential investigations: (1) MARKET MAKING hypothesis, killed by predicts.guru `BUY/SELL RATIO 5000/0` (they never close early); (2) LATE-WINDOW SNIPING hypothesis, killed by microstructure data showing only 15.4% of >=70¢ entries land in the final 60s (replicated at 7d=60,500 trades and 30d=306,997 trades — same answer); (3) SPOT-AWARE SIDE SELECTION hypothesis, **CONFIRMED** at 30d/306,966 trades with a +30.9pp aligned-vs-contrarian win-rate gap. Lessons: (a) sample-size variance is huge — initial 837-trade sample showed +52.8pp gap that shrank to +30.9pp at scale; trust the bigger sample. (b) "Win rate" framing was misleading — net 51.7% is barely coin-flip; money comes from layered PnL drivers (heavy-favorite concentration, low-price mean-reversion, flat-condition fair-price bets) NOT from the clean directional cells where the book mostly catches up. (c) Operator's "every window" instinct was right on COVERAGE (Bonereaper hits 95.1% of 8,637 markets in 30d) but wrong on the implied "high accuracy." High-volume CAN work, but only with a real per-trade signal — which Δ_bps from window-open looks like.
+- *2026-05-08 replay calibration — signal-too-quiet, not threshold-too-tight.* Operator pushed for "every window" trading driven by frustration that bot-staging fires nothing. Replay sweep at thresholds {0.3, 0.4, 0.5, 0.6} on 28 windows of captured BTC ticks → ZERO fires at every threshold. The deterministic composite signal itself doesn't cross 0.3pp on real 5-min BTC data; lowering the threshold doesn't add signal. Implication: decisions #16 (LLM A/B cut "didn't beat baseline by 3pp") and #19 (Bonereaper cloning aborted) BOTH rest on a baseline that fires zero times — those decisions need fresh written justification before any reversal. Lesson: when the dashboard looks empty, the diagnostic question is "what is the signal actually outputting?" — not "should we lower the threshold?".
 
 ## See also
 
@@ -104,18 +106,53 @@ Tag `phase-5-pass` by hand on green. Phase 6 (real money) gates next, blocked be
 - `runbooks/vps-ssh-lockdown.md`, `runbooks/systemd/README.md`, `runbooks/grafana-agent.yaml.template`, `runbooks/staging-dashboard.md` — operational audit trail.
 - `phase-prompts/phase-5-prompt.txt` — original engineered launch prompt (now mostly historical; this note + the latest session note are the live pickup spec).
 
-## What's next (post-5.5 GREEN)
+## What's next (post-5.5 GREEN, updated 2026-05-08 after Bonereaper investigation)
 
-1. **Wait for the 24h staging clock.** bot-staging started 2026-05-07 19:32:54 UTC; gate-eligible 2026-05-08 19:32:54 UTC. The bot is on its own — no code work strictly required between now and then.
-2. **Optional parallel work — backtest replay calibration** (drove from operator's "what's the point lol" 2026-05-08 framing pushback): use Phase 3's existing replay engine over the last 7-14 days of captured BTC ticks with threshold sweep `{0.3, 0.4, 0.5, 0.6}`. Output fire-rate × win-rate × net-P&L (fees + slippage included) per threshold. **Only justification for revising decision #6's threshold.** See [[../sessions/2026-05-08]] Option B; ~30 min code.
-3. **Optional parallel work — wire litestream** (gate criterion #8). Binary installed, needs Backblaze B2 bucket + config + systemd unit. ~1h.
-4. **At ~24h elapsed:** run `bash runbooks/gates/phase-5.sh` from the VPS. Gate criteria #1, #2, #3, #4, #5, #6 already pass; #7 (24h zero exceptions) and #8 (litestream) are the remaining checks.
-5. **Tag `phase-5-pass`** on green by hand at the commit that captures the gate evidence.
-6. **Then 5.6 (Signer key) only when ready to flip live** — age-encrypt the Signer EOA, scp to VPS, decrypt into `.envrc` as `POLY_PRIVATE_KEY`. Locked decision #11 still in force (Funder NEVER leaves laptop). Operator chose to defer until pre-live.
-7. **Then Phase 1B funding decision** — only after looking at 7-14 days of paper-soak data + the backtest calibration. Per anti-vibe rules, gets its own gate, its own decision doc, its own incident-response plan. **Do not skip the soak.**
+### Tomorrow's 24h gate (~2026-05-08 19:32:54 UTC) — realistic expectations
 
-Honest reminders:
+| # | Criterion | Expected status |
+|---|---|---|
+| 1 | bot-staging active | ✅ pass |
+| 2 | bot.service disabled | ✅ pass |
+| 3 | WS subscribe→first-msg latency | ✅ pass (measured in 5.3) |
+| 4 | chrony offset <10ms | ✅ pass |
+| 5 | Telegram smoke | ✅ pass (operator-confirmed) |
+| 6 | /halt smoke | ✅ pass (operator-confirmed) |
+| 7 | 24h logs zero unhandled exceptions | ✅ probable pass (clean so far) |
+| 8 | litestream replicating trades.db | ❌ NOT WIRED — only blocker |
+
+**Decisions fired during 24h soak: expected ZERO.** The replay calibration showed the deterministic composite never crosses 0.3pp on real 5-min BTC tick data. Live behaviour will reproduce that. The dashboard will read "CUMULATIVE PNL —, silence is normal at 0.6pp threshold." That's NOT a gate failure (#7 is about exception-free uptime, not profitable trades) but it IS the strategy-design problem we now have evidence to solve.
+
+### Path to phase-5-pass tag
+
+1. Wire litestream → Backblaze B2 bucket (or equivalent S3-compatible) + systemd timer + restore-test. Gate criterion #8 satisfied. ~1h work.
+2. At 24h elapsed, run `bash runbooks/gates/phase-5.sh` to capture evidence; confirm criteria #7 and #8 land.
+3. Tag `phase-5-pass` by hand on green.
+
+### Strategy track (parallel to gate work; NOT a Phase 5 deliverable)
+
+Driven by the 2026-05-08 Bonereaper investigation chain. Both findings tracked under `runbooks/research/`:
+
+- `runbooks/gate-evidence/replay-calibration-2026-05-08.md` — deterministic composite fires zero times at any threshold on real ticks. Signal-too-quiet, not threshold-too-tight.
+- `runbooks/research/bonereaper-microstructure-2026-05-07.md` (7d, 60,500 trades) and `bonereaper-microstructure-30d-2026-05-08.md` (30d, 306,997 trades) — late-window-sniping rejected; 95.1% market participation; layered PnL drivers.
+- `runbooks/research/bonereaper-spot-vs-book-2026-05-07.md` (7d, 837 trades, +52.8pp gap) and `bonereaper-spot-vs-book-30d-2026-05-08.md` (30d, 306,966 trades, **+30.9pp gap**) — spot-aware side selection signal CONFIRMED at scale.
+
+What this enables when ready:
+
+1. **`design/spot_aware_strategy.md`** — locked design for a sibling strategy to `DeterministicStrategy`. Trigger: |Δ_bps| ≥ X with side-aligned sign. Evaluation: same buckets the bonereaper analysis used. Anti-vibe rule #1: doc + gate before any code.
+2. **Backtest gate** — replay over captured + historical kline data, score per-bucket against the bonereaper benchmark (1.94% gross ROI / 51.7% win rate / +30.9pp aligned-vs-contrarian gap).
+3. **Phase 8 ensemble re-audit** — decisions #16 (LLM A/B cut) and #19 (Bonereaper aborted as directional) BOTH rest on "the deterministic baseline" being well-defined. The baseline fires zero times. Both decisions deserve fresh written justification before any change to the locked store.
+4. **Eventual paper integration** — sibling strategy fed the same events as `DeterministicStrategy`; both write to `state/decisions/`; dashboard renders side-by-side. Operator picks the live strategy after a fresh paper soak.
+
+### Operational housekeeping (not blocking)
+
+- 5.6 (Signer key) — operator deferred until ready to flip live. No urgency.
+- Phase 1B funding — only after a strategy that fires AND passes a fresh gate.
+- Token rotations (Telegram + Alchemy) — operator deferred until Phase 5 closes.
+
+### Honest reminders (carry forward)
+
 - 5.5 GREEN means the kill-switch and observability work, not that the strategy makes money.
-- The deterministic baseline at threshold 0.6 may go many windows without firing — **that is the strategy, not a bug.** See [[../../memory/project_strategy_intent.md]].
-- "Trade every window" = guaranteed loss to fees. If after 24-48h zero decisions fire, the diagnostic is the backtest replay (item 2 above), not vibes-based threshold lowering.
-- Each addition (Claude ensemble, more aggressive volume, etc.) needs its own gate. Don't skip.
+- The current deterministic baseline at threshold 0.6 fires zero times in real data. Lowering the threshold without changing the signal still fires zero times.
+- Bonereaper's 30-day numbers prove **high volume × tiny edge × selective sizing CAN work** — but their net win rate is 51.7%, not "high." Don't confuse "trade every window" with "trade every window with no edge."
+- Each addition (spot-aware strategy, Claude ensemble, ensemble revisit) gates separately. Anti-vibe rule #1 still in force.
