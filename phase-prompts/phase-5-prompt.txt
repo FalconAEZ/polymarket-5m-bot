@@ -1,7 +1,15 @@
 Subject: Execute Phase 5 — VPS lockdown + runtime install + CLOB latency check
 + systemd staging. Branch main @ 91245b1 (untagged). VPS already provisioned
-in Dublin (108.130.237.88, Ubuntu 24.04). Operator pastes commands; you
+in Dublin (108.132.51.116, Ubuntu 24.04). Operator pastes commands; you
 drive each step.
+
+[CORRECTIONS APPLIED 2026-05-07 phase-5.1-pass session — see
+state/sessions/2026-05-07-phase-5.1-pass.md and runbooks/vps-ssh-lockdown.md
+for the audit trail. The prior hand-off had public IP and instance name
+wrong; both corrected throughout this prompt. 5.1 is also DONE; on
+next-session pickup, verify with:
+  ssh -i ~/Downloads/LightsailDefaultKey-eu-west-1.pem -p 2222 ops@108.132.51.116
+and skip directly to Task 5.2.]
 
 ================================================================================
 CONTEXT ANCHORS  (read in order; do not skip)
@@ -108,13 +116,13 @@ VPS FACTS (FROM 2026-05-07-VPS-PROVISIONED HAND-OFF)
 ================================================================================
 
 Provider:           AWS Lightsail
-Region:             eu-west-1 (Ireland / Dublin)
+Region:             eu-west-1 (Ireland / Dublin)         [IMDSv2 verified]
 Availability Zone:  eu-west-1a
-Instance name:      Ubuntu-1
+Instance name:      5m-Polymarket-bot                    [was "Ubuntu-1" in prior hand-off; corrected 2026-05-07]
 Plan:               $24/mo · 2 vCPU · 4 GB RAM · 80 GB SSD · 4 TB transfer
 Network type:       Dual-stack (IPv4 + IPv6)
 OS:                 Ubuntu 24.04 LTS (NOT OpenClaw blueprint — caught + corrected at provisioning)
-Public IPv4:        108.130.237.88
+Public IPv4:        108.132.51.116                       [was "108.130.237.88" in prior hand-off; corrected 2026-05-07]
 Static IP:          attached as `StaticIp-1` (free as long as it stays attached)
 SSH key:            default Lightsail key — operator must DOWNLOAD it from
                     Lightsail console → Account → SSH keys → "Download default
@@ -137,7 +145,7 @@ PRE-FLIGHT  (do these BEFORE touching the VPS)
 [ ] make verify                                 → ruff + mypy --strict (43 files) + 274 pytest pass
 [ ] uv run lint-imports                         → 3 contracts kept, 0 broken
 [ ] Operator confirms VPS browser SSH is reachable, OR operator has the
-    default Lightsail SSH key downloaded + can `ssh -i <key> ubuntu@108.130.237.88`.
+    default Lightsail SSH key downloaded + can `ssh -i <key> ubuntu@108.132.51.116`.
 [ ] Sanity-check VPS is what we think it is — operator runs on VPS, pastes:
         cat /etc/os-release | head -3
         uname -a
@@ -176,7 +184,7 @@ Steps (operator runs on VPS, pastes back the output of each):
   sudo chmod 600 /home/ops/.ssh/authorized_keys
 
   # 3. Test ops login from a new SSH session (paste output)
-  ssh ops@108.130.237.88
+  ssh ops@108.132.51.116
 
   # 4. Edit /etc/ssh/sshd_config — Claude drafts the diff; operator applies via:
   sudo nano /etc/ssh/sshd_config       # or vim
@@ -198,15 +206,15 @@ Steps (operator runs on VPS, pastes back the output of each):
   # 7. Open a THIRD ssh session on port 2222 to confirm before
   #    closing the original. If it fails — the safety session is
   #    still there to roll back.
-  ssh -p 2222 ops@108.130.237.88
+  ssh -p 2222 ops@108.132.51.116
 
   # 8. Lightsail firewall (in front of UFW, console-only)
   # Operator opens Lightsail console → instance → Networking →
   # IPv4 Firewall → Add rule: TCP 2222, source: My IP (or specific
   # CIDR). Remove the SSH-22 rule.
 
-PASS criteria for 5.1:
-  - Can SSH to ops@108.130.237.88 on port 2222 with the key
+PASS criteria for 5.1:                                  [✅ ALL GREEN 2026-05-07]
+  - Can SSH to ops@108.132.51.116 on port 2222 with the key
   - Cannot SSH on port 22 (connection refused / timeout)
   - Cannot SSH as root (PermitRootLogin no)
   - Cannot SSH with password (PasswordAuthentication no)
@@ -398,7 +406,7 @@ Steps:
   age -p -o signer.age /path/to/signer-private-key.txt
 
   # 2. SCP to VPS
-  scp -P 2222 signer.age ops@108.130.237.88:/home/ops/
+  scp -P 2222 signer.age ops@108.132.51.116:/home/ops/
 
   # 3. On VPS: decrypt + put in .envrc with mode 0600
   age -d signer.age > signer-key.txt
@@ -549,9 +557,10 @@ HAND-OFF SIGNATURE
 Previous session closed at HEAD `91245b1` on `main`.
 Pushed to github.com/FalconAEZ/polymarket-5m-bot.
 274 pytest pass · mypy --strict on 43 files · lint-imports 3/3 KEPT.
-VPS provisioned: AWS Lightsail eu-west-1, public IPv4 108.130.237.88,
+VPS provisioned: AWS Lightsail eu-west-1, public IPv4 108.132.51.116,
 static `StaticIp-1`, Ubuntu 24.04 LTS, 2 vCPU / 4 GB / 80 GB.
-Browser SSH confirmed reachable. No commands run on VPS yet.
+Browser SSH confirmed reachable. 5.1 done 2026-05-07 (port 2222, key-only,
+no root, UFW + console firewall locked); 5.2-5.7 next session.
 
 Phase 4 14-day paper run on Mac is dead (laptop sleep). Will restart
 on the VPS as part of 5.7 staging.
