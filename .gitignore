@@ -28,6 +28,7 @@ state/feeds_health.json
 state/halt.sentinel
 state/.obsidian/             # Obsidian workspace config (machine-specific)
 state/staging/               # Phase 5.5+: rsynced mirror of VPS state for the dashboard
+state/replay/                # Phase 5.5+: regeneratable replay output; tracked summary lives in runbooks/gate-evidence/
 # Per locked decision #18 (revised 2026-05-07): vault markdown notes
 # (sessions, postmortems, operator runbooks) ARE git-tracked, plus
 # Phase 4.5 decision-log JSONL. These ARE NOT excluded above, so they
