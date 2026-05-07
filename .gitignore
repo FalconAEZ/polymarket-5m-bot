@@ -10,6 +10,8 @@ secrets.*
 # but local overrides stay personal
 .claude/settings.local.json
 .claude/cache/
+.claude/scheduled_tasks.lock
+.claude/worktrees/
 
 # Reference repos (mining-only, gitignored)
 references/
@@ -29,7 +31,8 @@ state/halt.sentinel
 state/.obsidian/             # Obsidian workspace config (machine-specific)
 state/staging/               # Phase 5.5+: rsynced mirror of VPS state for the dashboard
 state/replay/                # Phase 5.5+: regeneratable replay output; tracked summary lives in runbooks/gate-evidence/
-state/research/bonereaper/microstructure-trades.json   # 26MB raw trade dump; tracked summary in runbooks/research/
+state/research/bonereaper/microstructure-trades*.json   # raw trade dumps (26MB-133MB); tracked summary in runbooks/research/
+state/research/bonereaper/spot-vs-book-joined-30d.json  # 195MB joined dump; tracked summary in runbooks/research/
 # Per locked decision #18 (revised 2026-05-07): vault markdown notes
 # (sessions, postmortems, operator runbooks) ARE git-tracked, plus
 # Phase 4.5 decision-log JSONL. These ARE NOT excluded above, so they

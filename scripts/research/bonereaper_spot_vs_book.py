@@ -104,19 +104,35 @@ def _load_binance_ticks(ticks_root: Path) -> pl.DataFrame:
     return out
 
 
-def _build_per_second_index(ticks: pl.DataFrame) -> dict[int, float]:
-    """Forward-fill price by second; return {ts_s: last_known_price}.
+def _load_klines_as_ticks(parquet_path: Path) -> pl.DataFrame:
+    """Load 1m BTCUSDT klines from binance_historical_klines.py output.
 
-    Bonereaper trade lookup is point-in-time; binance has multiple ticks
-    per second. Take the latest price within each second.
+    Each kline becomes one (ts_s, price) row using its open price; the
+    forward-fill in _spot_at handles intra-minute lookups out to 60s.
     """
-    if ticks.is_empty():
-        return {}
-    grouped = ticks.group_by("ts_s").agg(pl.col("price").last().alias("price"))
-    return dict(zip(grouped["ts_s"].to_list(), grouped["price"].to_list(), strict=True))
+    df = pl.read_parquet(parquet_path)
+    return df.select(["ts_s", pl.col("open").alias("price")]).sort("ts_s")
 
 
-def _spot_at(per_second: dict[int, float], ts_s: int, *, max_lookback_s: int = 30) -> float | None:
+def _build_per_second_index(
+    ticks: pl.DataFrame, klines: pl.DataFrame | None = None
+) -> dict[int, float]:
+    """Build a {ts_s: price} dict, preferring high-res ticks over kline open.
+
+    If both sources are passed, ticks win for any second they cover; klines
+    fill the rest. If only klines, every minute boundary becomes one entry
+    and _spot_at's forward-fill (max_lookback_s=60) finds it within the minute.
+    """
+    out: dict[int, float] = {}
+    if klines is not None and not klines.is_empty():
+        out.update(zip(klines["ts_s"].to_list(), klines["price"].to_list(), strict=True))
+    if not ticks.is_empty():
+        grouped = ticks.group_by("ts_s").agg(pl.col("price").last().alias("price"))
+        out.update(zip(grouped["ts_s"].to_list(), grouped["price"].to_list(), strict=True))
+    return out
+
+
+def _spot_at(per_second: dict[int, float], ts_s: int, *, max_lookback_s: int = 60) -> float | None:
     """Forward-fill: latest known price at or before ts_s, within max_lookback_s."""
     for delta in range(0, max_lookback_s + 1):
         p = per_second.get(ts_s - delta)
@@ -426,8 +442,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--ticks-root",
         type=Path,
-        required=True,
-        help="Path to a directory of <date>/binance_*.parquet capture files.",
+        default=None,
+        help="Path to a directory of <date>/binance_*.parquet capture files (high-res, optional).",
+    )
+    parser.add_argument(
+        "--klines-parquet",
+        type=Path,
+        default=None,
+        help="Path to a 1m BTCUSDT klines parquet (output of binance_historical_klines.py).",
     )
     parser.add_argument(
         "--out-md",
@@ -449,22 +471,35 @@ def main(argv: list[str] | None = None) -> int:
     raw_trades = payload.get("trades") or []
     print(f"    {len(raw_trades):,} trades loaded", flush=True)
 
-    print(f"==> loading binance ticks from {args.ticks_root}", flush=True)
-    ticks = _load_binance_ticks(args.ticks_root)
-    print(f"    {len(ticks):,} binance trade rows", flush=True)
-    if ticks.is_empty():
-        print("    no binance ticks found; aborting", flush=True)
+    if args.ticks_root is None and args.klines_parquet is None:
+        print("    must pass at least one of --ticks-root or --klines-parquet", flush=True)
         return 1
-    ts_min = int(ticks["ts_s"].min())
-    ts_max = int(ticks["ts_s"].max())
+
+    ticks = pl.DataFrame({"ts_s": [], "price": []})
+    if args.ticks_root is not None:
+        print(f"==> loading binance ticks from {args.ticks_root}", flush=True)
+        ticks = _load_binance_ticks(args.ticks_root)
+        print(f"    {len(ticks):,} binance trade rows", flush=True)
+
+    klines: pl.DataFrame | None = None
+    if args.klines_parquet is not None:
+        print(f"==> loading binance 1m klines from {args.klines_parquet}", flush=True)
+        klines = _load_klines_as_ticks(args.klines_parquet)
+        print(f"    {len(klines):,} kline rows", flush=True)
+
+    if (klines is None or klines.is_empty()) and ticks.is_empty():
+        print("    no spot data loaded; aborting", flush=True)
+        return 1
+
+    per_second = _build_per_second_index(ticks, klines)
+    print(f"    {len(per_second):,} unique seconds in combined spot index", flush=True)
+    ts_min = min(per_second.keys())
+    ts_max = max(per_second.keys())
     print(
-        f"    spot ts range: {ts_min} → {ts_max} "
-        f"({(ts_max - ts_min) / 60:.1f} minutes of coverage)",
+        f"    spot ts range: {ts_min} -> {ts_max} "
+        f"({(ts_max - ts_min) / 3600:.1f} hours of coverage)",
         flush=True,
     )
-
-    per_second = _build_per_second_index(ticks)
-    print(f"    {len(per_second):,} unique seconds in spot index", flush=True)
 
     print("==> joining trades against spot...", flush=True)
     joined, skipped = _join(raw_trades, per_second)
