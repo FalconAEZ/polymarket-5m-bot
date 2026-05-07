@@ -25,6 +25,7 @@ message of a Claude Code session that landed a phase or sub-phase.
 | `phase-3.3-prompt.txt` | 2026-05-07 | Phase 3.3 LLM A/B verdict run | tag `phase-3-pass` @ `3cd4a70` (verdict CUT) |
 | `phase-4-prompt.txt` | 2026-05-07 | Phase 4 dev (paper runtime + sim validation) | closed @ `43f64af`; 14-day paper run kicked off |
 | `phase-windows-resume-prompt.txt` | 2026-05-07 evening | Mac → Windows migration hand-off | superseded by [`RESUME-WINDOWS.md`](../RESUME-WINDOWS.md) at repo root, but kept here as the original artifact |
+| `phase-5-prompt.txt` | 2026-05-07 late | Phase 5 VPS lockdown + runtime + latency check | _in progress_ — VPS already provisioned (Lightsail eu-west-1, IP 108.130.237.88) |
 
 ## Naming convention
 
