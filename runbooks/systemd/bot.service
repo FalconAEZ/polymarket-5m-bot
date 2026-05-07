@@ -1,0 +1,29 @@
+[Unit]
+# DO NOT ENABLE without Phase 6 gate. scripts/run_live.py is a Phase 6
+# deliverable and does not exist yet — this unit is a stub kept here so
+# Phase 5 can prove "bot.service exists and is disabled" per RUNBOOK §Gate.
+Description=Polymarket 5m BTC bot — LIVE (DO NOT ENABLE without Phase 6 gate)
+Documentation=file:///home/ops/polymarket-5m-bot/RUNBOOK.md
+After=network-online.target redis-server.service chrony.service
+Wants=network-online.target redis-server.service chrony.service
+ConditionPathExists=/home/ops/polymarket-5m-bot/scripts/run_live.py
+
+[Service]
+Type=simple
+User=ops
+Group=ops
+WorkingDirectory=/home/ops/polymarket-5m-bot
+ExecStart=/bin/bash -c 'source /home/ops/polymarket-5m-bot/.envrc && exec /home/ops/.local/bin/uv run python -u scripts/run_live.py'
+Restart=on-failure
+RestartSec=30
+TimeoutStopSec=30
+KillSignal=SIGTERM
+StandardOutput=journal
+StandardError=journal
+# Hardening — system fs read-only; bot writes in /home/ops as the ops user only.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target

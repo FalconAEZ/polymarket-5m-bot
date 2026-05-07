@@ -1,0 +1,30 @@
+[Unit]
+Description=Polymarket 5m BTC bot — paper-mode staging (Phase 5)
+Documentation=file:///home/ops/polymarket-5m-bot/RUNBOOK.md
+After=network-online.target redis-server.service chrony.service
+Wants=network-online.target redis-server.service chrony.service
+
+[Service]
+Type=simple
+User=ops
+Group=ops
+WorkingDirectory=/home/ops/polymarket-5m-bot
+# .envrc uses `export KEY=VAL` (shell-sourceable, direnv-compatible).
+# Wrap with bash so the same file works for both interactive shell and systemd.
+ExecStart=/bin/bash -c 'source /home/ops/polymarket-5m-bot/.envrc && exec /home/ops/.local/bin/uv run python -u scripts/run_paper.py'
+Restart=on-failure
+RestartSec=30
+TimeoutStopSec=30
+KillSignal=SIGTERM
+StandardOutput=journal
+StandardError=journal
+# Hardening — system fs read-only; bot writes in /home/ops as the ops user only.
+# (ProtectHome was tried at first but it blocks uv's cache writes at ~/.cache/uv
+# and ~/.local/share/uv; user-level isolation via the ops account is the real
+# boundary here.)
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target

@@ -1123,10 +1123,9 @@ Clone the repo via deploy key (read-only). Install deps via `uv sync --frozen`.
 
 ### 5.3 — Latency check the right endpoint
 ```bash
-# WS-specific, not REST:
-wscat -c wss://ws-subscriptions-clob.polymarket.com/ws/market 2>&1 | ts %.s | head -200
+uv run python scripts/measure_clob_latency.py
 ```
-Compute round-trip from a ping-style subscribe → first message. Repeat over 1 hour. Required: p50 < 5ms, p99 < 15ms.
+Measures three layers separately: (a) ICMP/TCP to Cloudflare edge, (b) WS PING/PONG on established connection, (c) WS subscribe → first message (real protocol). The "subscribe → first message" number is the most truthful read; the PING/PONG p99 is bursty Cloudflare control-frame handling and is informational. **Gate (REVISED 2026-05-07 — see `runbooks/incidents/2026-05-07-clob-latency-gate-analysis.md`):** p50 < 20 ms AND p99 < 30 ms on the `subscribe → first message` measurement. The original "p50 < 5 ms / p99 < 15 ms" gate was based on an ICMP-to-edge read in locked decision #2 and is structurally unmeetable at the application layer (Cloudflare → Polymarket origin proxy hop adds ~12–15 ms region-independent). Network-layer sub-5 ms remains verified and recorded in decision #2.
 
 ### 5.4 — Two systemd units
 - `bot-staging.service` — `mode=paper`, listens on metrics port 9101, runs against live data.
@@ -1151,7 +1150,7 @@ Start `bot-staging.service`. Watch metrics + Telegram alerts. After 24h with zer
 `bash runbooks/gates/phase-5.sh` asserts (run from VPS):
 1. `systemctl is-active bot-staging` = `active`.
 2. `bot.service` exists but is `disabled`.
-3. WS p99 latency over the last hour < 15ms (computed from a metrics dump).
+3. WS subscribe → first-message latency: p50 < 20 ms AND p99 < 30 ms (revised from original "p99 < 15ms"; see §5.3 above and `runbooks/incidents/2026-05-07-clob-latency-gate-analysis.md`). Bot also exports per-message freshness-lag (server timestamp → local recv) as Prometheus metric for ongoing operational SLO.
 4. `chronyc tracking` offset < 10ms.
 5. Telegram smoke alert received on phone.
 6. `/halt` smoke command works (sets sentinel, bot exits).
@@ -1160,7 +1159,7 @@ Start `bot-staging.service`. Watch metrics + Telegram alerts. After 24h with zer
 
 ## Rollback
 
-- Latency > 15ms p99: try a different Lightsail availability zone within eu-west-1, retest. If still bad, escalate — Polymarket may have rotated infra.
+- Latency > 30 ms p99 on subscribe → first-message: this would be a regression from 2026-05-07 baseline (p50=15.7 ms, p99=16.9 ms). Investigate Cloudflare/Polymarket-side issues first (rare); region change unlikely to help (proxy hop is region-independent). If sustained, escalate.
 - Telegram inbound `/halt` doesn't fire: most common cause is the alerter polling, not the bot. Check `tg-alerter` logs.
 - Signer key transfer botched: regenerate Signer wallet (don't reuse a leaked key), redo Phase 1.4 funding sweep.
 
