@@ -216,6 +216,7 @@ def _render_kpi_row(rows: list[DecisionRow], paper: ProcessStatus) -> None:
             else None,
             tone=pnl_tone,
             glyph=pnl_glyph,
+            hero=True,
         ),
         kpi_card(
             label="Win Rate",
@@ -285,7 +286,7 @@ def _render_pnl_chart(rows: list[DecisionRow]) -> None:
             "decision_dt_utc:T",
             title=None,
             axis=alt.Axis(
-                format="%b %d · %H:%M",
+                format="%b %d %H:%M",
                 labelColor="#9ba6b3",
                 titleColor="#9ba6b3",
                 grid=False,
@@ -294,6 +295,7 @@ def _render_pnl_chart(rows: list[DecisionRow]) -> None:
                 labelFontSize=10,
                 labelFontWeight=500,
                 labelPadding=6,
+                tickCount=6,  # ~6 label slots — was ~14, much less clutter
             ),
         ),
         y=alt.Y(
@@ -313,12 +315,12 @@ def _render_pnl_chart(rows: list[DecisionRow]) -> None:
         ),
     )
     area = base.mark_area(
-        line={"color": "#2ee08c", "strokeWidth": 2.5, "strokeJoin": "round"},
+        line={"color": "#2ee08c", "strokeWidth": 2, "strokeJoin": "round", "strokeCap": "round"},
         color=alt.Gradient(
             gradient="linear",
             stops=[
-                alt.GradientStop(color="rgba(46, 224, 140, 0.55)", offset=0),
-                alt.GradientStop(color="rgba(46, 224, 140, 0.05)", offset=1),
+                alt.GradientStop(color="rgba(46, 224, 140, 0.42)", offset=0),
+                alt.GradientStop(color="rgba(46, 224, 140, 0.02)", offset=1),
             ],
             x1=1,
             x2=1,
@@ -326,6 +328,7 @@ def _render_pnl_chart(rows: list[DecisionRow]) -> None:
             y2=0,
         ),
         interpolate="monotone",
+        clip=True,
     ).encode(
         tooltip=[
             alt.Tooltip("decision_dt_utc:T", title="When", format="%Y-%m-%d %H:%M:%S UTC"),
@@ -362,6 +365,58 @@ def _render_pnl_chart(rows: list[DecisionRow]) -> None:
         .configure_axisX(grid=False)
     )
     st.altair_chart(chart, width="stretch")
+
+
+def _render_processes_inline(capture: ProcessStatus, paper: ProcessStatus) -> None:
+    """Same content as _render_processes but no outer .pmb-card wrapper —
+    used inside .st-key-pmb-side-panel which already provides the card."""
+    rows_html: list[str] = []
+    for p in (capture, paper):
+        if p.alive:
+            tone, label = "good", "ALIVE"
+        elif p.pid is not None:
+            tone, label = "bad", "DEAD"
+        else:
+            tone, label = "muted", "ABSENT"
+        pid_str = f"pid {p.pid}" if p.pid is not None else "no pid file"
+        uptime = _process_uptime(p)
+        rows_html.append(
+            f'<div class="pmb-proc-row">'
+            f'<div><div class="pmb-proc-row__name">{html.escape(p.name)}</div>'
+            f'<div class="pmb-proc-row__sub">{html.escape(pid_str)} · uptime {html.escape(uptime)}</div>'
+            f"</div>{badge(label, tone=tone)}</div>"
+        )
+    st.html('<div class="pmb-card__title">⚙️ Processes</div>' f'{"".join(rows_html)}')
+
+
+def _render_feeds_inline(snap: HealthSnapshot | None) -> None:
+    """No outer card; inline variant for use inside a side-panel container."""
+    if snap is None:
+        st.html(
+            '<div class="pmb-card__title" style="margin-top: 14px;">📡 Feeds Health</div>'
+            '<div class="pmb-empty">No feeds_health.json found.</div>'
+        )
+        return
+    age_s = (datetime.now(tz=UTC) - snap.snapshot_mtime_utc).total_seconds()
+    age_tone = "good" if age_s < 60 else ("warn" if age_s < 300 else "bad")
+    age_badge = badge(_humanize_age(age_s), tone=age_tone)
+    feed_cards: list[str] = []
+    for f in snap.feeds:
+        tone = "good" if f.healthy else "bad"
+        last_err = f.last_error[:80] if f.last_error else "no errors"
+        feed_cards.append(
+            f'<div class="pmb-feed">'
+            f'<div class="pmb-feed__name">{html.escape(f.name)}'
+            f'{badge("OK" if f.healthy else "BAD", tone=tone)}</div>'
+            f'<div class="pmb-feed__stat"><strong>{f.msgs_seen:,}</strong> msgs</div>'
+            f'<div class="pmb-feed__stat"><strong>{f.reconnects}</strong> reconnects</div>'
+            f'<div class="pmb-feed__err">{html.escape(last_err)}</div>'
+            f"</div>"
+        )
+    st.html(
+        f'<div class="pmb-card__title" style="margin-top: 14px;">📡 Feeds Health{age_badge}</div>'
+        f'<div class="pmb-feed-row">{"".join(feed_cards)}</div>'
+    )
 
 
 def _render_processes(capture: ProcessStatus, paper: ProcessStatus) -> None:
@@ -535,31 +590,40 @@ def _render_decisions_table(rows: list[DecisionRow]) -> None:
 
 
 def _render_log_panel(state_dir: Path) -> None:
-    paper_lines = tail_log(state_dir / PAPER_LOG, n_lines=40)
-    capture_lines = tail_log(state_dir / CAPTURE_LOG, n_lines=40)
+    paper_lines = tail_log(state_dir / PAPER_LOG, n_lines=60)
+    capture_lines = tail_log(state_dir / CAPTURE_LOG, n_lines=60)
     paper_mtime = (
         (state_dir / PAPER_LOG).stat().st_mtime if (state_dir / PAPER_LOG).exists() else None
     )
     capture_mtime = (
         (state_dir / CAPTURE_LOG).stat().st_mtime if (state_dir / CAPTURE_LOG).exists() else None
     )
+
     _section_header("📜 Live Logs")
-    tabs = st.tabs(
-        [
-            f"paper.log ({_log_age_label(paper_mtime)})",
-            f"capture.log ({_log_age_label(capture_mtime)})",
-        ]
+    selected = st.segmented_control(
+        "log",
+        options=["paper.log", "capture.log"],
+        default="paper.log",
+        label_visibility="collapsed",
+        key="pmb_log_select",
     )
-    for tab, lines in zip(tabs, (paper_lines, capture_lines), strict=True):
-        with tab:
-            if not lines:
-                st.html('<div class="pmb-empty">log file not found</div>')
-                continue
-            html_lines = "".join(
-                f'<div class="pmb-log__line {_level_class(line)}">{html.escape(line)}</div>'
-                for line in lines
-            )
-            st.html(f'<div class="pmb-log">{html_lines}</div>')
+    if selected == "capture.log":
+        lines, mtime = capture_lines, capture_mtime
+    else:
+        lines, mtime = paper_lines, paper_mtime
+    age_label = _log_age_label(mtime)
+    if not lines:
+        st.html(f'<div class="pmb-empty">log file not found · {age_label}</div>')
+        return
+    html_lines = "".join(
+        f'<div class="pmb-log__line {_level_class(line)}">{html.escape(line)}</div>'
+        for line in lines
+    )
+    st.html(
+        f'<div style="font-size: 10px; color: var(--text-muted); margin-bottom: 6px; '
+        f'text-transform: lowercase; letter-spacing: 0.04em;">last update {age_label}</div>'
+        f'<div class="pmb-log">{html_lines}</div>'
+    )
 
 
 def _log_age_label(mtime: float | None) -> str:
@@ -610,9 +674,9 @@ def main() -> None:
     with main_col, st.container(border=True, key="pmb-main-panel"):
         _render_pnl_chart(rows)
         _render_decisions_table(rows)
-    with side_col:
-        _render_processes(capture, paper)
-        _render_feeds(snap)
+    with side_col, st.container(border=True, key="pmb-side-panel"):
+        _render_processes_inline(capture, paper)
+        _render_feeds_inline(snap)
     with log_col, st.container(border=True, key="pmb-log-panel"):
         _render_log_panel(state_dir)
 

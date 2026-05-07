@@ -147,6 +147,15 @@ CSS = """
         gap: 6px;
         transition: color 200ms ease;
     }
+    /* Hero variant — for the most important KPI (Cumulative PnL) */
+    .pmb-kpi--hero .pmb-kpi__value {
+        font-size: 30px;
+        font-weight: 700;
+        letter-spacing: -0.03em;
+    }
+    .pmb-kpi--hero .pmb-kpi__glyph {
+        font-size: 18px;
+    }
     .pmb-kpi__sub {
         color: var(--text-secondary);
         font-size: 10.5px;
@@ -388,7 +397,7 @@ CSS = """
         border: 1px solid var(--border-subtle);
         border-radius: var(--r-sm);
         padding: 8px 10px;
-        max-height: 540px;
+        max-height: 470px;
         overflow-y: auto;
         font-family: "JetBrains Mono", "SF Mono", "Menlo", ui-monospace, monospace;
         font-size: 10.5px;
@@ -427,6 +436,42 @@ CSS = """
         line-height: 1.6;
     }
 
+    /* ================== SEGMENTED CONTROL (st.segmented_control) ================== */
+    /* Streamlit renders this as stButtonGroup with two stBaseButton children. */
+    [data-testid="stButtonGroup"] {
+        background: var(--bg-tertiary);
+        border: 1px solid var(--border-subtle);
+        border-radius: var(--r-sm);
+        padding: 2px;
+        gap: 0 !important;
+        display: inline-flex !important;
+        margin-bottom: 6px !important;
+    }
+    [data-testid^="stBaseButton-segmented_control"] {
+        background: transparent !important;
+        color: var(--text-secondary) !important;
+        font-size: 10.5px !important;
+        font-weight: 600 !important;
+        text-transform: uppercase !important;
+        letter-spacing: 0.06em !important;
+        padding: 4px 12px !important;
+        min-height: 0 !important;
+        line-height: 1.4 !important;
+        border: none !important;
+        border-radius: 4px !important;
+        font-family: "JetBrains Mono", "SF Mono", ui-monospace, monospace !important;
+        transition: background 140ms ease, color 140ms ease !important;
+    }
+    [data-testid^="stBaseButton-segmented_control"]:hover {
+        color: var(--text-primary) !important;
+        background: rgba(255,255,255,0.03) !important;
+    }
+    [data-testid="stBaseButton-segmented_controlActive"] {
+        background: var(--bg-secondary) !important;
+        color: var(--text-primary) !important;
+        box-shadow: 0 1px 2px rgba(0,0,0,0.30) !important;
+    }
+
     /* ================== STREAMLIT WIDGET POLISH ================== */
     /* Sidebar */
     [data-testid="stSidebar"] {
@@ -462,25 +507,93 @@ CSS = """
     .stSlider [data-baseweb="slider"] {
         accent-color: var(--good);
     }
-    /* Dataframe — refined borders */
+    /* Dataframe — refined borders + row hover + monospace alignment */
     .stDataFrame, [data-testid="stDataFrame"] {
         border: 1px solid var(--border-subtle) !important;
-        border-radius: var(--r-md) !important;
+        border-radius: var(--r-sm) !important;
         overflow: hidden;
+        background: var(--bg-tertiary) !important;
+    }
+    [data-testid="stDataFrame"] [role="cell"],
+    [data-testid="stDataFrame"] [role="columnheader"] {
+        font-variant-numeric: tabular-nums !important;
+    }
+    [data-testid="stDataFrame"] [role="columnheader"] {
+        font-size: 10px !important;
+        text-transform: uppercase !important;
+        letter-spacing: 0.06em !important;
+        color: var(--text-muted) !important;
+        font-weight: 600 !important;
+    }
+    /* Row hover */
+    [data-testid="stDataFrame"] [role="row"]:hover [role="cell"] {
+        background: var(--bg-hover) !important;
     }
 
     /* Native st.container(border=True, key=...) — match pmb-card aesthetic */
     .st-key-pmb-main-panel,
+    .st-key-pmb-side-panel,
     .st-key-pmb-log-panel {
         background: var(--bg-secondary) !important;
         border: 1px solid var(--border-subtle) !important;
         border-radius: var(--r-md) !important;
         box-shadow: var(--shadow-card);
-        padding: 12px 14px !important;
+        padding: 14px 16px !important;
+        height: 100% !important;     /* fill column for clean bottom alignment */
+        display: flex !important;
+        flex-direction: column !important;
     }
     .st-key-pmb-main-panel .pmb-section:first-child,
-    .st-key-pmb-log-panel .pmb-section:first-child {
+    .st-key-pmb-log-panel .pmb-section:first-child,
+    .st-key-pmb-side-panel .pmb-section:first-child {
         margin-top: 0;
+    }
+    /* Streamlit injects an extra wrapper inside st.container; flex it to fill */
+    .st-key-pmb-main-panel > [data-testid="stVerticalBlock"],
+    .st-key-pmb-side-panel > [data-testid="stVerticalBlock"],
+    .st-key-pmb-log-panel > [data-testid="stVerticalBlock"] {
+        flex: 1 1 auto;
+    }
+
+    /* ================== CUSTOM SEGMENTED CONTROL (log tabs) ================== */
+    .pmb-segmented {
+        display: inline-flex;
+        background: var(--bg-tertiary);
+        border: 1px solid var(--border-subtle);
+        border-radius: var(--r-sm);
+        padding: 2px;
+        gap: 2px;
+        margin-bottom: 8px;
+    }
+    .pmb-segmented__btn {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 4px 10px;
+        font-size: 11px;
+        font-weight: 600;
+        color: var(--text-secondary);
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        border-radius: 4px;
+        cursor: pointer;
+        background: transparent;
+        border: none;
+        font-family: inherit;
+        transition: background 140ms ease, color 140ms ease;
+    }
+    .pmb-segmented__btn:hover { color: var(--text-primary); }
+    .pmb-segmented__btn--active {
+        background: var(--bg-secondary);
+        color: var(--text-primary);
+        box-shadow: 0 1px 2px rgba(0,0,0,0.25);
+    }
+    .pmb-segmented__age {
+        font-size: 9.5px;
+        opacity: 0.7;
+        font-weight: 500;
+        text-transform: lowercase;
+        letter-spacing: 0;
     }
     /* Hide Streamlit chrome that doesn't fit the financial-tool aesthetic */
     [data-testid="stToolbar"] { visibility: hidden; }
@@ -503,14 +616,17 @@ def kpi_card(
     subtitle: str | None = None,
     tone: str = "neutral",
     glyph: str | None = None,
+    hero: bool = False,
 ) -> str:
     """Render a single KPI hero card. tone in {neutral, good, bad, warn}.
 
     glyph is an optional small character prepended to the value (e.g. ▲/▼
-    for non-color-only signal on PnL). Per design-critique recommendation
-    #5 (color-blind accessibility).
+    for non-color-only signal on PnL). hero=True bumps the value font-size
+    for the most important KPI (cumulative PnL).
     """
     tone_class = "" if tone == "neutral" else f" pmb-kpi--{tone}"
+    if hero:
+        tone_class += " pmb-kpi--hero"
     sub = f'<div class="pmb-kpi__sub">{subtitle}</div>' if subtitle else ""
     glyph_html = f'<span class="pmb-kpi__glyph" aria-hidden="true">{glyph}</span>' if glyph else ""
     return (
