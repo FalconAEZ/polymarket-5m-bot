@@ -1,246 +1,557 @@
-Subject: Phase 5 — VPS lockdown + runtime install + CLOB latency check.
-VPS already provisioned (Dublin, Ubuntu 24.04, public IP 108.130.237.88).
-Operator pastes commands and outputs; you drive the next steps.
+Subject: Execute Phase 5 — VPS lockdown + runtime install + CLOB latency check
++ systemd staging. Branch main @ 91245b1 (untagged). VPS already provisioned
+in Dublin (108.130.237.88, Ubuntu 24.04). Operator pastes commands; you
+drive each step.
 
 ================================================================================
-THE SITUATION (READ FIRST)
+CONTEXT ANCHORS  (read in order; do not skip)
 ================================================================================
 
-Phase 5 has STARTED — the AWS Lightsail VPS is already provisioned and
-SSH is reachable. The remaining 7 sub-tasks (lockdown, runtime install,
-latency check, systemd, monitoring, key transfer, 24h staging) are the
-work of this session and possibly a follow-up.
-
-VPS facts:
-  - Provider: AWS Lightsail
-  - Region: eu-west-1 (Dublin) — locked decision #2
-  - Availability Zone: eu-west-1a
-  - Instance name: Ubuntu-1
-  - Plan: $24/mo · 2 vCPU · 4 GB RAM · 80 GB SSD · 4 TB transfer
-  - Network: Dual-stack (IPv4 + IPv6)
-  - OS: Ubuntu 24.04 LTS
-  - Public IPv4: 108.130.237.88
-  - Static IP: attached as `StaticIp-1`
-  - SSH key: default Lightsail key (not yet downloaded to the operator
-    machine — will need that for non-browser SSH workflow)
-  - Browser SSH: confirmed open + reachable in the operator's browser
-
-Repo facts:
-  - Branch `main` at HEAD (run `git rev-parse origin/main` to confirm)
-  - 274 pytest pass on the Mac at last verify (might re-verify on Windows)
-  - 3/3 import-linter contracts kept
-  - Phase 4 paper run on Mac is dead (laptop sleep). Phase 4 gate evidence
-    is gone — restart on the VPS as part of Phase 5.7 staging.
-
-Operator workflow constraint:
-  Claude does NOT have direct SSH access to the VPS. The operator runs
-  commands on the VPS (browser SSH or local SSH client) and pastes the
-  output. Claude reads the output + drafts the next commands. This is
-  the same pattern that landed Phases 0-4.5.
+ 1. /Users/hamad/Desktop/PolyMarket-5m/CLAUDE.md
+    — durable preferences, 10 anti-vibe rules, locked decisions index
+ 2. /Users/hamad/Desktop/PolyMarket-5m/RUNBOOK.md  §"PHASE 5 — VPS Provisioning"
+    — sub-task list (5.1 — 5.7) and gate criteria
+ 3. /Users/hamad/Desktop/PolyMarket-5m/MASTERPLAN.md  §"Phase 5"
+    — Phase 5 sits between paper trading (Phase 4) and real-money go-live (Phase 6)
+ 4. /Users/hamad/Desktop/PolyMarket-5m/state/sessions/2026-05-07-vps-provisioned.md
+    — previous session hand-off: what was provisioned + what remains
+ 5. ~/.claude/projects/-Users-hamad-Desktop-PolyMarket-5m/memory/MEMORY.md
+    — session-bridging memory index
+ 6. ~/.claude/projects/-Users-hamad-Desktop-PolyMarket-5m/memory/project_decisions.md
+    — locked decisions; #2 (Dublin), #11 (funder/signer split), #14 (budget),
+      #15 (UTC), #17 (gasless relayer), #18 (vault → git, revised) are
+      load-bearing this session
+ 7. /Users/hamad/Desktop/PolyMarket-5m/state/runbooks/decision-18-revision.md
+    — explains why state/sessions/, state/postmortems/, state/runbooks/ are
+      now in git
+ 8. /Users/hamad/Desktop/PolyMarket-5m/runbooks/dashboard.md
+    — Phase 4.5 dashboard runbook; will run on the VPS too in 5.4–5.5
 
 ================================================================================
-CONTEXT ANCHORS (READ IN ORDER)
+BRANCH + HEAD
 ================================================================================
 
-  1. CLAUDE.md — durable preferences + 10 anti-vibe rules
-  2. RUNBOOK.md §"PHASE 5" — the 7 sub-tasks + gate criteria
-  3. state/sessions/2026-05-07-vps-provisioned.md — previous session
-     hand-off (provisioning details, what's done, what's left)
-  4. memory/MEMORY.md (in ~/.claude/...) — checkpoint index
-  5. memory/project_decisions.md — locked decisions (decision #2 = Dublin,
-     decision #11 = funder/signer split, decision #14 = budget tiers)
+Branch:  main  (default; previously claude/bold-galileo-2d56ca was the
+                feature branch — fast-forwarded to main this session)
+HEAD:    91245b1  docs(phase-5): VPS provisioned in Dublin; phase-5-prompt + session note
+Tag:     none (Phase 5 closes when 5.7 staging passes; tag `phase-5-pass` then)
+Pushed:  yes, github.com/FalconAEZ/polymarket-5m-bot
+
+If a `claude/...` worktree already exists for this session under
+.claude/worktrees/, work there. Otherwise the main repo working tree is
+fine — Claude Code will pick its own worktree on first run.
 
 ================================================================================
-PRE-FLIGHT (BEFORE TOUCHING THE VPS)
+WHERE THE PROJECT IS RIGHT NOW
 ================================================================================
 
-[ ] Operator confirms which machine they're on (Windows PC or Mac).
-[ ] `cd <project root>` and `git pull origin main` to get the latest.
-[ ] `git rev-parse HEAD` and note the commit — every command that lands
-    a Phase 5 deliverable should reference it.
-[ ] Operator confirms the VPS browser SSH terminal is open OR they have
-    a local SSH client connected. If browser SSH timed out, re-open from
-    the Lightsail console.
+Phases closed (all merged to main):
+  Phase 0   ✅  tag phase-0-pass @ 3195d2c   — Foundations
+  Phase 1A  ✅  tag phase-1a-pass @ 1537a18  — Wallet & Auth (no funds)
+  Phase 2   ✅  closed                       — 4-feed Capture (Binance/Coinbase/oracle/Polymarket)
+  Phase 3   ✅  tag phase-3-pass @ 3cd4a70   — Backtest + LLM A/B; OD-5 verdict CUT
+  Phase 4   ✅  closed @ 43f64af              — Paper runtime (deterministic-only)
+  Phase 4.5 ✅  closed @ c1ff257              — Operations dashboard
+  Phase 5   ⏳  IN PROGRESS this session     — VPS provisioning
+  Phase 1B  ⏸  parked                       — Real-money funding (gates Phase 6)
+  Phase 6   ⏸  parked                       — Live trading
+  Phase 8   ⏸  parked                       — Ensemble revisit (LLM A/B re-run)
+
+Phase 4 14-day paper run on the Mac is DEAD — laptop sleep killed both
+the capture process (was pid 23820) and the paper runner (was pid 30325).
+The 14-day clock starts fresh on the VPS as part of 5.7 staging.
+
+Repo files that matter for Phase 5:
+  src/polymarket_bot/                 — bot package
+    _live/feeds/                       — 4 WS feed implementations
+    _live/runtime.py                   — capture pipeline (run_capture.py wraps this)
+    _paper/{shadow_book,runner,decision_log}.py  — paper runtime
+    backtest/                          — replay + fills + walk-forward
+    strategies/{deterministic,ensemble}.py
+    agents/                            — LLM ensemble (gated behind --enable-ensemble)
+    dashboard/{loaders,agents_loader,theme}.py  — Phase 4.5 dashboard
+  scripts/                            — CLI entries
+    run_capture.py                     — start the 4-feed capture
+    run_paper.py                       — start PaperRunner
+    run_backtest.py                    — backtest the deterministic strategy
+    run_ab.py                          — LLM A/B (deterministic + ensemble passes)
+    dashboard.py                       — Streamlit dashboard
+    demo_live.py                       — fake-state simulator for the dashboard
+    validate_paper_sim.py              — Phase 4.3 sim validation
+  runbooks/
+    capture-launch.md                  — Option A nohup pattern (Linux)
+    paper-monitor.md                   — daily ritual + 14-day plan
+    dashboard.md                       — Phase 4.5 dashboard runbook
+    obsidian-setup.md                  — for migrated machines
+    windows-pc-setup.md                — manual Windows install
+    gates/phase-{0,1a,2,3,4,4.5}.sh    — green gate scripts
+    incidents/                         — postmortems
+  state/                              — Obsidian vault (in git, decision-18 revised)
+    sessions/                          — daily session hand-offs
+    postmortems/                       — incident postmortems
+    concepts/                          — 14 concept primers
+    phases/                            — phase notes (0, 1, 2, A)
+    research/                          — including bonereaper raw data caches
+    decisions/                         — bot decision JSONL (Phase 4 output)
+  design/                             — locked architectural docs (rule #1)
+    backtest.md, paper.md, dashboard.md, agents.md, etc.
+
+Locked decisions that constrain this session:
+  #2  AWS Lightsail eu-west-1 (Dublin) — VALIDATED in 5.3 latency check
+  #11 Funder/Signer split — only Signer goes to VPS; Funder stays on laptop
+  #14 Budget tiers — Lightsail ~$24/mo (was $5 in old runbook; obsolete)
+  #15 UTC everywhere — chrony must be < 10ms offset before any DB write
+  #17 Gasless relayer for order submission — affects WS endpoint check in 5.3
 
 ================================================================================
-PHASE 5 SUB-TASKS — WORK ORDER
+VPS FACTS (FROM 2026-05-07-VPS-PROVISIONED HAND-OFF)
 ================================================================================
 
-5.0 — VERIFY VPS IS WHAT WE THINK IT IS
-----------------------------------------
-First commands the operator runs on the VPS, paste output back:
-
-    cat /etc/os-release | head -3
-    uname -a
-    df -h /
-    free -h
-    nproc
-
-Expected: Ubuntu 24.04, ~80GB disk, ~4GB RAM, 2 cores. If anything's off,
-stop and reconcile against the locked spec.
-
-5.1 — SSH LOCKDOWN  (RUNBOOK §"5.1")
--------------------------------------
-- Custom port 2222 (not 22)
-- SSH key auth only (disable password)
-- Disable root login
-- Create `ops` user (sudoer); the bot will run under a separate user
-- UFW firewall: deny all inbound except 2222
-
-Operator will need:
-- The default Lightsail SSH private key DOWNLOADED to their machine
-  (Lightsail console → Account → SSH keys → "Download default key" for
-  eu-west-1)
-- After locking SSH down, edit Lightsail's networking firewall to also
-  allow 2222 (Lightsail has its own firewall in front of UFW)
-
-CRITICAL: open a SECOND SSH session BEFORE closing the first, in case
-the firewall change locks us out. Keep one safety connection alive.
-
-5.2 — INSTALL RUNTIME  (RUNBOOK §"5.2")
-----------------------------------------
-    sudo apt update && sudo apt upgrade -y
-    sudo apt install -y python3.11 python3.11-venv python3.11-dev \
-        git redis-server prometheus-node-exporter chrony \
-        build-essential
-
-Then uv:
-    curl -LsSf https://astral.sh/uv/install.sh | sh
-    source ~/.bashrc
-
-Then litestream (DB replication, used by trades.db in Phase 6):
-    Download the .deb from https://github.com/benbjohnson/litestream/releases
-    sudo dpkg -i litestream-*.deb
-
-Verify time sync:
-    chronyc sources
-    chronyc tracking          # offset must be < 10ms
-
-5.3 — LATENCY CHECK  (THE MOMENT OF TRUTH)
--------------------------------------------
-This is the gate test for whether Dublin was the right region.
-
-    # ICMP ping
-    ping -c 50 ws-subscriptions-clob.polymarket.com
-
-    # Actual WS handshake latency (more meaningful)
-    time curl -i -N --max-time 5 \
-        -H "Connection: Upgrade" \
-        -H "Upgrade: websocket" \
-        -H "Sec-WebSocket-Version: 13" \
-        -H "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==" \
-        https://ws-subscriptions-clob.polymarket.com/ws/market
-
-Pass criteria per RUNBOOK 5.3:
-  - p50 < 5ms
-  - p99 < 15ms
-
-If FAIL: the locked decision #2 was wrong. Don't proceed; re-evaluate
-region (probably us-east-1 if Polymarket infra is actually US-hosted).
-Write `runbooks/incidents/<date>-cloud-region.md` and escalate to operator.
-
-5.4 — TWO SYSTEMD UNITS
-------------------------
-- `bot-staging.service` — mode=paper, listens on 9101, runs against
-  live data
-- `bot.service` — mode=live, listens on 9100, **DISABLED** until Phase 6
-
-Both restart-on-failure, journald retention 30 days. Drop-in unit files
-under `runbooks/systemd/` (commit them to git).
-
-5.5 — MONITORING STACK
------------------------
-- prometheus-node-exporter on :9100 (system) and bot-exposed metrics
-  on :9100 (live) / :9101 (staging)
-- Grafana Cloud free tier scrapes the VPS
-- `tg-alerter.service` — small Python service consuming a Redis-backed
-  alert queue from the bot, posting to the Telegram bot from Phase 0
-- Inbound `/halt` handler: writes a sentinel file the bot's supervisor
-  loop checks every second; on sentinel, bot exits cleanly
-
-5.6 — TRANSFER SIGNER KEY (NOT FUNDER)
----------------------------------------
-- Use age-encrypted file over SSH (NEVER paste a key in chat)
-- Confirm `.envrc` on VPS is mode 0600
-- **Funder key NEVER goes to the VPS** — Funder is laptop/hardware-wallet
-  only per locked decision #11
-
-5.7 — 24H STAGING RUN
-----------------------
-- `systemctl start bot-staging`
-- Watch `journalctl -u bot-staging -f` and metrics dashboard for 24
-  contiguous hours
-- Required: zero unhandled exceptions, no `dropped_records_total > 0`,
-  feed-health all green throughout
+Provider:           AWS Lightsail
+Region:             eu-west-1 (Ireland / Dublin)
+Availability Zone:  eu-west-1a
+Instance name:      Ubuntu-1
+Plan:               $24/mo · 2 vCPU · 4 GB RAM · 80 GB SSD · 4 TB transfer
+Network type:       Dual-stack (IPv4 + IPv6)
+OS:                 Ubuntu 24.04 LTS (NOT OpenClaw blueprint — caught + corrected at provisioning)
+Public IPv4:        108.130.237.88
+Static IP:          attached as `StaticIp-1` (free as long as it stays attached)
+SSH key:            default Lightsail key — operator must DOWNLOAD it from
+                    Lightsail console → Account → SSH keys → "Download default
+                    key" for eu-west-1 if they want non-browser SSH
+Browser SSH:        confirmed reachable; operator may have an open tab
+Automatic snapshots: NOT enabled (~$4/mo extra; revisit after Phase 5 closes)
 
 ================================================================================
-PHASE 5 GATE — `runbooks/gates/phase-5.sh`
+PRE-FLIGHT  (do these BEFORE touching the VPS)
 ================================================================================
+
+[ ] Operator confirms which machine they're driving from (Mac or Windows).
+    The new Claude Code session runs on the operator's machine; the operator
+    drives the VPS via SSH and pastes outputs back to Claude.
+[ ] cd /Users/hamad/Desktop/PolyMarket-5m       (Mac)
+    or cd %USERPROFILE%\polymarket-5m-bot       (Windows after `git clone`)
+[ ] git pull origin main                        → must include 91245b1 or later
+[ ] git rev-parse HEAD                          → note this; every Phase 5 deliverable references it
+[ ] export PATH="$HOME/.local/bin:$PATH"       ;# uv lives there on macOS/Linux
+[ ] make verify                                 → ruff + mypy --strict (43 files) + 274 pytest pass
+[ ] uv run lint-imports                         → 3 contracts kept, 0 broken
+[ ] Operator confirms VPS browser SSH is reachable, OR operator has the
+    default Lightsail SSH key downloaded + can `ssh -i <key> ubuntu@108.130.237.88`.
+[ ] Sanity-check VPS is what we think it is — operator runs on VPS, pastes:
+        cat /etc/os-release | head -3
+        uname -a
+        free -h
+        df -h /
+        nproc
+    Expected: Ubuntu 24.04, ~4GB RAM, ~80GB disk, 2 cores. If anything's
+    off, STOP and reconcile before installing anything.
+
+================================================================================
+THE WORK — seven sub-tasks (one or two sessions)
+================================================================================
+
+This is partial-Phase-5 work. The full 7 tasks may not fit in one session;
+typical split is 5.1 → 5.3 in this session, 5.4 → 5.7 in a follow-up.
+Decide as you go based on context burn.
+
+------------------------------------------------------------------------
+TASK 5.1 — SSH lockdown + UFW firewall
+------------------------------------------------------------------------
+
+Goal: take SSH off port 22, key-only, no root, locked-down inbound.
+
+Steps (operator runs on VPS, pastes back the output of each):
+
+  # 1. Open a SECOND ssh session FIRST (browser SSH OR a second
+  #    terminal with the downloaded key). Keep it alive — if 5.1
+  #    locks us out, this is the recovery path.
+
+  # 2. Create the ops user (the bot will run under a non-root user)
+  sudo useradd -m -s /bin/bash ops
+  sudo usermod -aG sudo ops
+  sudo mkdir -p /home/ops/.ssh && sudo chmod 700 /home/ops/.ssh
+  sudo cp /home/ubuntu/.ssh/authorized_keys /home/ops/.ssh/authorized_keys
+  sudo chown -R ops:ops /home/ops/.ssh
+  sudo chmod 600 /home/ops/.ssh/authorized_keys
+
+  # 3. Test ops login from a new SSH session (paste output)
+  ssh ops@108.130.237.88
+
+  # 4. Edit /etc/ssh/sshd_config — Claude drafts the diff; operator applies via:
+  sudo nano /etc/ssh/sshd_config       # or vim
+  # Claude provides the exact lines to change:
+  #   Port 2222
+  #   PermitRootLogin no
+  #   PasswordAuthentication no
+  #   PubkeyAuthentication yes
+
+  # 5. UFW rules
+  sudo ufw allow 2222/tcp comment 'ssh'
+  sudo ufw default deny incoming
+  sudo ufw default allow outgoing
+  sudo ufw enable
+
+  # 6. Reload sshd
+  sudo systemctl reload ssh
+
+  # 7. Open a THIRD ssh session on port 2222 to confirm before
+  #    closing the original. If it fails — the safety session is
+  #    still there to roll back.
+  ssh -p 2222 ops@108.130.237.88
+
+  # 8. Lightsail firewall (in front of UFW, console-only)
+  # Operator opens Lightsail console → instance → Networking →
+  # IPv4 Firewall → Add rule: TCP 2222, source: My IP (or specific
+  # CIDR). Remove the SSH-22 rule.
+
+PASS criteria for 5.1:
+  - Can SSH to ops@108.130.237.88 on port 2222 with the key
+  - Cannot SSH on port 22 (connection refused / timeout)
+  - Cannot SSH as root (PermitRootLogin no)
+  - Cannot SSH with password (PasswordAuthentication no)
+
+Commit a runbook entry: runbooks/vps-ssh-lockdown.md with the exact
+diff applied to sshd_config. This is part of the audit trail.
+
+------------------------------------------------------------------------
+TASK 5.2 — Install runtime
+------------------------------------------------------------------------
+
+  sudo apt update && sudo apt upgrade -y
+  sudo apt install -y \
+      python3.11 python3.11-venv python3.11-dev \
+      git redis-server prometheus-node-exporter chrony \
+      build-essential pkg-config jq
+
+  # uv (the project's Python package manager)
+  curl -LsSf https://astral.sh/uv/install.sh | sh
+  source ~/.bashrc
+  uv --version
+
+  # litestream (DB replication, used for trades.db in Phase 6)
+  LITE=https://github.com/benbjohnson/litestream/releases/download/v0.5.0/litestream-v0.5.0-linux-amd64.deb
+  curl -L -o /tmp/litestream.deb "$LITE"
+  sudo dpkg -i /tmp/litestream.deb
+  litestream version
+
+  # Time sync — UTC + chrony per locked decision #15
+  sudo timedatectl set-timezone UTC
+  chronyc sources                       # operator pastes output
+  chronyc tracking                      # operator pastes output; offset must be < 10ms
+
+  # Clone the repo on the VPS
+  cd /home/ops
+  git clone https://github.com/FalconAEZ/polymarket-5m-bot
+  cd polymarket-5m-bot
+  uv sync                               # installs all deps; 1-2 min first time
+
+  # Smoke
+  uv run pytest -q                      # must show 274 passed
+  uv run mypy --strict src/             # must show 0 issues, 43 files
+  uv run lint-imports                   # 3 contracts kept, 0 broken
+
+  # .envrc on VPS (operator creates manually, NEVER paste secrets in chat)
+  # Required vars: POLYGON_RPC_URL, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+  # Phase 6 will add: POLY_PRIVATE_KEY (Signer ONLY), POLY_API_KEY,
+  #                   POLY_API_SECRET, POLY_API_PASSPHRASE
+  # mode 0600
+  sudo chmod 600 /home/ops/polymarket-5m-bot/.envrc
+
+PASS criteria for 5.2:
+  - `uv run pytest -q` shows 274 passed on the VPS
+  - chrony tracking offset < 10 ms
+  - litestream installed (binary in PATH)
+  - .envrc present + mode 0600
+
+------------------------------------------------------------------------
+TASK 5.3 — LATENCY CHECK  (the gate test for locked decision #2)
+------------------------------------------------------------------------
+
+This is THE most important number in Phase 5. If Dublin doesn't deliver,
+locked decision #2 was wrong and we redo the region.
+
+  # 1. ICMP ping (rough estimate, indicative only)
+  ping -c 50 ws-subscriptions-clob.polymarket.com
+
+  # 2. Actual TCP RTT to the WS port (more meaningful than ICMP)
+  for i in $(seq 1 20); do
+    /usr/bin/time -f "%e" curl -s -o /dev/null \
+        --connect-timeout 5 \
+        https://ws-subscriptions-clob.polymarket.com 2>&1
+  done
+
+  # 3. WS handshake + first message — uses our existing test infrastructure
+  cd /home/ops/polymarket-5m-bot
+  uv run python -c "
+import asyncio, time, websockets
+async def main():
+    samples = []
+    for _ in range(20):
+        t0 = time.perf_counter()
+        async with websockets.connect(
+            'wss://ws-subscriptions-clob.polymarket.com/ws/market'
+        ) as ws:
+            samples.append((time.perf_counter() - t0) * 1000)
+        await asyncio.sleep(0.5)
+    samples.sort()
+    p50 = samples[len(samples)//2]
+    p99 = samples[int(len(samples)*0.99)]
+    print(f'p50={p50:.2f}ms  p99={p99:.2f}ms  max={max(samples):.2f}ms  n={len(samples)}')
+asyncio.run(main())
+"
+
+PASS criteria per RUNBOOK §5.3:
+  - p50 < 5 ms
+  - p99 < 15 ms
+
+If FAIL:
+  - Try a different Lightsail Availability Zone within eu-west-1 first
+    (1b/1c instead of 1a) — Lightsail allows changing AZ at instance
+    creation but NOT post-launch, so this means provisioning a sister
+    instance and migrating.
+  - If still > 15ms p99: escalate. Locked decision #2 is wrong; either
+    Polymarket changed infra OR the original measurement was bad.
+    Likely candidates for retry: us-east-1 (Polymarket parent company
+    is US-based), eu-west-2 (London), eu-central-1 (Frankfurt).
+  - Write runbooks/incidents/<date>-clob-region-miss.md documenting the
+    measured numbers; do NOT proceed to 5.4.
+
+Capture the output to runbooks/gate-evidence/phase-5.3-latency.txt
+(commit it from the operator machine via git, since the VPS doesn't
+write to git directly).
+
+------------------------------------------------------------------------
+TASK 5.4 — Two systemd units
+------------------------------------------------------------------------
+
+Files to create (commit them to runbooks/systemd/ in the repo so they're
+reproducible):
+
+  /etc/systemd/system/bot-staging.service
+    Description=Polymarket bot — paper-mode staging
+    User=ops
+    WorkingDirectory=/home/ops/polymarket-5m-bot
+    EnvironmentFile=/home/ops/polymarket-5m-bot/.envrc
+    ExecStart=/home/ops/.local/bin/uv run python -u scripts/run_paper.py
+    Restart=on-failure
+    RestartSec=30
+    StandardOutput=journal
+    StandardError=journal
+
+  /etc/systemd/system/bot.service             # DISABLED until Phase 6
+    Description=Polymarket bot — live (DO NOT ENABLE without Phase 6 gate)
+    User=ops
+    ... (same shape; ExecStart runs the live runtime)
+
+Then:
+  sudo systemctl daemon-reload
+  sudo systemctl enable bot-staging
+  sudo systemctl start bot-staging
+  sudo systemctl status bot-staging
+  journalctl -u bot-staging -f          # operator tails this in another terminal
+
+  # bot.service: created but DISABLED
+  sudo systemctl disable bot.service
+
+------------------------------------------------------------------------
+TASK 5.5 — Monitoring stack
+------------------------------------------------------------------------
+
+  # 1. node_exporter (already installed by apt in 5.2). Confirm it's running.
+  sudo systemctl status prometheus-node-exporter
+  curl -s localhost:9100/metrics | head -20
+
+  # 2. Bot metrics — the bot exposes /metrics on 9101 (paper) or 9100 (live).
+  # If 9100 conflicts with node_exporter, change the bot's port in the
+  # systemd EnvironmentFile.
+
+  # 3. Grafana Cloud free tier
+  # Operator signs up at grafana.com (free tier); Claude can NOT do this.
+  # Operator gets a Prometheus remote_write URL + token.
+  # Configure node_exporter scrape via grafana-agent (apt install grafana-agent),
+  # then write the agent config pointing at the Grafana Cloud endpoint.
+
+  # 4. tg-alerter — small Python service that consumes a Redis-backed
+  # alert queue from the bot and posts to the Telegram bot from Phase 0.
+  # Lives at: src/polymarket_bot/_live/alerter/ (NEW; design doc first
+  # per anti-vibe rule #1: design/alerter.md)
+  # Phase 0 already has TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID in .envrc.
+
+  # 5. /halt inbound command — tg-alerter watches for /halt from
+  # TELEGRAM_CHAT_ID, writes /home/ops/polymarket-5m-bot/state/halt.sentinel,
+  # the bot's supervisor loop checks for that file every second and
+  # exits cleanly on presence.
+
+------------------------------------------------------------------------
+TASK 5.6 — Move Signer key to VPS  (security-sensitive)
+------------------------------------------------------------------------
+
+Per locked decision #11: ONLY the Signer goes to the VPS. Funder NEVER.
+Per locked decision #17: Polymarket gasless relayer is used for orders;
+the Signer is the EOA that signs CLOB API requests.
+
+Steps:
+  # 1. On the operator machine: encrypt the Signer key with age
+  brew install age                      # macOS
+  # or: choco install age              # Windows
+  age -p -o signer.age /path/to/signer-private-key.txt
+
+  # 2. SCP to VPS
+  scp -P 2222 signer.age ops@108.130.237.88:/home/ops/
+
+  # 3. On VPS: decrypt + put in .envrc with mode 0600
+  age -d signer.age > signer-key.txt
+  # Operator manually edits /home/ops/polymarket-5m-bot/.envrc:
+  #   export POLY_PRIVATE_KEY=$(cat /home/ops/signer-key.txt)
+  rm signer.age signer-key.txt          # never leave plaintext on disk
+
+  # 4. Verify .envrc still mode 0600
+  ls -la /home/ops/polymarket-5m-bot/.envrc
+
+  # 5. Smoke-test the key (just derive the address, don't sign anything)
+  cd /home/ops/polymarket-5m-bot
+  uv run python -c "
+import os
+from eth_account import Account
+addr = Account.from_key(os.environ['POLY_PRIVATE_KEY']).address
+print(f'Signer address: {addr}')
+"
+  # operator confirms this matches the Signer derived in Phase 1A
+
+NEVER paste a private key in chat. Never log it. Never commit it.
+The only way it reaches the VPS is the age-encrypted SCP path above.
+
+------------------------------------------------------------------------
+TASK 5.7 — 24h staging run
+------------------------------------------------------------------------
+
+  sudo systemctl restart bot-staging
+  journalctl -u bot-staging -f          # tail in one terminal
+
+  # Operator monitors:
+  #   - Telegram bot for alerts
+  #   - Grafana dashboard for metrics
+  #   - Local Mac/Windows: open scripts/dashboard.py against the
+  #     git-tracked state/decisions/<date>.jsonl files (sync via
+  #     git pull every few hours; the VPS commits its decisions to
+  #     a side branch like `vps-staging-runlog` to avoid main churn)
+
+PASS criteria for 5.7:
+  - 24 contiguous hours
+  - Zero unhandled exceptions in `journalctl -u bot-staging`
+  - feeds_health.json shows all 4 feeds healthy throughout
+  - dropped_records_total == 0
+  - Grafana dashboard shows steady metrics; no flatlines or spikes
+  - Telegram bot received at least one alert (intentional smoke)
+  - /halt smoke command works (write sentinel, bot exits within 1s)
+
+------------------------------------------------------------------------
+PHASE 5 GATE — runbooks/gates/phase-5.sh
+------------------------------------------------------------------------
 
 Asserts (run from VPS):
-  1. `systemctl is-active bot-staging` = `active`
-  2. `bot.service` exists but is `disabled`
-  3. WS p99 latency over the last hour < 15ms (computed from metrics dump)
-  4. `chronyc tracking` offset < 10ms
-  5. Telegram smoke alert received on phone
-  6. `/halt` smoke command works (sets sentinel, bot exits)
-  7. 24h of staging logs with zero unhandled exceptions
-  8. `litestream` replicating `trades.db` to chosen S3-compatible target
-     (resolves OD-2; default Backblaze B2 — operator may need to set this
-     up manually too)
+  1. systemctl is-active bot-staging       == active
+  2. systemctl is-enabled bot.service      == disabled
+  3. WS p99 latency last hour              < 15ms (computed from metrics dump)
+  4. chronyc tracking offset               < 10ms
+  5. Telegram smoke alert received
+  6. /halt smoke works
+  7. 24h staging logs                      0 unhandled exceptions
+  8. litestream replicating trades.db      to chosen S3-compatible target
+                                            (resolves OD-2; default Backblaze B2)
 
-Tag `phase-5-pass` by hand on green. Phase 6 (real money) gates next.
+Tag `phase-5-pass` by hand on green. Phase 6 (real money) gates next —
+which is itself blocked until Phase 1B (real-money funding) lands.
 
 ================================================================================
 ANTI-VIBE RULES — UNCHANGED
 ================================================================================
 
-- Design doc before code (no `src/` change without `design/<file>.md`)
-- Bug → failing test → fix → green
-- 3-fix rule before incident report
-- No `TODO`/`FIXME`/`hack` in committed code
-- All 3 import-linter contracts must stay green
-- mypy --strict + 274 pytest pass on every commit (now possibly 274+
-  if Phase 5 adds new modules)
+Same 10 rules in CLAUDE.md. Especially relevant for this session:
+
+- **Design doc before code** (rule #1): if 5.5 needs new code (tg-alerter
+  service), `design/alerter.md` lands first. Don't skip even for "simple"
+  code; the discipline IS the value.
+- **Bug → failing test → fix → green** (rule #2): if 5.3 latency fails,
+  don't blame the network and retry. Measure twice; document once.
+- **3-fix rule**: 3 iterations on the same issue → stop, write
+  `runbooks/incidents/<date>-<slug>.md`. Phase 5 has lots of moving
+  parts; the rule applies more than usual.
+- **Type hints + mypy --strict**; 274 tests stay green on every commit.
+- **No `TODO` / `FIXME` / `hack`** in committed code under src/, tests/,
+  scripts/. Use icebox issues for follow-ups.
+- **Pinned deps + lockfile** committed. `uv.lock` is on the VPS, must
+  match what's in git. Don't pip install anything on the VPS — go
+  through `uv add` from the operator machine, commit, then `uv sync`
+  on VPS.
+- **External calls behind interfaces** (rule #7): tg-alerter uses Redis
+  to receive from the bot — NOT a direct call into bot internals. The
+  bot writes to Redis; alerter reads. Decoupled.
+- **Stochastic inputs injected** (rule #10): if alerter has a clock or
+  network call, inject it for tests.
 
 ================================================================================
-HARD LIMITS
+HARD LIMITS (do not exceed without explicit operator go)
 ================================================================================
 
-- Anthropic spend so far: $0.405. Phase 5 doesn't add API cost.
-- Phase 1B (real money) is STILL parked. Phase 5 transfers the SIGNER
-  key to the VPS; Funder stays on laptop. Bot.service stays DISABLED.
-- AWS spend: $24/mo Lightsail recurring. Set a billing alarm at $30/mo
-  if you haven't already (AWS Billing → Budgets → create alarm).
+- Cumulative Anthropic spend so far: $0.405 (Phase 3 only). Phase 5 adds
+  $0 in API. Stay deterministic-only.
+- AWS recurring: $24/mo Lightsail. Set a billing alarm at $30/mo from
+  AWS Billing → Budgets if not done already. Snapshots add ~$4/mo if
+  enabled — do not enable without operator OK.
+- Phase 1B (real money): STILL parked. The Signer key transferred in
+  5.6 is for Phase 6 staging; bot.service stays DISABLED until Phase 6
+  gate. Do NOT enable bot.service this session.
+- Funder key NEVER goes to the VPS. Period. If the operator asks, push
+  back and reference locked decision #11.
 
 ================================================================================
-SESSION BOUNDARY — END WHEN
+SESSION BOUNDARY — ENDS WHEN ONE OF
 ================================================================================
 
-(a) Phase 5.0 + 5.1 + 5.2 + 5.3 done; latency PASS recorded; ready
-    to start 5.4 in a follow-up. ✅ partial-Phase-5 close
-(b) Or: full Phase 5 closed, 24h staging green, gate passed. ✅ full
-(c) 50% context burn → close out, write
-    state/sessions/<date>-phase-5-partial.md, stop. ⏸
-(d) Hard blocker (latency FAIL, runtime install fails, SSH lockdown
-    locks us out without recovery) → runbooks/incidents/...; abort. 🛑
+(a) Full Phase 5: 5.1 → 5.7 done; 24h staging clean; gate passed; tag
+    phase-5-pass applied; checkpoint_phase_5.md memory written.    ✅ full
+(b) Partial Phase 5: 5.1 + 5.2 + 5.3 done (latency PASS); ready to
+    start 5.4 in a follow-up session. Write
+    state/sessions/<date>-phase-5-partial.md with what's done + what's
+    left + the latency numbers measured.                            ✅ partial
+(c) 50% context burn before either of the above → close out whatever
+    is green, write a partial checkpoint, stop. Phase 5 finishes in
+    a follow-up.                                                    ⏸
+(d) Hard blocker: latency FAIL (region wrong), SSH lockout (UFW rule
+    blocked recovery), runtime install fails (deps unavailable on
+    Ubuntu 24.04) → runbooks/incidents/<date>-<slug>.md; abort;
+    escalate to operator before retrying.                           🛑
 
 ================================================================================
 THREE REMINDERS
 ================================================================================
 
-1. **Two SSH sessions** before any firewall change. Lockout = costly.
+1. **Two SSH sessions before any firewall change.** Lightsail UFW rules
+   can lock you out instantly. Always have a safety session open. The
+   browser SSH counts as one; a local-key SSH counts as another.
 2. **Funder key never leaves the laptop.** Only Signer goes to VPS.
+   Funder lives on hardware-wallet at $2k bankroll trigger
+   (locked decision #12); until then, on the operator's encrypted Mac
+   keychain only.
 3. **The latency check (5.3) is THE test.** If Dublin doesn't deliver
    <15ms p99 to Polymarket CLOB, locked decision #2 is wrong and we
-   redo. Don't skip.
+   redo the region. Don't paper over a bad number with a retry. Don't
+   proceed to 5.4 if 5.3 fails. The whole point of Phase 5 is putting
+   the bot 5ms from the matching engine; if we're not there, we
+   haven't won.
 
 ================================================================================
-HAND-OFF SIGNATURE (write before opening this session)
+HAND-OFF SIGNATURE
 ================================================================================
 
-Previous session closed at HEAD `<git rev-parse origin/main>` on `main`.
+Previous session closed at HEAD `91245b1` on `main`.
 Pushed to github.com/FalconAEZ/polymarket-5m-bot.
-VPS provisioned: AWS Lightsail eu-west-1, public IP 108.130.237.88,
-static `StaticIp-1`. Ubuntu 24.04 LTS, 2 vCPU / 4 GB / 80 GB.
+274 pytest pass · mypy --strict on 43 files · lint-imports 3/3 KEPT.
+VPS provisioned: AWS Lightsail eu-west-1, public IPv4 108.130.237.88,
+static `StaticIp-1`, Ubuntu 24.04 LTS, 2 vCPU / 4 GB / 80 GB.
 Browser SSH confirmed reachable. No commands run on VPS yet.
+
+Phase 4 14-day paper run on Mac is dead (laptop sleep). Will restart
+on the VPS as part of 5.7 staging.
