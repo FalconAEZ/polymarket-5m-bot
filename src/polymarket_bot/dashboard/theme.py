@@ -279,6 +279,8 @@ CSS = """
         display: flex;
         align-items: center;
         justify-content: space-between;
+        flex-wrap: wrap;            /* wrap to next line, not into columns */
+        gap: 8px 16px;
         padding: 6px 0 10px 0;
         margin-bottom: 10px;
         border-bottom: 1px solid var(--border-subtle);
@@ -286,7 +288,9 @@ CSS = """
     .pmb-header__left {
         display: flex;
         align-items: center;
-        gap: 12px;
+        flex-wrap: wrap;            /* same: wrap badges/sub to next line */
+        gap: 6px 12px;
+        min-width: 0;               /* allow flex children to shrink */
     }
     .pmb-header__title {
         font-size: 15px;
@@ -295,12 +299,24 @@ CSS = """
         color: var(--text-primary);
         margin: 0;
         line-height: 1.2;
+        white-space: nowrap;        /* keep title on one line; truncate if needed */
+        overflow: hidden;
+        text-overflow: ellipsis;
+        max-width: 100%;
     }
     .pmb-header__sub {
         color: var(--text-muted);
         font-size: 11px;
         font-weight: 500;
         font-variant-numeric: tabular-nums;
+        white-space: nowrap;        /* keep "refreshed ... UTC · since ..." inline */
+    }
+    /* On very narrow viewports (<700px), each header item stacks cleanly
+       and the right-side timestamp wraps under the left group. */
+    @media (max-width: 700px) {
+        .pmb-header { gap: 6px 10px; }
+        .pmb-header__title { font-size: 14px; }
+        .pmb-header__sub { font-size: 10.5px; }
     }
 
     /* ================== PROCESS / FEED ROWS (compact stack) ================== */
