@@ -23,9 +23,14 @@ Highlights: Anthropic API only · 3 agents + meta-decider · Telegram via BotFat
 ## Status
 
 - Bootstrap: ✅ done.
-- Phase A (bonereaper pre-flight): ✅ closed — **ABORT**. 7-day audit measured 52.65% win-rate (95% CI [52.24%, 53.06%]) over 56,972 BTC 5m trades, below the locked 60% gate. Cloning research stream dropped; main-bot plan unaffected. See `runbooks/study/preflight-decision.md`.
-- **Phase 0 (Foundations): ✅ closed — gate green at commit `3195d2c`, tag `phase-0-pass`.** All 10 checks pass: Python 3.11.15, `make verify` green, GitHub remote live, agent-skills + 7 reference repos cloned, secrets loaded, Telegram smoke delivered, Polygon RPC chain_id 0x89 confirmed, 17 required project files present.
-- Next: operator opens `RUNBOOK.md` Phase 1 (Wallet & Auth).
+- Phase A (bonereaper pre-flight): ✅ closed — **ABORT** (52.65% win-rate vs 60% gate).
+- **Phase 0** (Foundations): ✅ tag `phase-0-pass` @ `3195d2c`.
+- **Phase 1A** (Wallet & Auth, no funds): ✅ tag `phase-1a-pass` @ `1537a18`.
+- **Phase 2** (Capture): ✅ closed; 4 feeds live, capture running 24/7.
+- **Phase 3** (Backtest + LLM A/B): ✅ tag `phase-3-pass` @ `3cd4a70`. **OD-5 verdict: CUT** — ensemble fails latency + cost gates per locked decision #16. Phase 4+ runs deterministic-only. Ensemble code retained, gated behind `--enable-ensemble`.
+- **Phase 4 dev** (paper runtime): ✅ closed @ `43f64af`. `design/paper.md` + `_paper/{shadow_book,runner,decision_log}.py` + sim-validation harness + run_paper CLI + monitor runbook + gate scaffold. PaperRunner running in background.
+- **Phase 4.5** (operations dashboard): ✅ closed @ `c1ff257`. Single-page Streamlit dashboard at `scripts/dashboard.py` + live demo simulator + `.claude/launch.json` for Claude Preview MCP. **274 pytest pass**, mypy --strict on 43 files, lint-imports 3/3 KEPT. Run: `uv run python scripts/demo_live.py & uv run streamlit run scripts/dashboard.py`. See `runbooks/dashboard.md`.
+- Next: operator decides between (A) restart 14-day paper run on Windows PC, (B) skip to Phase 5 (VPS), or (C) polish dashboard further. See `~/Desktop/phase-windows-resume-prompt.txt` on the Mac for the migration prompt.
 
 See `state/sessions/` for daily logs.
 
