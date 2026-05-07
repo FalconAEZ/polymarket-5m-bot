@@ -1139,10 +1139,11 @@ Both restart on failure with 30s delay. Journal retention 30 days.
 - Telegram bot (already running from Phase 0): alert routing through a small `tg-alerter.service` that consumes a Redis-backed alert queue from the bot.
 - Inbound `/halt` command: tg-alerter handler writes a sentinel file that the bot's supervisor loop checks every second; on sentinel, bot exits cleanly.
 
-**Status (2026-05-07):** Chunk 1 closed at `fae32e5` (`.envrc` populated, grafana-agent live, node-exporter pushing). Chunk 2 closed at `6713b97` (alerter daemon code + halt-watcher + 2 fixes).
-- `bot-staging.service` active since 19:22:32 UTC with `RedisAlertSink` wired and `_halt_watcher` polling 1s.
-- `tg-alerter.service` active since 19:25:55 UTC; auto-smoke (manual CRITICAL LPUSH) drained queue within 3s, no DLQ, no errors.
-- Pending: operator-visual smoke (confirm Telegram delivery + `/halt` round-trip). On confirmation, 5.5 = GREEN.
+**Status (2026-05-07): GREEN.** Chunk 1 closed at `fae32e5` (`.envrc` populated, grafana-agent live). Chunk 2 closed at `6713b97` (alerter daemon code + halt-watcher + 2 fixes).
+- `bot-staging.service` active (restarted 19:32:54 UTC after the /halt smoke).
+- `tg-alerter.service` active since 19:25:55 UTC.
+- E2E smoke PASS: manual CRITICAL LPUSH → operator confirmed Telegram delivery; operator typed `/halt` → bot exited within ~1s, sentinel landed at `state/halt.sentinel`, alerter ack message ("halt sentinel set; bot will exit on next 1s tick") delivered. Sentinel removed + bot restarted clean.
+- Phase 5.7's 14-day staging wall-clock starts **2026-05-07 19:32:54 UTC**.
 
 ### 5.6 — Move Signer key to VPS
 Transfer via age-encrypted file over SSH. Do NOT copy via clipboard. Confirm `.envrc` mode 0600. **Funder key never goes to the VPS.**
