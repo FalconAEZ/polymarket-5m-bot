@@ -191,6 +191,70 @@ async def test_propagates_budget_exceeded() -> None:
         )
 
 
+async def test_schema_sent_to_anthropic_has_additional_properties_false() -> None:
+    """Anthropic structured-output rejects schemas missing additionalProperties:
+    false on object types with HTTP 400 (`output_config.format.schema: For
+    'object' type, 'additionalProperties' must be explicitly set to false`).
+    Pydantic doesn't emit this by default, so AnthropicAdapter must inject it
+    before sending. Regression for the 3.3 LLM A/B failure on 2026-05-07."""
+    from polymarket_bot.agents.protocol import AgentContext, MetaDecision
+
+    for output_format in (AgentVote, AgentContext, MetaDecision):
+        fake = _FakeMessages(
+            _FakeResponse(
+                text='{"side": "UP", "confidence": 0.5, "rationale": "x"}',
+            )
+        )
+        adapter = AnthropicAdapter(
+            BudgetTracker(hard_limit_usd=10.0),
+            client=_FakeAnthropicClient(fake),  # type: ignore[arg-type]
+        )
+        await adapter.parse(
+            model="claude-haiku-4-5",
+            system=[{"type": "text", "text": "s"}],
+            user="ctx",
+            output_format=output_format,
+        )
+        sent = fake.calls[0]["output_config"]["format"]["schema"]
+        # Walk every "object" type in the schema and check the flag.
+        _assert_strict(sent)
+
+
+_REJECTED_KEYWORDS = {
+    "minimum",
+    "maximum",
+    "exclusiveMinimum",
+    "exclusiveMaximum",
+    "multipleOf",
+    "minLength",
+    "maxLength",
+    "pattern",
+    "minItems",
+    "maxItems",
+    "uniqueItems",
+    "contains",
+    "title",
+    "default",
+}
+
+
+def _assert_strict(node: object) -> None:
+    if isinstance(node, dict):
+        if node.get("type") == "object":
+            assert (
+                node.get("additionalProperties") is False
+            ), f"object schema missing additionalProperties=false: {node}"
+        forbidden_present = _REJECTED_KEYWORDS.intersection(node.keys())
+        assert (
+            not forbidden_present
+        ), f"schema contains keys Anthropic rejects: {forbidden_present} in {node}"
+        for v in node.values():
+            _assert_strict(v)
+    elif isinstance(node, list):
+        for v in node:
+            _assert_strict(v)
+
+
 async def test_passes_thinking_and_effort_through() -> None:
     fake = _FakeMessages(_FakeResponse(text='{"side": "UP", "confidence": 0.5, "rationale": "x"}'))
     adapter = AnthropicAdapter(

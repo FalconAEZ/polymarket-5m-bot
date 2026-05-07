@@ -13,14 +13,22 @@ Coverage:
   - Meta side overrides composite sign when both fire
   - Fire-once-per-window
   - reset() clears state
+  - Phase 3.3a: scripts/run_ab.py::_build_ensemble_strategy wires the
+    locked 3+meta shape against an injected adapter (no live spend).
 """
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
 from typing import Literal
 
 import pytest
 
+from polymarket_bot.agents.meta import MetaDecider
+from polymarket_bot.agents.momentum import MomentumAgent
+from polymarket_bot.agents.oracle_gap import OracleGapAgent
+from polymarket_bot.agents.orderbook import OrderbookAgent
 from polymarket_bot.agents.protocol import (
     AgentContext,
     AgentVote,
@@ -34,6 +42,14 @@ from polymarket_bot.backtest.types import (
     WindowBoundary,
 )
 from polymarket_bot.strategies.ensemble import EnsembleStrategy
+from tests.agents.conftest import FakeAdapter
+
+# Make scripts/ importable so we can exercise run_ab._build_ensemble_strategy
+# without invoking the CLI.
+_SCRIPTS = Path(__file__).resolve().parent.parent.parent / "scripts"
+if str(_SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS))
+import run_ab  # noqa: E402  (loaded via sys.path injection above)
 
 WINDOW_TS = 1_715_000_100
 WINDOW_OPEN_NS = WINDOW_TS * 1_000_000_000
@@ -297,6 +313,24 @@ async def test_reset_clears_state() -> None:
     # After reset, even a normal-firing sequence doesn't fire because window state is gone
     decision = await strategy.on_event(_spot(60_600.0, 275))
     assert decision is None
+
+
+def test_run_ab_build_ensemble_strategy_wires_locked_shape() -> None:
+    """run_ab._build_ensemble_strategy returns the locked 3-specialist + meta
+    EnsembleStrategy. Shapes the adapter via FakeAdapter so no live API call
+    is made (anti-vibe rule #6)."""
+    adapter = FakeAdapter()
+    strategy = run_ab._build_ensemble_strategy(adapter, threshold_pct=0.6)
+    assert isinstance(strategy, EnsembleStrategy)
+    specialists = strategy._specialists
+    assert len(specialists) == 3
+    assert {type(s) for s in specialists} == {
+        OrderbookAgent,
+        OracleGapAgent,
+        MomentumAgent,
+    }
+    assert isinstance(strategy._meta, MetaDecider)
+    assert strategy._threshold == pytest.approx(0.6)
 
 
 async def test_ensemble_passes_full_context_to_meta() -> None:

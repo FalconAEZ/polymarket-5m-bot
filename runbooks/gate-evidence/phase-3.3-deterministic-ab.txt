@@ -1,0 +1,36 @@
+Discovering windows in ticks for dates ['2026-05-06', '2026-05-07']...
+2026-05-07 03:30:32,842 WARNING polymarket_bot.scripts.run_ab: skipping ticks/2026-05-06/polymarket_1778107491.parquet: parquet: File out of specification: The file must end with PAR1
+Found 12 unique 5m windows.
+Warming TokenSideIndex (cache=state/token_side_index.json)...
+Resolver: 24 tokens mapped (0 new fetches; rest from cache)
+
+=== Pass: deterministic@0.6pp ===
+  elapsed: 9.44s
+  n_windows: 12
+  n_fired: 0
+  n_filled: 0
+  n_won: 0
+  win_rate: 0.0
+  total_pnl_usd: 0.0
+  avg_pnl_usd_per_filled: 0.0
+
+=== Pass: deterministic@0.05pp ===
+  elapsed: 9.43s
+  n_windows: 12
+  n_fired: 3
+  n_filled: 0
+  n_won: 0
+  win_rate: 0.0
+  total_pnl_usd: 0.0
+  avg_pnl_usd_per_filled: 0.0
+
+=== A/B DELTA ===
+  (deterministic@0.05pp) - (deterministic@0.6pp)
+  n_windows                       A= 12.0000  B= 12.0000  delta=+0.0000
+  n_fired                         A=  0.0000  B=  3.0000  delta=+3.0000
+  n_filled                        A=  0.0000  B=  0.0000  delta=+0.0000
+  n_won                           A=  0.0000  B=  0.0000  delta=+0.0000
+  win_rate                        A=  0.0000  B=  0.0000  delta=+0.0000
+  total_pnl_usd                   A=  0.0000  B=  0.0000  delta=+0.0000
+  avg_pnl_usd_per_filled          A=  0.0000  B=  0.0000  delta=+0.0000
+  elapsed_s                       A=    9.44  B=    9.43  delta=-0.01

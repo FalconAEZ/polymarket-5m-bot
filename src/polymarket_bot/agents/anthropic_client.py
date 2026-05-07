@@ -13,6 +13,7 @@ ANTHROPIC_API_KEY (already in .envrc since Phase 0).
 
 from __future__ import annotations
 
+import copy
 import logging
 from typing import Any
 
@@ -71,7 +72,7 @@ class AnthropicAdapter:
         raise BudgetExceeded synchronously if the call's cost crosses the
         hard cap.
         """
-        schema = output_format.model_json_schema()
+        schema = _strict_object_schema(output_format.model_json_schema())
         output_config: dict[str, object] = {"format": {"type": "json_schema", "schema": schema}}
         if effort is not None:
             output_config["effort"] = effort
@@ -115,6 +116,67 @@ class AnthropicAdapter:
             LOG.info("anthropic response failed schema validation: %s", e)
             return None, usage
         return parsed, usage
+
+
+# JSON Schema keywords Anthropic's structured-output API rejects (mirrors
+# OpenAI's strict-mode subset). Pydantic emits these from Field constraints
+# (`ge=`, `le=`, `max_length=`, ...) and `title`/`default` decoration. Strip
+# them before sending. Per shared/structured-outputs Anthropic skill doc:
+#   Not supported: numerical constraints (minimum/maximum/multipleOf),
+#   string constraints (minLength/maxLength/pattern), complex array
+#   constraints, additionalProperties != false.
+_UNSUPPORTED_KEYWORDS: frozenset[str] = frozenset(
+    {
+        # numerical
+        "minimum",
+        "maximum",
+        "exclusiveMinimum",
+        "exclusiveMaximum",
+        "multipleOf",
+        # string
+        "minLength",
+        "maxLength",
+        "pattern",
+        # array
+        "minItems",
+        "maxItems",
+        "uniqueItems",
+        "contains",
+        # decorative / unsupported metadata
+        "title",
+        "default",
+    }
+)
+
+
+def _strict_object_schema(schema: dict[str, Any]) -> dict[str, Any]:
+    """Make a pydantic-emitted JSON schema acceptable to Anthropic structured outputs.
+
+    Two transforms applied recursively to a deep copy:
+      1. Inject ``additionalProperties: false`` on every object subschema
+         (Anthropic requires it; pydantic doesn't emit it).
+      2. Strip ``_UNSUPPORTED_KEYWORDS`` (minimum/maximum/maxLength/title/...
+         that Anthropic rejects with HTTP 400).
+
+    Regression test in ``tests/agents/test_anthropic_client.py``.
+    """
+    out = copy.deepcopy(schema)
+    _walk_strict(out)
+    return out
+
+
+def _walk_strict(node: object) -> None:
+    if isinstance(node, dict):
+        if node.get("type") == "object":
+            node.setdefault("additionalProperties", False)
+        for key in list(node.keys()):
+            if key in _UNSUPPORTED_KEYWORDS:
+                del node[key]
+        for v in node.values():
+            _walk_strict(v)
+    elif isinstance(node, list):
+        for v in node:
+            _walk_strict(v)
 
 
 def _extract_usage(response: object) -> TokenUsage:
