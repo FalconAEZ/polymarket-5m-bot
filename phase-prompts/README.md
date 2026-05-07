@@ -25,7 +25,8 @@ message of a Claude Code session that landed a phase or sub-phase.
 | `phase-3.3-prompt.txt` | 2026-05-07 | Phase 3.3 LLM A/B verdict run | tag `phase-3-pass` @ `3cd4a70` (verdict CUT) |
 | `phase-4-prompt.txt` | 2026-05-07 | Phase 4 dev (paper runtime + sim validation) | closed @ `43f64af`; 14-day paper run kicked off |
 | `phase-windows-resume-prompt.txt` | 2026-05-07 evening | Mac → Windows migration hand-off | superseded by [`RESUME-WINDOWS.md`](../RESUME-WINDOWS.md) at repo root, but kept here as the original artifact |
-| `phase-5-prompt.txt` | 2026-05-07 late | Phase 5 VPS lockdown + runtime + latency check | _in progress_ — VPS already provisioned (Lightsail eu-west-1, IP 108.130.237.88) |
+| `phase-5-prompt.txt` | 2026-05-07 late | Phase 5 VPS lockdown + runtime + latency check (5.1 → 5.4) | 5.1-5.4 GREEN @ `15d8e48` (Lightsail eu-west-1, **actual IP `108.132.51.116`** — the README originally listed `108.130.237.88` which was wrong). Latency gate revised per Option B in `runbooks/incidents/2026-05-07-clob-latency-gate-analysis.md`. |
+| `phase-5.5-chunk2-prompt.txt` | 2026-05-07 evening | Phase 5.5 alerter daemon + halt-watcher + Telegram smoke (after Chunk 1 set up grafana-agent + bot-staging) | _in progress_ — Chunk 1 closed @ `fae32e5`; bot-staging running on real feeds since 18:05:54 UTC; grafana-agent pushing since 18:41:44 UTC. Chunk 2 lands the operator-facing surface. |
 
 ## Naming convention
 

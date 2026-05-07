@@ -1,0 +1,455 @@
+Subject: Execute Phase 5.5 Chunk 2 — alerter daemon + halt-watcher + Telegram
+smoke. Branch main @ 4c7f9bd (untagged). VPS provisioned (Dublin, Ubuntu 24.04
+@ 108.132.51.116:2222), bot-staging running on 4 live feeds since 18:05:54
+UTC, grafana-agent pushing node-exporter to Grafana Cloud since 18:41:44 UTC.
+Operator pastes outputs; you drive each step. **No operator action gates this
+chunk** until step 7 (Telegram smoke).
+
+[Chunk 1 of Phase 5.5 closed 2026-05-07 at fae32e5 → 4c7f9bd. .envrc populated
+(7 vars, mode 0600), grafana-agent pushing 3377+ samples to
+prometheus-prod-68-prod-eu-west-6.grafana.net. design/alerter.md locked the
+architecture for this chunk in 15d8e48 — the chunk is pure execution against
+that design. Verify state before driving:
+  ssh -i ~/Downloads/LightsailDefaultKey-eu-west-1.pem -p 2222 ops@108.132.51.116
+  systemctl is-active bot-staging.service grafana-agent.service   # both: active
+  curl -s http://127.0.0.1:9090/metrics | grep prometheus_remote_storage_samples_total
+  ls -la /home/ops/polymarket-5m-bot/state/decisions/             # .jsonl files accumulating
+If anything is off, STOP and reconcile before writing code.]
+
+================================================================================
+CONTEXT ANCHORS  (read in order; do not skip)
+================================================================================
+
+ 1. /Users/hamad/Desktop/PolyMarket-5m/CLAUDE.md
+    — durable preferences, 10 anti-vibe rules, locked decisions index
+
+ 2. /Users/hamad/Desktop/PolyMarket-5m/design/alerter.md
+    — **THE locked design for this chunk.** 10 sections covering producer
+      (polymarket_bot.alerts), consumer daemon (_live.alerter.*), halt
+      sentinel contract, supervisor wiring in run_paper.py, tg-alerter.service,
+      failure modes, ~25 planned tests, decisions locked. Re-locking any of
+      those decisions requires a written justification per anti-vibe rule #1
+      — don't drift.
+
+ 3. /Users/hamad/Desktop/PolyMarket-5m/RUNBOOK.md §"PHASE 5"
+    — task list 5.1-5.7 and revised gate criteria (criterion #3 was changed
+      2026-05-07 per Option B; subscribe → first-message p50<20ms p99<30ms).
+
+ 4. /Users/hamad/Desktop/PolyMarket-5m/state/sessions/2026-05-07-phase-5.5-chunk1-grafana-live.md
+    — Chunk 1 closeout. Read for: VPS state at end of chunk, things-caught
+      list (litestream URL bug, ProtectHome conflict, screenshot leak, etc.),
+      and the Chunk 2 pickup section (which this prompt expands).
+
+ 5. /Users/hamad/Desktop/PolyMarket-5m/state/phases/phase-5-vps.md
+    — refreshed phase tracker; current task scoreboard.
+
+ 6. ~/.claude/projects/-Users-hamad-Desktop-PolyMarket-5m/memory/MEMORY.md
+    — session-bridging memory index; checkpoint_phase_5.5_chunk1 is the
+      latest hand-off.
+
+ 7. ~/.claude/projects/-Users-hamad-Desktop-PolyMarket-5m/memory/checkpoint_phase_5.5_chunk1.md
+    — single-page hand-off: box state, .envrc contents (var names only),
+      Chunk 2 pickup list, post-Phase-5 credential rotation reminder.
+
+ 8. ~/.claude/projects/-Users-hamad-Desktop-PolyMarket-5m/memory/feedback_pragmatic_gate_revision.md
+    — operator preference recorded after Phase 5.3: documented gate revision
+      over rigid retry when the original measurement was flawed. Not relevant
+      for this chunk's coding work but informs how to frame any Chunk-2
+      surprises.
+
+ 9. /Users/hamad/Desktop/PolyMarket-5m/runbooks/systemd/README.md
+    — pattern for adding tg-alerter.service alongside bot-staging.service.
+
+10. /Users/hamad/Desktop/PolyMarket-5m/scripts/run_paper.py
+    — the runner that needs the halt-watcher + RedisAlertSink wiring (steps
+      5 + 6 below). Existing structure: signal-handler-driven stop_event,
+      asyncio.gather of warmer + runner tasks. Mirror that shape.
+
+================================================================================
+BRANCH + HEAD
+================================================================================
+
+Branch:  main
+HEAD:    4c7f9bd  docs(phase-5.5): vault update — chunk 1 closeout, bot-staging live, grafana pushing
+Tag:     none (Phase 5 closes when 5.7 24h staging passes; tag `phase-5-pass` then)
+Pushed:  yes, github.com/FalconAEZ/polymarket-5m-bot
+
+If a `claude/...` worktree already exists for this session under
+.claude/worktrees/, work there. Otherwise the main repo working tree is fine.
+
+================================================================================
+WHERE THE PROJECT IS RIGHT NOW
+================================================================================
+
+Phases:
+  Phase 0      ✅  tag phase-0-pass @ 3195d2c
+  Phase 1A     ✅  tag phase-1a-pass @ 1537a18
+  Phase 2      ✅  closed
+  Phase 3      ✅  tag phase-3-pass @ 3cd4a70
+  Phase 4      ✅  closed @ 43f64af
+  Phase 4.5    ✅  closed @ c1ff257
+  Phase 5.1    ✅  GREEN @ 13cb807   — SSH lockdown
+  Phase 5.2    ✅  GREEN @ 8ff5920   — runtime install on VPS
+  Phase 5.3    ✅  measured + gate revised @ 15d8e48 (Option B; see incident)
+  Phase 5.4    ✅  GREEN @ 15d8e48   — systemd units
+  Phase 5.5    ⏳  CHUNK 1 done @ fae32e5 (grafana-agent live); CHUNK 2 = THIS PROMPT
+  Phase 5.6    ⏸  deferred — operator-action-driven (age + scp Signer key)
+  Phase 5.7    ⏸  blocked on 5.5 part 2 + 24h wall-clock
+  Phase 1B     ⏸  parked — real-money funding (gates Phase 6)
+  Phase 6      ⏸  parked — live trading
+  Phase 8      ⏸  parked — ensemble revisit
+
+bot-staging.service has been collecting paper-mode decisions on the VPS since
+2026-05-07 18:05:54 UTC. The 14-day clock for Phase 5.7 is *partially*
+ticking (formal gate also needs Telegram smoke + /halt smoke + freshness-lag
+metric, all delivered by THIS chunk).
+
+================================================================================
+VPS FACTS (verify each on first contact)
+================================================================================
+
+Provider:           AWS Lightsail
+Region/AZ:          eu-west-1 / eu-west-1a (Dublin)
+Instance name:      5m-Polymarket-bot
+Public IPv4:        108.132.51.116 (static `StaticIp-1`)
+SSH:                port 2222, key-only, ops user, no root, no password
+                    `ssh -i ~/Downloads/LightsailDefaultKey-eu-west-1.pem -p 2222 ops@108.132.51.116`
+OS:                 Ubuntu 24.04.4 LTS, x86_64, kernel 6.17.0-1010-aws
+Runtime:            uv 0.11.11, Python 3.11.15 (uv-managed), litestream 0.5.11
+.envrc path:        /home/ops/polymarket-5m-bot/.envrc  (mode 0600, 7 vars)
+Active services:    bot-staging, grafana-agent, redis-server, chrony, prometheus-node-exporter
+Disabled:           bot.service (Phase 6 stub, ConditionPathExists guards)
+Time sync:          chrony offset 0.0038 ms vs <10 ms gate
+
+================================================================================
+PRE-FLIGHT  (do these BEFORE writing any code)
+================================================================================
+
+[ ] cd /Users/hamad/Desktop/PolyMarket-5m
+[ ] git pull origin main                        → must include 4c7f9bd or later
+[ ] git rev-parse HEAD                          → note this; commits this chunk reference it
+[ ] export PATH="$HOME/.local/bin:$PATH"       ;# uv lives there on macOS
+[ ] make verify                                 → ruff + mypy --strict (43 files) + 274 pytest pass
+[ ] uv run lint-imports                         → 3 contracts kept, 0 broken
+[ ] SSH to VPS, verify state per the bracket-quoted commands at the top of this
+    prompt (bot-staging active, grafana-agent active, decision JSONL files
+    accumulating, samples_total counter still climbing).
+[ ] If decision JSONL files are accumulating but the bot has been running for
+    hours with no decisions yet, that's normal — decisions only fire on
+    threshold-cross signals, may take many hours of market action.
+[ ] If any check fails: STOP, ssh in, diagnose, fix the discrepancy before
+    proceeding. Do NOT start writing alerter code on a sick box.
+
+================================================================================
+THE WORK — eight steps, mostly local Claude code work
+================================================================================
+
+This chunk is pure execution against design/alerter.md. The architecture is
+locked; the only judgment calls are minor (test naming, helper extraction).
+
+------------------------------------------------------------------------
+STEP 1 — polymarket_bot.alerts package (producer side)
+------------------------------------------------------------------------
+
+Per design/alerter.md §3.
+
+  src/polymarket_bot/alerts/
+    __init__.py          # re-export Alert, Level, AlertSink, NullAlertSink, RedisAlertSink
+    types.py             # @dataclass(frozen=True) Alert; class Level(StrEnum)
+    protocols.py         # AlertSink, Clock protocols
+    null.py              # NullAlertSink — drops everything; default in tests
+    redis_sink.py        # RedisAlertSink — LPUSH JSON onto polybot:alerts;
+                         # MUST NOT raise on Redis errors (log + drop)
+
+  tests/alerts/
+    __init__.py
+    test_types.py        # Alert is frozen + JSON-serializable; Level is StrEnum
+    test_null.py         # NullAlertSink.publish never raises, never observable
+    test_redis_sink.py   # uses fakeredis or a tiny FakeRedis in tests/_fakes/;
+                         # publish LPUSHes correct JSON; ConnectionError → log + drop
+
+Acceptance:
+  - `uv run mypy --strict src/` clean (now 43 + ~5 = ~48 files)
+  - `uv run pytest tests/alerts/ -q` passes (~6 tests)
+  - `uv run lint-imports` still 3/3 kept (top-level alerts package keeps
+    contracts unaffected)
+
+------------------------------------------------------------------------
+STEP 2 — polymarket_bot._live.alerter package (consumer daemon)
+------------------------------------------------------------------------
+
+Per design/alerter.md §5.
+
+  src/polymarket_bot/_live/alerter/
+    __init__.py
+    protocols.py         # TelegramClient, RedisQueue protocols
+    formatter.py         # Alert → str | None; INFO returns None;
+                         # CRITICAL prefixes "🚨 CRITICAL"; coalesce ≥3 in window
+    telegram_client.py   # httpx-backed; send_message(text, chat_id) +
+                         # get_updates(offset, timeout=25)
+    redis_queue.py       # redis-py BRPOP wrapper; reconnect with expo backoff
+                         # (max 30s); push to dlq on Telegram 5xx
+    halt.py              # write_halt_sentinel(reason, ts_ns) — atomic tmp+rename;
+                         # halt_sentinel_present() — Path.exists()
+    service.py           # main() — drain + poll loops + signal handlers + DLQ
+
+  tests/_live/alerter/
+    __init__.py
+    test_formatter.py        # 5+ cases: INFO drops; WARN/ERROR/CRITICAL format;
+                             # coalesce path triggers ≥3 alerts in window
+    test_redis_queue.py      # FakeRedis BRPOP returns; ConnectionError reconnects
+    test_telegram_client.py  # httpx mock; send_message round-trips; get_updates
+                             # returns empty list cleanly
+    test_halt.py             # atomic write recovery (kill mid-write doesn't corrupt);
+                             # presence check returns True/False correctly
+    test_drain_loop.py       # fake queue + fake telegram; drains 5 alerts; on 5xx
+                             # pushes to DLQ; rate-limit token bucket sleeps 1s
+    test_halt_loop.py        # /halt from correct chat → halt_writer called;
+                             # /halt from wrong chat → not called;
+                             # other text → not called
+
+Acceptance:
+  - `uv run pytest tests/_live/alerter/ -q` passes (~12 tests)
+  - mypy --strict clean
+  - lint-imports still 3/3 kept
+
+------------------------------------------------------------------------
+STEP 3 — scripts/run_alerter.py (CLI entry)
+------------------------------------------------------------------------
+
+  scripts/run_alerter.py:
+    - construct real httpx + redis impls from env (.envrc-sourced)
+    - register signal handlers
+    - start asyncio.run(main(...))
+
+  Smoke (locally on Mac, hits real Redis & Telegram):
+    REDIS_URL=redis://127.0.0.1:6379/0 \
+    TELEGRAM_BOT_TOKEN=$TELEGRAM_BOT_TOKEN \
+    TELEGRAM_CHAT_ID=$TELEGRAM_CHAT_ID \
+    uv run python -u scripts/run_alerter.py
+  # In another terminal:
+  redis-cli LPUSH polybot:alerts '{"level":"critical","message":"smoke test from local","ts_ns":0,"source":"local","fields":{}}'
+  # Operator's Telegram should receive: "🚨 CRITICAL  smoke test from local"
+  # Then operator types `/halt` in chat — alerter writes state/halt.sentinel
+  # rm state/halt.sentinel afterwards to reset
+
+------------------------------------------------------------------------
+STEP 4 — runbooks/systemd/tg-alerter.service + deploy
+------------------------------------------------------------------------
+
+Per design/alerter.md §6. Same shape as bot-staging.service, RestartSec=15
+(faster restart for the operator-facing surface).
+
+  runbooks/systemd/tg-alerter.service       # commit
+  runbooks/systemd/README.md                # add tg-alerter row to the table
+
+Deploy via the README's pattern:
+  scp -i ~/Downloads/LightsailDefaultKey-eu-west-1.pem -P 2222 \
+      runbooks/systemd/tg-alerter.service ops@108.132.51.116:/tmp/
+  ssh ops@... 'sudo install -m 644 /tmp/tg-alerter.service /etc/systemd/system/tg-alerter.service \
+               && sudo systemctl daemon-reload \
+               && sudo systemctl enable tg-alerter.service'
+
+Don't START it yet — the bot still needs the RedisAlertSink wiring (step 5)
+before it'll publish anything for tg-alerter to drain.
+
+------------------------------------------------------------------------
+STEP 5 — RedisAlertSink wiring + halt-watcher in run_paper.py
+------------------------------------------------------------------------
+
+Per design/alerter.md §3.3 (sink wiring) + §4.4 (halt watcher).
+
+In scripts/run_paper.py:
+
+  # Imports (top of file)
+  from polymarket_bot.alerts import AlertSink, NullAlertSink, RedisAlertSink
+
+  # In main(), after _configure_logging():
+  alert_sink: AlertSink = (
+      RedisAlertSink(url=os.environ["REDIS_URL"], queue_key="polybot:alerts", source="bot-staging")
+      if "REDIS_URL" in os.environ
+      else NullAlertSink()
+  )
+
+  # Pass alert_sink to PaperRunner constructor (ADD this param to PaperRunner —
+  # default to NullAlertSink for backwards compat with all existing tests).
+
+  # Add _halt_watcher coroutine:
+  async def _halt_watcher(stop_event, sleep):
+      sentinel = Path("state/halt.sentinel")
+      while not stop_event.is_set():
+          if sentinel.exists():
+              LOG.info("halt sentinel detected; setting stop_event")
+              stop_event.set()
+              return
+          await sleep(1.0)
+
+  # Add the task to the gather:
+  halt_task = asyncio.create_task(_halt_watcher(stop_event, asyncio.sleep), name="halt-watcher")
+  ...
+  await asyncio.gather(runner_task, warmer_task, halt_task, return_exceptions=True)
+
+In src/polymarket_bot/_paper/runner.py: add `alert_sink` constructor param;
+plumb it to existing decision-write code path so WARN/ERROR/CRITICAL events
+publish to the sink. INFO stays in the decision log only.
+
+  tests/_paper/test_supervisor_halt.py   # paper runner exits within 1s of
+                                         # sentinel appearing mid-run; sentinel
+                                         # is opaque presence (corrupt JSON
+                                         # still halts).
+
+Acceptance:
+  - `make verify` clean (now ~300 tests passing)
+  - mypy --strict clean
+  - lint-imports still 3/3 kept
+
+------------------------------------------------------------------------
+STEP 6 — Restart bot-staging on VPS to load new code
+------------------------------------------------------------------------
+
+  ssh ops@... 'cd /home/ops/polymarket-5m-bot && git pull --ff-only \
+               && sudo systemctl restart bot-staging.service \
+               && sleep 5 && systemctl status bot-staging.service --no-pager -n 5'
+
+Expect ~2s downtime; the new run_paper.py with halt-watcher + RedisAlertSink
+loads on restart. Confirm:
+  - 4 feeds reconnected (ss -tnp shows 4 outbound :443 / :9443 conns)
+  - No tracebacks in journal
+  - `redis-cli LRANGE polybot:alerts 0 5` may show queued WARN events from
+    feed reconnects (this is the alerter's first real input!)
+
+------------------------------------------------------------------------
+STEP 7 — Start tg-alerter.service + end-to-end Telegram smoke
+------------------------------------------------------------------------
+
+  ssh ops@... 'sudo systemctl start tg-alerter.service \
+               && sleep 5 && journalctl -u tg-alerter.service --no-pager -n 20'
+
+Operator-action smoke (this is the only step that needs the operator):
+
+  1. From the operator's machine, publish a manual CRITICAL alert:
+     ssh ops@... 'redis-cli LPUSH polybot:alerts \
+       "{\"level\":\"critical\",\"message\":\"phase 5.5 chunk 2 e2e smoke\",\"ts_ns\":$(date +%s%N),\"source\":\"manual\",\"fields\":{}}"'
+  2. Operator confirms Telegram message arrives within ~2 s.
+
+  3. Operator types `/halt` in their bot's Telegram chat.
+  4. Operator confirms bot-staging exits within ~1 s
+     (`systemctl is-active bot-staging` → inactive).
+  5. Operator confirms `state/halt.sentinel` exists on VPS.
+  6. Operator removes sentinel + restarts bot:
+     ssh ops@... 'rm /home/ops/polymarket-5m-bot/state/halt.sentinel \
+                  && sudo systemctl start bot-staging.service'
+
+If any of 1-5 fails: STOP, write
+runbooks/incidents/<date>-alerter-smoke-fail.md with what was observed +
+what was expected, escalate to operator. The 3-fix rule applies — three
+debug iterations without resolution → incident report + sign-off.
+
+------------------------------------------------------------------------
+STEP 8 — Commit + push + close
+------------------------------------------------------------------------
+
+  - `make verify` final check
+  - Commit message: `feat(phase-5.5): alerter daemon + halt-watcher; chunk 2 PASS`
+  - Update RUNBOOK §5.5 with the deployed unit + smoke evidence
+  - Write state/sessions/<date>-phase-5.5-chunk2-pass.md
+  - Update memory: write checkpoint_phase_5.5.md (consolidates chunk 1 + 2),
+    update MEMORY.md index
+  - Push to origin/main (same fast-forward pattern as 5.1, 5.2, 5.4)
+
+After this chunk: 5.5 is GREEN. 5.6 + 5.7 remain. Phase 5 closes with
+phase-5-pass tag after 5.7 24h gate evidence is captured.
+
+================================================================================
+ANTI-VIBE RULES — UNCHANGED
+================================================================================
+
+Same 10 rules in CLAUDE.md. Especially relevant for THIS chunk:
+
+- **Design doc before code (#1).** design/alerter.md was locked in 15d8e48.
+  If implementation hits a design hole, STOP and update the design doc with
+  the resolution before continuing the code. Don't drift silently.
+- **Bug → failing test → fix → green (#2).** Any bug found during smoke is a
+  failing test first.
+- **3-fix rule.** Three iterations on the same alerter bug → stop and write
+  runbooks/incidents/<date>-<slug>.md. The Telegram smoke and /halt path are
+  the most likely failure surfaces.
+- **Type hints + mypy --strict.** Every new function. The async signatures
+  for the loop tasks must declare AsyncIterator/Awaitable types correctly.
+- **No TODO/FIXME/hack** in committed src/ tests/ scripts/. Use icebox
+  issues for follow-ups.
+- **External calls behind interfaces (#7).** `httpx.AsyncClient` and
+  `redis.asyncio.Redis` go inside telegram_client.py / redis_queue.py only;
+  the rest of the alerter code uses the TelegramClient + RedisQueue
+  protocols.
+- **Stochastic inputs injected (#10).** Clock, RedisQueue, TelegramClient,
+  halt_writer all injected. Tests use fakes for all four.
+
+================================================================================
+HARD LIMITS
+================================================================================
+
+- Cumulative Anthropic spend pre-chunk: $0.405 (Phase 3 only). Chunk 2 adds
+  $0 in API. Stay deterministic-only.
+- AWS recurring: $24/mo Lightsail + Grafana Cloud free tier ($0). No new spend.
+- bot.service stays DISABLED. Don't accidentally enable it. The
+  ConditionPathExists guards against accidental start anyway.
+- Funder key NEVER goes to the VPS. Period. Locked decision #11.
+- All 7 .envrc vars are already present; this chunk does not add new vars.
+
+================================================================================
+SESSION BOUNDARY — ENDS WHEN ONE OF
+================================================================================
+
+(a) Full chunk 2: steps 1-8 done; alerter daemon active; Telegram smoke passes;
+    /halt smoke passes; bot-staging restarted with new code clean; all
+    commits pushed; checkpoint_phase_5.5 written.                          ✅ full
+
+(b) Partial: steps 1-5 done (code committed, mypy/tests green); steps 6-7
+    deferred (operator unavailable for Telegram smoke). Write
+    state/sessions/<date>-phase-5.5-chunk2-partial.md with what's left.   ✅ partial
+
+(c) 50% context burn before either of the above → close out whatever's
+    green, write a partial checkpoint, stop.                               ⏸
+
+(d) Hard blocker: redis/telegram/httpx incompatibility, design hole, smoke
+    fails three iterations → runbooks/incidents/<date>-<slug>.md, abort,
+    escalate.                                                               🛑
+
+================================================================================
+FOUR REMINDERS
+================================================================================
+
+1. **The bot is running.** Don't restart bot-staging until step 6 — premature
+   restart loses any in-flight WS state and may miss a 5-min window decision.
+   When you do restart in step 6, do it intentionally + verify reconnect.
+
+2. **Telegram bot token leaked in chat 2026-05-07.** Not catastrophic — it
+   only controls bot messages — but rotate after Phase 5 closes via
+   @BotFather → /revoke. Same for the Alchemy URL. Don't rotate during this
+   chunk (forces .envrc edit + double-restart for no benefit).
+
+3. **DLQ is capped FIFO 1000 entries, not infinite.** Telegram outages longer
+   than ~16 minutes (1000 alerts at 1/sec) drop oldest. That's by design per
+   design/alerter.md §5.3 — operator sees Telegram down and acts before then.
+
+4. **bot-staging is on the 14-day Phase 5.7 clock.** This chunk's restart in
+   step 6 resets that clock back to 0 because uptime restarts. That's fine
+   — 5.7's 24h gate explicitly runs AFTER 5.5 is GREEN, not concurrently.
+   Don't worry about the timer.
+
+================================================================================
+HAND-OFF SIGNATURE
+================================================================================
+
+Previous session closed at HEAD `4c7f9bd` on `main`.
+Pushed to github.com/FalconAEZ/polymarket-5m-bot.
+274 pytest pass · mypy --strict on 43 files · lint-imports 3/3 KEPT.
+bot-staging.service active (~1h+ uptime, 4 feeds, 0 errors).
+grafana-agent.service active (~25min uptime, 3377+ samples pushed to
+prometheus-prod-68-prod-eu-west-6.grafana.net).
+.envrc populated with 7 vars, mode 0600. design/alerter.md locked.
+
+This chunk delivers: alerter daemon code, halt sentinel mechanism, Telegram
+operator surface. After this chunk + the 24h staging wall-clock, Phase 5
+closes and tag `phase-5-pass` lands.
