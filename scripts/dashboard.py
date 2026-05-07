@@ -13,6 +13,7 @@ Layout per design/dashboard.md §4.3:
 from __future__ import annotations
 
 import html
+import os
 import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -45,7 +46,19 @@ from polymarket_bot.dashboard.theme import (  # noqa: E402
     kpi_card,
 )
 
-DEFAULT_STATE_DIR = ROOT / "state"
+
+def _resolve_default_state_dir() -> Path:
+    env = os.environ.get("PMB_DASH_STATE_DIR")
+    if env:
+        return Path(env)
+    # If state-demo/ exists with a feeds_health.json, prefer it (demo mode).
+    demo = ROOT / "state-demo"
+    if (demo / "feeds_health.json").exists():
+        return demo
+    return ROOT / "state"
+
+
+DEFAULT_STATE_DIR = _resolve_default_state_dir()
 PAPER_LOG = "paper.log"
 CAPTURE_LOG = "capture.log"
 DECISIONS_SUBDIR = "decisions"
@@ -153,20 +166,16 @@ def _render_header(refreshed_at: datetime, since_filter: str | None) -> None:
         sub_parts.append(f"since {since_filter}")
     sub = " · ".join(sub_parts)
     mode_badge = badge("DETERMINISTIC", tone="warn")
-    st.markdown(
-        f"""
-        <div class="pmb-header">
-          <div>
-            <h1 class="pmb-header__title">Polymarket 5m BTC Bot — Operations</h1>
-            <div class="pmb-header__sub" style="margin-top: 4px;">
-              {mode_badge}
-              <span style="margin-left: 8px;">ensemble CUT per Phase 3 OD-5</span>
-            </div>
-          </div>
-          <div class="pmb-header__sub">{html.escape(sub)}</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
+    st.html(
+        '<div class="pmb-header">'
+        '<div class="pmb-header__left">'
+        '<span class="pmb-live-dot" title="live"></span>'
+        '<h1 class="pmb-header__title">Polymarket 5m BTC · Operations</h1>'
+        f"{mode_badge}"
+        '<span class="pmb-header__sub">ensemble CUT · Phase 3 OD-5</span>'
+        "</div>"
+        f'<div class="pmb-header__sub">{html.escape(sub)}</div>'
+        "</div>"
     )
 
 
@@ -198,7 +207,7 @@ def _render_kpi_row(rows: list[DecisionRow], paper: ProcessStatus) -> None:
     last_dec_tone = "neutral" if rows else "warn"
 
     cols = st.columns(5, gap="small")
-    cards = [
+    cards: list[str] = [
         kpi_card(
             label="Cumulative PnL",
             value=_fmt_currency(pnl) if isinstance(pnl, float) else "—",
@@ -240,19 +249,24 @@ def _render_kpi_row(rows: list[DecisionRow], paper: ProcessStatus) -> None:
             st.markdown(card, unsafe_allow_html=True)
 
 
+def _section_header(title: str, badge_html: str = "") -> None:
+    """A panel section header. Used to group widgets visually without
+    trying to wrap them in HTML containers (which breaks Streamlit's block
+    model). Each header is a single self-contained st.html call."""
+    st.html(
+        f'<div class="pmb-section"><div class="pmb-card__title">{title}{badge_html}</div></div>'
+    )
+
+
 def _render_pnl_chart(rows: list[DecisionRow]) -> None:
     settled = [r for r in rows if r.pnl_usd is not None]
-    st.markdown(
-        '<div class="pmb-card"><div class="pmb-card__title">📈 Cumulative PnL</div>',
-        unsafe_allow_html=True,
-    )
+    _section_header("📈 Cumulative PnL")
     if not settled:
-        st.markdown(
-            '<div style="color: var(--text-muted); padding: 40px 0; text-align: center;">'
+        st.html(
+            '<div class="pmb-empty">'
             "No settled decisions yet. The deterministic strategy at 0.6pp threshold "
             "may go many windows without firing — that matches the Phase 3 baseline."
-            "</div></div>",
-            unsafe_allow_html=True,
+            "</div>"
         )
         return
 
@@ -266,268 +280,270 @@ def _render_pnl_chart(rows: list[DecisionRow]) -> None:
     df["cumulative_pnl"] = df["pnl_usd"].cumsum()
     df["color"] = df["cumulative_pnl"].apply(lambda v: "good" if v >= 0 else "bad")
 
-    chart = (
-        alt.Chart(df)
-        .mark_area(
-            line={"color": "#1ed760", "strokeWidth": 2},
-            color=alt.Gradient(
-                gradient="linear",
-                stops=[
-                    alt.GradientStop(color="rgba(30, 215, 96, 0.45)", offset=0),
-                    alt.GradientStop(color="rgba(30, 215, 96, 0.0)", offset=1),
-                ],
-                x1=1,
-                x2=1,
-                y1=1,
-                y2=0,
+    base = alt.Chart(df).encode(
+        x=alt.X(
+            "decision_dt_utc:T",
+            title=None,
+            axis=alt.Axis(
+                format="%b %d · %H:%M",
+                labelColor="#9ba6b3",
+                titleColor="#9ba6b3",
+                grid=False,
+                domain=False,
+                tickColor="#1f242e",
+                labelFontSize=10,
+                labelFontWeight=500,
+                labelPadding=6,
             ),
-        )
-        .encode(
-            x=alt.X(
-                "decision_dt_utc:T",
-                title="UTC",
-                axis=alt.Axis(
-                    format="%b %d %H:%M", labelColor="#8b949e", titleColor="#8b949e", grid=False
-                ),
+        ),
+        y=alt.Y(
+            "cumulative_pnl:Q",
+            title=None,
+            axis=alt.Axis(
+                labelColor="#9ba6b3",
+                grid=True,
+                gridColor="#171c25",
+                gridOpacity=0.6,
+                domain=False,
+                ticks=False,
+                labelFontSize=10,
+                labelPadding=6,
+                format="$,.2f",
             ),
-            y=alt.Y(
-                "cumulative_pnl:Q",
-                title="Cumulative PnL ($)",
-                axis=alt.Axis(
-                    labelColor="#8b949e", titleColor="#8b949e", grid=True, gridColor="#21262d"
-                ),
-            ),
-            tooltip=[
-                alt.Tooltip("decision_dt_utc:T", title="When", format="%Y-%m-%d %H:%M:%S UTC"),
-                alt.Tooltip("side:N", title="Side"),
-                alt.Tooltip("pnl_usd:Q", title="Trade PnL", format="+$.4f"),
-                alt.Tooltip("cumulative_pnl:Q", title="Cumulative", format="+$.4f"),
-            ],
-        )
-        .properties(height=360, background="transparent")
-        .configure_view(strokeWidth=0)
+        ),
     )
-    st.altair_chart(chart, use_container_width=True)
-    st.markdown("</div>", unsafe_allow_html=True)
-
-
-def _render_system_row(
-    capture: ProcessStatus, paper: ProcessStatus, snap: HealthSnapshot | None
-) -> None:
-    col1, col2 = st.columns([1, 2], gap="small")
-    with col1:
-        _render_processes(capture, paper)
-    with col2:
-        _render_feeds(snap)
+    area = base.mark_area(
+        line={"color": "#2ee08c", "strokeWidth": 2.5, "strokeJoin": "round"},
+        color=alt.Gradient(
+            gradient="linear",
+            stops=[
+                alt.GradientStop(color="rgba(46, 224, 140, 0.55)", offset=0),
+                alt.GradientStop(color="rgba(46, 224, 140, 0.05)", offset=1),
+            ],
+            x1=1,
+            x2=1,
+            y1=1,
+            y2=0,
+        ),
+        interpolate="monotone",
+    ).encode(
+        tooltip=[
+            alt.Tooltip("decision_dt_utc:T", title="When", format="%Y-%m-%d %H:%M:%S UTC"),
+            alt.Tooltip("side:N", title="Side"),
+            alt.Tooltip("pnl_usd:Q", title="Trade PnL", format="+$.4f"),
+            alt.Tooltip("cumulative_pnl:Q", title="Cumulative", format="+$.4f"),
+        ],
+    )
+    zero_rule = (
+        alt.Chart(pd.DataFrame({"y": [0.0]}))
+        .mark_rule(color="#2a3140", strokeWidth=1, strokeDash=[3, 3])
+        .encode(y="y:Q")
+    )
+    # Pulsing dot at the latest data point — shows the "live" tip of the line.
+    latest = df.iloc[-1:]
+    glow = (
+        alt.Chart(latest)
+        .mark_point(size=380, filled=True, color="#2ee08c", opacity=0.20)
+        .encode(x="decision_dt_utc:T", y="cumulative_pnl:Q")
+    )
+    dot = (
+        alt.Chart(latest)
+        .mark_point(size=120, filled=True, color="#2ee08c", stroke="#08090c", strokeWidth=2)
+        .encode(x="decision_dt_utc:T", y="cumulative_pnl:Q")
+    )
+    chart = (
+        (zero_rule + area + glow + dot)
+        .properties(
+            height=280,
+            background="transparent",
+            padding={"top": 6, "right": 8, "bottom": 4, "left": 4},
+        )
+        .configure_view(strokeWidth=0)
+        .configure_axisX(grid=False)
+    )
+    st.altair_chart(chart, width="stretch")
 
 
 def _render_processes(capture: ProcessStatus, paper: ProcessStatus) -> None:
-    rows: list[str] = []
+    rows_html: list[str] = []
     for p in (capture, paper):
         if p.alive:
-            tone = "good"
-            label = "ALIVE"
+            tone, label = "good", "ALIVE"
         elif p.pid is not None:
-            tone = "bad"
-            label = "DEAD"
+            tone, label = "bad", "DEAD"
         else:
-            tone = "muted"
-            label = "ABSENT"
+            tone, label = "muted", "ABSENT"
         pid_str = f"pid {p.pid}" if p.pid is not None else "no pid file"
         uptime = _process_uptime(p)
-        rows.append(
-            f"""
-            <div style="display: flex; justify-content: space-between; align-items: center;
-                        padding: 8px 0; border-bottom: 1px solid var(--border-subtle);">
-              <div>
-                <div style="font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em; font-size: 12px;">{p.name}</div>
-                <div style="color: var(--text-muted); font-size: 11px;">{pid_str} · uptime {uptime}</div>
-              </div>
-              {badge(label, tone=tone)}
-            </div>
-            """
+        rows_html.append(
+            f'<div class="pmb-proc-row">'
+            f'<div><div class="pmb-proc-row__name">{html.escape(p.name)}</div>'
+            f'<div class="pmb-proc-row__sub">{html.escape(pid_str)} · uptime {html.escape(uptime)}</div>'
+            f"</div>{badge(label, tone=tone)}</div>"
         )
-    body = "".join(rows)
-    st.markdown(
-        f"""<div class="pmb-card"><div class="pmb-card__title">⚙️ Processes</div>{body}</div>""",
-        unsafe_allow_html=True,
+    st.html(
+        f'<div class="pmb-card">'
+        f'<div class="pmb-card__title">⚙️ Processes</div>'
+        f"{''.join(rows_html)}"
+        f"</div>"
     )
 
 
 def _render_feeds(snap: HealthSnapshot | None) -> None:
-    title_html = '<div class="pmb-card__title">📡 Feeds Health'
     if snap is None:
-        st.markdown(
-            f"""<div class="pmb-card">{title_html}</div>
-            <div style="color: var(--text-muted); padding: 12px 0;">No feeds_health.json found.</div></div>""",
-            unsafe_allow_html=True,
+        st.html(
+            '<div class="pmb-card">'
+            '<div class="pmb-card__title">📡 Feeds Health</div>'
+            '<div class="pmb-empty">No feeds_health.json found.</div>'
+            "</div>"
         )
         return
     age_s = (datetime.now(tz=UTC) - snap.snapshot_mtime_utc).total_seconds()
     age_tone = "good" if age_s < 60 else ("warn" if age_s < 300 else "bad")
-    title_html += f" {badge(_humanize_age(age_s), tone=age_tone)}</div>"
-    feed_cards = []
+    age_badge = badge(_humanize_age(age_s), tone=age_tone)
+    feed_cards: list[str] = []
     for f in snap.feeds:
         tone = "good" if f.healthy else "bad"
         last_err = f.last_error[:80] if f.last_error else "no errors"
         feed_cards.append(
-            f"""
-            <div class="pmb-feed">
-              <div class="pmb-feed__name">
-                {html.escape(f.name)}
-                {badge("OK" if f.healthy else "BAD", tone=tone)}
-              </div>
-              <div class="pmb-feed__stat"><strong>{f.msgs_seen:,}</strong> msgs</div>
-              <div class="pmb-feed__stat"><strong>{f.reconnects}</strong> reconnects</div>
-              <div class="pmb-feed__stat" style="color: var(--text-muted); font-size: 10px; margin-top: 4px;">{html.escape(last_err)}</div>
-            </div>
-            """
+            f'<div class="pmb-feed">'
+            f'<div class="pmb-feed__name">{html.escape(f.name)}'
+            f"{badge('OK' if f.healthy else 'BAD', tone=tone)}</div>"
+            f'<div class="pmb-feed__stat"><strong>{f.msgs_seen:,}</strong> msgs</div>'
+            f'<div class="pmb-feed__stat"><strong>{f.reconnects}</strong> reconnects</div>'
+            f'<div class="pmb-feed__err">{html.escape(last_err)}</div>'
+            f"</div>"
         )
-    feeds_html = '<div class="pmb-feed-row">' + "".join(feed_cards) + "</div>"
-    st.markdown(
-        f"""<div class="pmb-card">{title_html}{feeds_html}</div>""",
-        unsafe_allow_html=True,
+    st.html(
+        f'<div class="pmb-card">'
+        f'<div class="pmb-card__title">📡 Feeds Health{age_badge}</div>'
+        f'<div class="pmb-feed-row">{"".join(feed_cards)}</div>'
+        f"</div>"
     )
 
 
 def _render_agent_panel() -> None:
     transcript = load_transcript(PHASE_3_AB_PATH, verdict_path=PHASE_3_VERDICT_PATH)
-    title_html = (
-        '<div class="pmb-card__title pmb-card__title--muted">🤖 Agent Activity '
-        + badge("HISTORICAL · Phase 3 A/B", tone="warn")
-        + "</div>"
+    title = (
+        '<div class="pmb-card__title pmb-card__title--muted">🤖 Agent Activity'
+        f"{badge('HISTORICAL · Phase 3 A/B', tone='warn')}</div>"
     )
 
     if transcript is None:
-        st.markdown(
-            f"""<div class="pmb-card pmb-card--dim">{title_html}
-            <div style="color: var(--text-secondary); padding: 12px 0;">
-              No Phase 3 evidence found. The LLM ensemble runs only when explicitly
-              enabled — see <code>scripts/run_ab.py --enable-ensemble</code>.
-            </div></div>""",
-            unsafe_allow_html=True,
+        st.html(
+            f'<div class="pmb-card pmb-card--dim">{title}'
+            '<div class="pmb-empty">No Phase 3 evidence found. The LLM ensemble '
+            "runs only when explicitly enabled — see <code>scripts/run_ab.py "
+            "--enable-ensemble</code>.</div></div>"
         )
         return
 
-    # Top: A/B summary as a 4-column grid.
     det = transcript.deterministic
     ens = transcript.ensemble
-    summary = f"""
-    <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 14px;">
-      <div class="pmb-feed">
-        <div class="pmb-feed__name">deterministic</div>
-        <div class="pmb-feed__stat"><strong>{det.n_fired if det else "—"}</strong> fired</div>
-        <div class="pmb-feed__stat"><strong>{det.n_filled if det else "—"}</strong> filled · <strong>{det.n_won if det else "—"}</strong> won</div>
-        <div class="pmb-feed__stat" style="margin-top: 4px;"><strong>{_fmt_pct(det.win_rate) if det else "—"}</strong> win-rate</div>
-        <div class="pmb-feed__stat"><strong>{_fmt_currency(det.total_pnl_usd) if det else "—"}</strong> pnl</div>
-      </div>
-      <div class="pmb-feed">
-        <div class="pmb-feed__name">ensemble</div>
-        <div class="pmb-feed__stat"><strong>{ens.n_fired if ens else "—"}</strong> fired</div>
-        <div class="pmb-feed__stat"><strong>{ens.n_filled if ens else "—"}</strong> filled · <strong>{ens.n_won if ens else "—"}</strong> won</div>
-        <div class="pmb-feed__stat" style="margin-top: 4px;"><strong>{_fmt_pct(ens.win_rate) if ens else "—"}</strong> win-rate</div>
-        <div class="pmb-feed__stat"><strong>{_fmt_currency(ens.total_pnl_usd) if ens else "—"}</strong> pnl</div>
-      </div>
-      <div class="pmb-feed">
-        <div class="pmb-feed__name">api activity</div>
-        <div class="pmb-feed__stat"><strong>{transcript.n_anthropic_calls:,}</strong> /v1/messages calls</div>
-        <div class="pmb-feed__stat"><strong>{ens.elapsed_s:.1f}s</strong> elapsed</div>
-        <div class="pmb-feed__stat" style="margin-top: 4px;">3 specialists x Sonnet meta · locked decision #5</div>
-      </div>
-      <div class="pmb-feed">
-        <div class="pmb-feed__name">verdict</div>
-        <div class="pmb-feed__stat" style="margin-top: 6px;">
-          {badge(transcript.verdict or "PENDING", tone="bad" if transcript.verdict == "CUT" else "good")}
-        </div>
-        <div class="pmb-feed__stat" style="margin-top: 8px; color: var(--text-muted);">
-          locked decision #16: kept iff uplift≥3pp, p99≤4s, $/dec≤$0.01.
-          Two of three failed.
-        </div>
-      </div>
-    </div>
-    """
-
-    # Bottom: sample rationales (the actual model outputs that hit pydantic validation).
-    rationales_html = ""
+    pieces: list[str] = [
+        '<div class="pmb-feed-row pmb-feed-row--4col">',
+        '<div class="pmb-feed">'
+        '<div class="pmb-feed__name">deterministic</div>'
+        f'<div class="pmb-feed__stat"><strong>{det.n_fired if det else "—"}</strong> fired</div>'
+        f'<div class="pmb-feed__stat"><strong>{det.n_filled if det else "—"}</strong> filled · '
+        f"<strong>{det.n_won if det else '—'}</strong> won</div>"
+        f'<div class="pmb-feed__stat"><strong>{_fmt_pct(det.win_rate) if det else "—"}</strong> win-rate</div>'
+        f'<div class="pmb-feed__stat"><strong>{_fmt_currency(det.total_pnl_usd) if det else "—"}</strong> pnl</div>'
+        "</div>",
+        '<div class="pmb-feed">'
+        '<div class="pmb-feed__name">ensemble</div>'
+        f'<div class="pmb-feed__stat"><strong>{ens.n_fired if ens else "—"}</strong> fired</div>'
+        f'<div class="pmb-feed__stat"><strong>{ens.n_filled if ens else "—"}</strong> filled · '
+        f"<strong>{ens.n_won if ens else '—'}</strong> won</div>"
+        f'<div class="pmb-feed__stat"><strong>{_fmt_pct(ens.win_rate) if ens else "—"}</strong> win-rate</div>'
+        f'<div class="pmb-feed__stat"><strong>{_fmt_currency(ens.total_pnl_usd) if ens else "—"}</strong> pnl</div>'
+        "</div>",
+        '<div class="pmb-feed">'
+        '<div class="pmb-feed__name">api activity</div>'
+        f'<div class="pmb-feed__stat"><strong>{transcript.n_anthropic_calls:,}</strong> /v1/messages calls</div>'
+        f'<div class="pmb-feed__stat"><strong>{ens.elapsed_s:.1f}s</strong> elapsed</div>'
+        '<div class="pmb-feed__stat">3 specialists x Sonnet meta · decision #5</div>'
+        "</div>",
+        '<div class="pmb-feed">'
+        '<div class="pmb-feed__name">verdict</div>'
+        f'<div class="pmb-feed__stat" style="margin-top: 6px;">'
+        f"{badge(transcript.verdict or 'PENDING', tone='bad' if transcript.verdict == 'CUT' else 'good')}"
+        "</div>"
+        '<div class="pmb-feed__err">decision #16: kept iff uplift≥3pp, p99≤4s, $/dec≤$0.01. Two of three failed.</div>'
+        "</div>",
+        "</div>",
+    ]
     if transcript.sample_rationales:
-        rationales_html += (
-            '<div style="font-size: 12px; color: var(--text-secondary); margin-bottom: 6px;">'
-            "Sample agent rationales (from schema-validation logs):</div>"
+        pieces.append(
+            '<div class="pmb-rationale__heading">Sample agent rationales (from schema-validation logs):</div>'
         )
         for r in transcript.sample_rationales[:3]:
-            rationales_html += (
-                f'<div style="font-family: ui-monospace, monospace; font-size: 11.5px; color: var(--text-primary); '
-                f"background: var(--bg-tertiary); border: 1px solid var(--border-subtle); border-radius: 6px; "
-                f'padding: 8px 10px; margin-bottom: 6px; white-space: pre-wrap;">'
-                f"{html.escape(r)}"
-                f"</div>"
-            )
-
-    st.markdown(
-        f"""<div class="pmb-card pmb-card--dim">{title_html}{summary}{rationales_html}</div>""",
-        unsafe_allow_html=True,
-    )
+            pieces.append(f'<div class="pmb-rationale">{html.escape(r)}</div>')
+    body = "".join(pieces)
+    st.html(f'<div class="pmb-card pmb-card--dim">{title}{body}</div>')
 
 
 def _render_decisions_table(rows: list[DecisionRow]) -> None:
-    st.markdown(
-        '<div class="pmb-card"><div class="pmb-card__title">📋 Decisions</div>',
-        unsafe_allow_html=True,
-    )
+    _section_header("📋 Decisions")
     if not rows:
-        st.markdown(
-            '<div style="color: var(--text-muted); padding: 24px 0; text-align: center;">'
+        st.html(
+            '<div class="pmb-empty">'
             "No decisions logged yet. Files at <code>state/decisions/&lt;UTC-date&gt;.jsonl</code> populate "
             "as the deterministic strategy fires."
-            "</div></div>",
-            unsafe_allow_html=True,
+            "</div>"
         )
         return
     df = pd.DataFrame(
         [
             {
-                "When (UTC)": r.decision_dt_utc.strftime("%Y-%m-%d %H:%M:%S"),
-                "Side": r.side,
-                "Asset": r.asset_id[:14] + "…" if len(r.asset_id) > 14 else r.asset_id,
+                "When (UTC)": r.decision_dt_utc.strftime("%H:%M:%S · %b %d"),
+                "Side": ("🟢 UP" if r.side == "UP" else "🔴 DOWN"),
+                "Asset": r.asset_id[:10] + "…" if len(r.asset_id) > 10 else r.asset_id,
                 "Limit": r.price_limit,
                 "Fill": r.fill_price if r.fill_price is not None else None,
-                "Resolution": r.resolution or "—",
+                "Resolution": (
+                    "✓ won"
+                    if r.resolution is not None and r.resolution == r.side
+                    else "✗ lost"
+                    if r.resolution is not None
+                    else "— pending"
+                ),
                 "PnL": r.pnl_usd if r.pnl_usd is not None else None,
                 "Composite": r.composite_pct,
-                "TTL": r.ttl_s,
+                "TTL": f"{r.ttl_s}s",
             }
             for r in reversed(rows)  # newest first
         ]
     )
     st.dataframe(
         df,
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
         column_config={
-            "Limit": st.column_config.NumberColumn("Limit", format="%.4f"),
-            "Fill": st.column_config.NumberColumn("Fill", format="%.4f"),
-            "PnL": st.column_config.NumberColumn("PnL", format="%+.4f"),
-            "Composite": st.column_config.NumberColumn("Composite (pp)", format="%+.4f"),
+            "When (UTC)": st.column_config.TextColumn("When", width="small"),
+            "Side": st.column_config.TextColumn("Side", width="small"),
+            "Asset": st.column_config.TextColumn("Asset", width="small"),
+            "Limit": st.column_config.NumberColumn("Limit", format="$%.4f"),
+            "Fill": st.column_config.NumberColumn("Fill", format="$%.4f"),
+            "Resolution": st.column_config.TextColumn("Outcome", width="small"),
+            "PnL": st.column_config.NumberColumn("PnL", format="$%+.4f"),
+            "Composite": st.column_config.NumberColumn("Comp", format="%+.3f"),
+            "TTL": st.column_config.TextColumn("TTL", width="small"),
         },
-        height=min(400, 50 + len(rows) * 36),
+        height=min(220, 40 + len(rows) * 30),
     )
-    st.markdown("</div>", unsafe_allow_html=True)
 
 
 def _render_log_panel(state_dir: Path) -> None:
-    paper_lines = tail_log(state_dir / PAPER_LOG, n_lines=60)
-    capture_lines = tail_log(state_dir / CAPTURE_LOG, n_lines=60)
+    paper_lines = tail_log(state_dir / PAPER_LOG, n_lines=40)
+    capture_lines = tail_log(state_dir / CAPTURE_LOG, n_lines=40)
     paper_mtime = (
         (state_dir / PAPER_LOG).stat().st_mtime if (state_dir / PAPER_LOG).exists() else None
     )
     capture_mtime = (
         (state_dir / CAPTURE_LOG).stat().st_mtime if (state_dir / CAPTURE_LOG).exists() else None
     )
-
-    st.markdown(
-        '<div class="pmb-card"><div class="pmb-card__title">📜 Live Logs</div>',
-        unsafe_allow_html=True,
-    )
+    _section_header("📜 Live Logs")
     tabs = st.tabs(
         [
             f"paper.log ({_log_age_label(paper_mtime)})",
@@ -537,17 +553,13 @@ def _render_log_panel(state_dir: Path) -> None:
     for tab, lines in zip(tabs, (paper_lines, capture_lines), strict=True):
         with tab:
             if not lines:
-                st.markdown(
-                    '<div style="color: var(--text-muted); padding: 16px 0;">log file not found</div>',
-                    unsafe_allow_html=True,
-                )
+                st.html('<div class="pmb-empty">log file not found</div>')
                 continue
             html_lines = "".join(
                 f'<div class="pmb-log__line {_level_class(line)}">{html.escape(line)}</div>'
                 for line in lines
             )
-            st.markdown(f'<div class="pmb-log">{html_lines}</div>', unsafe_allow_html=True)
-    st.markdown("</div>", unsafe_allow_html=True)
+            st.html(f'<div class="pmb-log">{html_lines}</div>')
 
 
 def _log_age_label(mtime: float | None) -> str:
@@ -571,16 +583,13 @@ def main() -> None:
 
     # Sidebar controls.
     st.sidebar.title("Dashboard")
-    refresh_s = st.sidebar.slider("Auto-refresh (sec)", 5, 60, 15, step=5)
+    refresh_s = st.sidebar.slider("Auto-refresh (sec)", 2, 30, 4, step=1)
     refresh_paused = st.sidebar.toggle("⏸ Pause refresh", value=False)
     state_dir = Path(st.sidebar.text_input("state/ dir", value=str(DEFAULT_STATE_DIR)))
     default_since = (datetime.now(tz=UTC) - timedelta(days=14)).strftime("%Y-%m-%d")
     since = st.sidebar.text_input("Decisions since (YYYY-MM-DD)", value=default_since)
     st.sidebar.caption(f"Reading {state_dir}/")
 
-    # Auto-refresh via streamlit-autorefresh — preserves widget state
-    # (sort order, open tab, scroll position) across reruns. Per
-    # design-critique recommendation #4.
     if not refresh_paused:
         st_autorefresh(interval=refresh_s * 1000, key="pmb_autorefresh")
 
@@ -590,19 +599,28 @@ def main() -> None:
     rows = load_decisions(state_dir / DECISIONS_SUBDIR, since_utc_date=since or None)
     issues = _detect_incidents(capture, paper, snap, state_dir / PAPER_LOG)
 
-    # Render in order: header → incident banner (if any) → KPIs → hero
-    # PnL → system rows → decisions table → live logs → agent panel.
-    # Agent panel is intentionally last because it's HISTORICAL reference,
-    # not live signal (per design-critique recommendation #3).
+    # ABOVE THE FOLD — fits in a single viewport (~900px tall).
+    # Header → incident banner → KPI strip → 3-column terminal grid.
     _render_header(refreshed_at=datetime.now(tz=UTC), since_filter=since)
     if issues:
-        st.markdown(incident_banner(issues), unsafe_allow_html=True)
+        st.html(incident_banner(issues))
     _render_kpi_row(rows, paper)
-    _render_pnl_chart(rows)
-    _render_system_row(capture, paper, snap)
-    _render_decisions_table(rows)
-    _render_log_panel(state_dir)
-    _render_agent_panel()
+
+    main_col, side_col, log_col = st.columns([0.55, 0.25, 0.20], gap="small")
+    with main_col, st.container(border=True, key="pmb-main-panel"):
+        _render_pnl_chart(rows)
+        _render_decisions_table(rows)
+    with side_col:
+        _render_processes(capture, paper)
+        _render_feeds(snap)
+    with log_col, st.container(border=True, key="pmb-log-panel"):
+        _render_log_panel(state_dir)
+
+    # Historical reference (Phase 3 ensemble that was CUT) — collapsed by
+    # default so the live above-fold content fills the viewport. Operator
+    # clicks to expand for the post-mortem.
+    with st.expander("🤖  Historical agent activity  ·  Phase 3 A/B (CUT)", expanded=False):
+        _render_agent_panel()
 
 
 if __name__ == "__main__":
