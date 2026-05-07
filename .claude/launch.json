@@ -14,6 +14,15 @@
         "--browser.gatherUsageStats=false"
       ],
       "port": 8501
+    },
+    {
+      "name": "dashboard-staging",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": [
+        "-c",
+        "PMB_DASH_STATE_DIR=state/staging uv run streamlit run scripts/dashboard.py --server.headless=true --server.port=8503 --browser.gatherUsageStats=false"
+      ],
+      "port": 8503
     }
   ]
 }
