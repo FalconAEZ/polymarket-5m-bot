@@ -1,0 +1,217 @@
+Subject: Resume on Windows PC after migration. Branch claude/bold-galileo-2d56ca @ c1ff257.
+Phases 4 dev + 4.5 dashboard complete. Decide what to tackle next.
+
+================================================================================
+THE STORY SO FAR (READ THIS FIRST — 30 SECONDS)
+================================================================================
+
+You're picking up on the Windows PC after a session that landed on the
+Mac. The Mac processes (capture PID 23820, paper PID 30325) will be
+gone — laptop sleep killed them. The state we ARE bringing across:
+
+  - Full code under git: branch claude/bold-galileo-2d56ca, HEAD c1ff257
+  - state/decisions/*.jsonl is now git-tracked (Phase 4.5 narrowed
+    .gitignore) — historical decisions transfer
+  - state/ everything else is gitignored — parquet, logs, pid files
+    are recreated fresh on the new machine
+
+Two phases closed this session:
+
+  Phase 4 dev (paper trading runtime):
+    - design/paper.md + _paper/{shadow_book,runner,decision_log}.py
+    - scripts/run_paper.py + validate_paper_sim.py
+    - 23 tests; 246 → 274 with Phase 4.5 dashboard tests
+    - 14-day run was started on the Mac but paused on sleep
+    - Phase 4 GATE has not fired (needs 14 day-files of evidence)
+
+  Phase 4.5 (operations dashboard):
+    - Streamlit single-page app at scripts/dashboard.py
+    - Live demo simulator at scripts/demo_live.py (gitignored state-demo/)
+    - .claude/launch.json wires the Claude Preview MCP for headless
+      preview + DOM inspection
+    - All dashboard panels pixel-aligned at 1728x1117 (16" MBP scaled)
+    - 274 pytest pass, mypy --strict on 43 files, 3/3 import-linter
+      contracts kept
+
+================================================================================
+ONE-TIME WINDOWS SETUP
+================================================================================
+
+[ ] Install uv if not present:
+    PowerShell:  powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+    Or use the Windows installer from https://github.com/astral-sh/uv/releases
+
+[ ] git clone https://github.com/FalconAEZ/polymarket-5m-bot
+[ ] cd polymarket-5m-bot
+[ ] git checkout claude/bold-galileo-2d56ca
+[ ] git rev-parse HEAD                      → must equal c1ff257
+[ ] uv sync                                 → installs all deps incl streamlit/psutil
+[ ] uv run pytest -q                        → must show 274 passed (no regressions)
+[ ] uv run mypy --strict src/               → must be green on 43 files
+[ ] uv run lint-imports                     → must show 3 contracts kept
+
+[ ] .envrc — copy from a secure source (NOT in git). Phase 4+ paper
+    mode only needs POLYGON_RPC_URL (Alchemy WSS for Chainlink oracle)
+    and optionally TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID for outage
+    alerts. POLY_* keys are NOT used by paper mode (no real orders).
+
+================================================================================
+CONTEXT ANCHORS (READ IN ORDER WHEN PICKING UP)
+================================================================================
+
+ 1. CLAUDE.md
+    — durable preferences, anti-vibe rules
+ 2. ~/.claude/projects/-Users-hamad-Desktop-PolyMarket-5m/memory/MEMORY.md
+    — session-bridging memory index (will be local to the Windows
+      Claude install; fresh setup may not have it. The check-points
+      that matter are in the repo: state/sessions/2026-05-07-evening.md)
+ 3. state/sessions/2026-05-07-evening.md
+    — the previous session's hand-off note
+ 4. RUNBOOK.md §"PHASE 4.5 — Operations Dashboard" + §"PHASE 4"
+ 5. design/paper.md and design/dashboard.md — the two locked design docs
+
+================================================================================
+SEE THE DASHBOARD WORK IMMEDIATELY (5 MINUTES)
+================================================================================
+
+Goal: confirm the dashboard renders cleanly on Windows before deciding
+what to build next.
+
+[ ] Terminal 1 — start the live demo simulator:
+        uv run python scripts/demo_live.py
+
+    It seeds state-demo/ with 3 days of decisions, then ticks logs every
+    1.5s, feeds every 4s, decisions every 25s. SIGINT stops it cleanly.
+
+[ ] Terminal 2 — launch the dashboard:
+        uv run streamlit run scripts/dashboard.py
+
+    Opens in your default browser at http://127.0.0.1:8501. The dashboard
+    auto-detects state-demo/ when present (PMB_DASH_STATE_DIR env var
+    is unset → state-demo wins → live demo data).
+
+[ ] Verify visual: KPI strip aligned to the 3 panels below (PnL/Win/
+    Decisions over chart-decisions, Last Decision over Processes/Feeds,
+    Paper Uptime over Live Logs). Pulsing live dot in header. Pulsing
+    glow at chart curve tip. PAPER.LOG / CAPTURE.LOG segmented control
+    in the right panel.
+
+[ ] If anything looks off on Windows (font fallbacks, font sizes,
+    layout breaks): use the Claude Preview MCP. Run `preview_start
+    name="dashboard"` (uses .claude/launch.json), then `preview_eval`
+    + `preview_inspect` to diagnose pixel-level issues like we did
+    on the Mac.
+
+================================================================================
+WHAT TO DO NEXT — THREE OPTIONS (PICK ONE)
+================================================================================
+
+OPTION A — Restart the Phase 4 14-day paper run on Windows
+----------------------------------------------------------
+The Mac's run is dead. To get the Phase 4 evidence we need:
+
+[ ] Confirm Polymarket WS + Chainlink RPC reachable from Windows
+    (test: `uv run python scripts/run_capture.py` for 60s, then SIGINT)
+[ ] Launch capture per runbooks/capture-launch.md (Windows-equivalent
+    launch incantations may need to be added — the file currently
+    documents nohup/tmux/screen for Unix; Windows uses Start-Process)
+[ ] Launch paper runner per runbooks/paper-monitor.md
+[ ] Daily ritual via the dashboard (no jq needed on Windows)
+[ ] Phase 4 gate fires after 14 day-files of state/decisions/*.jsonl
+
+Caveat: requires 14 days of uninterrupted Windows uptime (or careful
+laptop-sleep handling on Windows side). If your Windows PC is reliable
+24/7 this is fine.
+
+OPTION B — Skip to Phase 5 (VPS provisioning)
+----------------------------------------------
+Phase 5 moves the bot to Dublin Lightsail (eu-west-1) where it can
+actually run 24/7. Phase 4 gate technically depends on 14 days of
+paper-run evidence, but you can argue Phase 5 setup work is independent
+of that — provision the VPS now, run the 14-day paper run on the VPS
+itself, and let Phase 4 gate fire from there.
+
+[ ] Read RUNBOOK.md §"PHASE 5" pre-flight + 7 sub-tasks
+[ ] AWS account + billing alert
+[ ] Provision Lightsail (2vCPU/4GB/80GB Ubuntu 24.04, eu-west-1)
+[ ] WS latency check: p50 < 5ms, p99 < 15ms required
+[ ] Two systemd units (bot-staging + bot)
+[ ] Prometheus + Grafana Cloud free tier; tg-alerter
+[ ] 24h staging run
+
+If this path: write a phase-5-prompt.txt similar to the prompts that
+preceded Phases 0-4.5, anchor the same way.
+
+OPTION C — Polish + ship the dashboard further
+-----------------------------------------------
+Phase 4.5 left some nice-to-haves on the table:
+
+[ ] Tag `phase-4.5-pass` (the gate is green; just hasn't been tagged)
+[ ] Add live agent-vote logging to PaperRunner (Phase 8 work but the
+    dashboard already has the panel scaffolding)
+[ ] Sparklines on each KPI showing recent trend
+[ ] Better empty states with iconography
+[ ] Performance: cache loaders behind st.cache_data so the 4s refresh
+    doesn't re-parse JSONL every tick
+[ ] Re-run /design:design-critique on the final state to spot anything
+    missed
+
+================================================================================
+ANTI-VIBE RULES — UNCHANGED
+================================================================================
+
+Same 10 rules in CLAUDE.md. The same disciplines that landed Phases 0-4.5
+cleanly should land whatever comes next.
+
+  - **Design doc before code** (rule #1): NO src/ changes without a
+    matching design/<file>.md committed first.
+  - **Bug → failing test → fix → green** (rule #2): every bug needs a
+    regression test. Phase 4.5 added 28 dashboard tests; don't drop
+    that discipline.
+  - **3-fix rule**: 3 iterations on the same issue → stop, write
+    `runbooks/incidents/<date>-<slug>.md`.
+  - **External calls behind interfaces** (rule #7): all 3 import-linter
+    contracts kept. Don't break them.
+
+================================================================================
+HARD LIMITS (DO NOT EXCEED WITHOUT EXPLICIT OPERATOR GO)
+================================================================================
+
+- Cumulative Anthropic spend so far: $0.405 (Phase 3). Phase 4 paper +
+  Phase 4.5 dashboard added $0. Stay deterministic-only.
+- Phase 1B (real money): still parked. No funder/signer activity, no
+  real orders, no signing of anything that touches Polymarket execution.
+- Paper mode can run on the laptop OR on a VPS. Until Phase 5 is done,
+  don't trust paper data from the laptop for the gate (sleep gaps).
+
+================================================================================
+SESSION BOUNDARY — ENDS WHEN ONE OF
+================================================================================
+
+(a) Demo dashboard verified working on Windows + an explicit choice
+    made between Options A/B/C above + corresponding work begun. ✅
+(b) 50% context burn before a clear path forward → close out, write a
+    partial checkpoint, stop. ⏸
+(c) Hard blocker (uv sync fails on Windows, Streamlit doesn't render,
+    pytest regression that wasn't on the Mac) → runbooks/incidents/...;
+    abort; escalate. 🛑
+
+================================================================================
+THREE REMINDERS
+================================================================================
+
+1. **The Claude Preview MCP is your friend.** `preview_start` →
+   `preview_eval` + `preview_inspect` for pixel-level diagnosis.
+   This is what saved Phase 4.5 on the Mac. Don't iterate UI blind.
+2. **Phase 1B still parked.** No real money, no real orders.
+3. **State you brought across via git**: only state/decisions/*.jsonl.
+   Everything else under state/ is fresh on Windows.
+
+================================================================================
+HAND-OFF SIGNATURE
+================================================================================
+
+Mac session closed at HEAD `c1ff257` on branch `claude/bold-galileo-2d56ca`.
+Pushed to github.com/FalconAEZ/polymarket-5m-bot.
+274 pytest pass, mypy --strict green, lint-imports 3/3 KEPT.
+Demo: `uv run python scripts/demo_live.py & uv run streamlit run scripts/dashboard.py`.

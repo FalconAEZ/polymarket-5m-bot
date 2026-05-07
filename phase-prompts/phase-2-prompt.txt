@@ -1,0 +1,454 @@
+Subject: Execute RUNBOOK.md Phase 2 — Read-only Data Plane (dev session, tasks 2.0 → 2.4 + capture launch). Real money still parked; this phase is read-only and free, but the data we capture decides whether the whole thesis survives.
+
+================================================================================
+CONTEXT ANCHORS  (read each in order before doing anything)
+================================================================================
+
+ 1. /Users/hamad/Desktop/PolyMarket-5m/CLAUDE.md
+    — durable preferences, locked decisions, anti-vibe rules
+ 2. ~/.claude/projects/-Users-hamad-Desktop-PolyMarket-5m/memory/project_decisions.md
+    — 20 locked decisions
+ 3. ~/.claude/projects/-Users-hamad-Desktop-PolyMarket-5m/memory/checkpoint_phase_0.md
+    — Phase 0 close state
+ 4. ~/.claude/projects/-Users-hamad-Desktop-PolyMarket-5m/memory/checkpoint_phase_1a.md
+    — Phase 1A close state (Funder/Signer addresses, OD-4 resolution)
+ 5. /Users/hamad/Desktop/PolyMarket-5m/RUNBOOK.md
+    — open to "Phase 2 — Read-only Data Plane" (section starts ~line 719)
+ 6. /Users/hamad/Desktop/PolyMarket-5m/MASTERPLAN.md
+    — for the thesis dependency on Chainlink heartbeat behavior
+ 7. /Users/hamad/Desktop/PolyMarket-5m/design/gasless.md
+    — confirms we read CLOB orderbook over WS without auth (no funder/signer
+       params needed for read-only market data)
+ 8. /Users/hamad/Desktop/PolyMarket-5m/pdfs/BUILD_SPEC.pdf  p. 22-23
+    — 25 anti-vibe operating rules
+ 9. /Users/hamad/Desktop/PolyMarket-5m/references/agents/  (read-only mining)
+    /Users/hamad/Desktop/PolyMarket-5m/references/poly-market-maker/
+    /Users/hamad/Desktop/PolyMarket-5m/references/Polymarket-BTC-15-Minute-Trading-Bot/
+    — for prior art on Polymarket WS / orderbook ingestion patterns
+
+================================================================================
+STATED STATE
+================================================================================
+
+Phase 1A is closed (tag `phase-1a-pass` at commit `1537a18` on branch
+`claude/bold-galileo-2d56ca`). Funder=`0x512DA3825E69A8c19d2e0D00b66dd23d3ec95d22`,
+Signer=`0x8d9759A73D65aD32cd858eb3AdE46ce56F5F2B4A`.
+
+`.envrc` is clean: `POLY_PRIVATE_KEY` + three `POLY_API_*` derived creds +
+the original Phase-0 set (`ANTHROPIC_API_KEY`, `TELEGRAM_BOT_TOKEN`,
+`TELEGRAM_CHAT_ID`, `POLYGON_RPC_URL`). Auth verified end-to-end via
+`scripts/test_auth.py` against live Polymarket. Zero on-chain footprint.
+
+Phase 1B (fund + $5 test order) is **deferred to pre-Phase-6 go-live** per
+locked decision #20. Do not touch Phase 1B in this session.
+
+`make verify` green; `mypy --strict src/` green; 45 unit tests pass; CI green.
+Two runtime deps in pyproject: `eth-account`, `py-clob-client`.
+
+`POLYGON_RPC_URL` is live (Alchemy free tier, chain_id `0x89` confirmed in
+Phase 0). It is currently configured as **HTTPS** for Phase 0's smoke test —
+Phase 2 needs **WSS** (the same Alchemy app exposes both endpoints; just swap
+`https://` → `wss://` in `.envrc`). Confirm before coding the oracle watcher.
+
+================================================================================
+PHASE 2 OWNER INTENT
+================================================================================
+
+Stand up three reliable, well-archived data feeds (BTC spot,
+Chainlink BTC/USD oracle on Polygon, Polymarket 5m BTC market). Capture
+seven calendar days of clean tick data. Then run the **oracle-behavior
+verification gate** that the entire thesis depends on: Chainlink's BTC/USD
+heartbeat must be ~60s ± small jitter, with no gaps > 180s and no
+sub-30s updates. If that gate fails, the thesis is wrong and Phase 3
+backtests would be malpractice.
+
+This session covers the **dev half** (tasks 2.0 through 2.4 — design + code
++ tests, all read-only, zero capital required). Task 2.5 is operator-side
+(launch the long-running capture and let it run for 7 days). Task 2.6 is a
+follow-up session after the data is in.
+
+End-state of this session: code is committed and reviewed, the capture
+process is launched in a tmux session that survives reboot, and the
+operator has a one-line health-check command to run during the 7 days.
+
+================================================================================
+SEQUENCE — DO NOT SKIP, DO NOT REORDER
+================================================================================
+
+PRE-FLIGHT  (verify before starting; STOP and ask if anything fails)
+
+[ ] Phase 1A gate green: `git tag -l | grep phase-1a-pass` returns the tag.
+[ ] `make verify` green at HEAD on branch `claude/bold-galileo-2d56ca`
+    (or a fresh branch from `phase-1a-pass` — see Branch Strategy below).
+[ ] `.envrc` has all four `POLY_*` vars + the four Phase-0 vars set.
+[ ] Operator has confirmed (in chat) that `POLYGON_RPC_URL` exposes a WSS
+    variant on the same Alchemy app — if it currently shows `https://`,
+    update to `wss://` BEFORE writing any oracle code, otherwise the
+    `eth_subscribe` call we'll write in 2.2 will fail unintelligibly.
+[ ] Operator confirms the Chainlink BTC/USD aggregator address on Polygon
+    is currently `0xc907E116054Ad103354f2D350FD2514433D57F6f`. Verify at
+    https://data.chain.link/feeds/polygon/mainnet/btc-usd before coding.
+
+BRANCH STRATEGY
+
+Default: continue on `claude/bold-galileo-2d56ca` (the Phase 1A branch).
+This keeps the per-phase tags linear (`phase-0-pass` → `phase-1a-pass` →
+`phase-2-pass`) on a single feature-branch, mergeable to `main` in one PR
+when the operator is ready.
+
+Alternative: start a new branch `claude/phase-2-<slug>` from `phase-1a-pass`
+if the operator wants Phase 2 reviewed independently. Decide in the first
+turn before any code is written; do not switch branches mid-session.
+
+--------------------------------------------------------------------------------
+TASK 2.0 — Design the data plane (DESIGN DOC ONLY, NO CODE)
+--------------------------------------------------------------------------------
+
+Write `design/data_plane.md`. Lock the following decisions before any code:
+
+1. **Async architecture.** Three feeds run as separate `asyncio.Task`s. A
+   shared async queue feeds a single Parquet writer task. No threads. Single
+   event loop.
+
+2. **Storage schema (PINNED — must not drift).** Per-source Parquet files,
+   schema:
+     `ts_utc_ns: int64` (event time, nanoseconds since epoch UTC)
+     `received_at_ns: int64` (local clock when our process saw it)
+     `source: str` ("binance", "coinbase", "oracle", "polymarket")
+     `kind: str` (free-form per source: "trade", "book_top", "AnswerUpdated", "book", "trade")
+     `payload_json: str` (raw upstream payload, no transformation)
+
+   Two timestamps deliberately. `ts_utc_ns` is what the upstream said;
+   `received_at_ns` is our own clock. Skew between them is itself a
+   metric we'll mine in Phase 3.
+
+3. **Storage layout.** `ticks/<UTC-date>/<source>.parquet`. Rotate at UTC
+   midnight. New file per day per source. The directory `ticks/` is
+   gitignored (large + non-deterministic).
+
+4. **Reconnect policy.** Exponential backoff starting at 1s, capping at
+   60s. Reconnect attempt cycle: 1s, 2s, 4s, 8s, 16s, 32s, 60s, 60s, 60s…
+   If a feed is down for > 5 min cumulative, fire a Telegram alert AND
+   keep retrying (don't crash — a flapping feed is still better than a
+   dead bot during the capture).
+
+5. **Backpressure.** If the writer queue exceeds 10k items, drop **oldest**
+   and log dropped count. Recent ticks matter more than complete history
+   for our use case (5-minute trading windows + 60s oracle heartbeat).
+
+6. **`Feed` protocol.** A typed Python `Protocol`:
+     `class Feed(Protocol): async def stream(self) -> AsyncIterator[Record]`
+   Each concrete feed implements it. Tests inject `FakeWSClient` that
+   yields recorded payloads at recorded timing. **No real network in unit
+   tests.**
+
+7. **Layer boundary.** All real-network code under `src/polymarket_bot/_live/`.
+   The shared `Feed` protocol and the `Record` dataclass live in
+   `src/polymarket_bot/feeds/protocols.py` (not under `_live/`) so paper-mode
+   code in Phase 4 can import the protocol without dragging in real WS
+   clients. `import-linter` enforces this.
+
+8. **Failure surface.** Each feed has a private `_health` dict updated each
+   message: `{last_seen_ns, msgs_seen, reconnects}`. A separate
+   `health.py` task aggregates these and writes a one-line summary to
+   `state/feeds_health.json` every 30s. Operator's monitoring command is
+   `cat state/feeds_health.json`.
+
+Commit the design doc. No `src/` or `scripts/` code yet.
+
+--------------------------------------------------------------------------------
+TASK 2.1 — Implement spot feeds (Binance + Coinbase + aggregator)
+--------------------------------------------------------------------------------
+
+Files (header docstring required on every file, ≥80 chars):
+- `src/polymarket_bot/feeds/protocols.py` — `Feed` protocol, `Record` dataclass
+- `src/polymarket_bot/_live/feeds/spot_binance.py`
+- `src/polymarket_bot/_live/feeds/spot_coinbase.py`
+- `src/polymarket_bot/_live/feeds/spot_aggregator.py` — fan-in
+- `tests/feeds/__init__.py`
+- `tests/feeds/conftest.py` — fakes
+- `tests/feeds/test_spot_binance.py`
+- `tests/feeds/test_spot_coinbase.py`
+- `tests/feeds/test_spot_aggregator.py`
+
+Endpoints:
+- Binance: `wss://stream.binance.com:9443/ws/btcusdt@trade`
+- Coinbase: `wss://ws-feed.exchange.coinbase.com` with subscribe message
+  `{"type":"subscribe","channels":[{"name":"matches","product_ids":["BTC-USD"]}]}`
+
+Both upstreams are anonymous (no auth, no rate limit at our volume).
+They are independent — the aggregator must keep running if either dies.
+
+Verification (run from a fresh shell, NOT via `pytest`):
+- `pytest tests/feeds -q` green.
+- `uv run python -c "import asyncio; from polymarket_bot._live.feeds.spot_aggregator import SpotAggregator; ..."` running for 60 s prints both source ticks (Binance ~5/s, Coinbase ~2-10/s).
+
+Do NOT proceed to 2.2 if 2.1 isn't green. The protocol shape locks in here
+and 2.2/2.3 depend on it being right.
+
+--------------------------------------------------------------------------------
+TASK 2.2 — Implement oracle watcher (Chainlink BTC/USD on Polygon)
+--------------------------------------------------------------------------------
+
+Subscribes to `AnswerUpdated(int256 current, uint256 roundId, uint256 updatedAt)`
+events on `0xc907E116054Ad103354f2D350FD2514433D57F6f` via Polygon WSS
+(`POLYGON_RPC_URL` from `.envrc`). Uses `web3.py` async provider — add
+`web3` as a runtime dep via `uv add web3`.
+
+Files:
+- `src/polymarket_bot/_live/feeds/oracle.py`
+- `tests/feeds/test_oracle.py` — fixture replays a captured event log
+
+The event signature topic hash is the keccak-256 of the canonical signature:
+`AnswerUpdated(int256,uint256,uint256)`. Compute and verify in code, do not
+hardcode.
+
+Verification:
+- `pytest tests/feeds/test_oracle.py -q` green.
+- Running 5 min logs at least 4 oracle updates with timestamps spaced ~60s
+  (BTC/USD on Polygon Chainlink is configured to 60s heartbeat + 0.5%
+  deviation, so ~60s gaps are expected).
+
+If the WS endpoint rejects the subscription (auth issue / wrong endpoint
+shape / Alchemy plan limit), STOP and surface the error verbatim — do not
+swap to a different RPC silently.
+
+--------------------------------------------------------------------------------
+TASK 2.3 — Implement Polymarket market feed (5m BTC up/down)
+--------------------------------------------------------------------------------
+
+Subscribes to the active 5m BTC up/down market on Polymarket via:
+`wss://ws-subscriptions-clob.polymarket.com/ws/market`
+
+Computes the active market slug deterministically from clock alone:
+
+  def active_window_ts(now_utc_s: int) -> int:
+      return now_utc_s - (now_utc_s % 300)
+  def active_slug(window_ts: int) -> str:
+      return f"btc-updown-5m-{window_ts}"
+
+Resolves slug → token_id via Polymarket's Gamma API
+(`https://gamma-api.polymarket.com/events?slug=<slug>`) on each window
+rotation. Caches one window ahead.
+
+Files:
+- `src/polymarket_bot/_live/feeds/polymarket.py`
+- `tests/feeds/test_polymarket.py` — fixture replays a captured WS log
+
+Verification:
+- `pytest tests/feeds/test_polymarket.py -q` green.
+- Running for 6 min captures orderbook snapshots and trade events for the
+  current window AND transitions to the next 5m window at the boundary.
+
+Edge case to test: if the active window's market does not exist on Gamma
+(rare gap), feed logs the miss, sleeps until next 300-second boundary, and
+retries. Does not crash.
+
+--------------------------------------------------------------------------------
+TASK 2.4 — Resolver helper (hypothetical + actual)
+--------------------------------------------------------------------------------
+
+`src/polymarket_bot/resolver.py`:
+
+  def hypothetical_now(window_open_oracle: float, current_oracle: float) -> Literal["UP","DOWN"]:
+      """What does this market resolve as if it ended *right now*?"""
+      return "UP" if current_oracle >= window_open_oracle else "DOWN"
+
+  def actual_resolution(window_ts: int, oracle_at_window_open: float, oracle_at_window_close: float) -> Literal["UP","DOWN"]:
+      """The real resolver. Uses oracle as of T+300, not now."""
+      return "UP" if oracle_at_window_close >= oracle_at_window_open else "DOWN"
+
+Both must be in code, named distinctly. Tests cover the boundary case
+(equal prices → "UP" per Polymarket convention; verify against an actual
+historical resolution from `references/Polymarket-BTC-15-Minute-Trading-Bot/`
+if a fixture is available).
+
+`tests/test_resolver.py` — pure-Python, no network.
+
+Verification: `pytest tests/test_resolver.py -q` green.
+
+--------------------------------------------------------------------------------
+TASK 2.4b — Storage writer + health monitor + entry point
+--------------------------------------------------------------------------------
+
+Glue code so the four feeds + resolver actually run together:
+
+- `src/polymarket_bot/_live/storage.py` — single async writer task; consumes
+  the shared queue; appends to per-source per-day Parquet via `polars`
+  (already a dev dep — promote to runtime; no extra deps needed).
+- `src/polymarket_bot/_live/health.py` — every 30s, snapshots each feed's
+  `_health` dict and writes `state/feeds_health.json`. Sends a Telegram
+  alert if any feed has `last_seen_ns < now - 5min`.
+- `src/polymarket_bot/_live/runtime.py` — async main() that wires it all up
+  and provides graceful shutdown on SIGTERM/SIGINT (drains queue first,
+  flushes Parquet writers, closes WS connections).
+- `scripts/run_capture.py` — thin CLI: `uv run python scripts/run_capture.py`
+  starts the runtime. Logs go to `state/capture.log`.
+
+Verification:
+- `make verify` green (ruff + mypy --strict src/ + pytest).
+- `lint-imports` green (no `_live` imports leak into paper-only code paths).
+- 60-second smoke run produces at least one `.parquet` row in
+  `ticks/<today>/binance.parquet` AND `state/feeds_health.json` updates
+  with all four feeds showing `msgs_seen > 0`.
+
+--------------------------------------------------------------------------------
+TASK 2.5 — Launch the 7-day capture (OPERATOR-SIDE; CLAUDE LAUNCHES + DOCUMENTS)
+--------------------------------------------------------------------------------
+
+Claude does:
+- Write `runbooks/capture-launch.md` with the exact tmux + uv commands
+  (so the operator can re-launch after a reboot or a kernel panic).
+- Launch the capture in a tmux session named `pmbot-capture` via:
+    `tmux new-session -d -s pmbot-capture 'uv run python scripts/run_capture.py 2>&1 | tee -a state/capture.log'`
+- Wait 90 seconds. Print the contents of `state/feeds_health.json`. All four
+  feeds must show `msgs_seen > 0` and `last_seen_ns` within 30s of "now".
+- If healthy: commit the runbook + any state/ template files; push.
+- If unhealthy after 90s: STOP. Write `runbooks/incidents/2026-MM-DD-feed-startup.md`
+  with the failure mode and the captured logs. Do not advance the session.
+
+Operator does (during the 7 days):
+- Daily check: `cat state/feeds_health.json | jq` — all four feeds healthy
+  with recent `last_seen_ns`.
+- Daily check: `ls -lh ticks/$(date -u +%F)/` — four `.parquet` files
+  with non-zero size, growing.
+- If anything looks off: re-attach the tmux (`tmux attach -t pmbot-capture`),
+  read the tail of `state/capture.log`, restart if needed.
+- After 7 calendar days of clean uninterrupted capture, start a new Claude
+  Code session and use `~/Desktop/phase-2-analysis-prompt.txt` (will be
+  written at the end of THIS session) to fire task 2.6 + the gate.
+
+Do NOT run `runbooks/gates/phase-2.sh` in this session. The gate explicitly
+asserts ≥7 dated directories of ticks, which is impossible at task-2.5 time.
+
+--------------------------------------------------------------------------------
+TASK 2.6 — DEFERRED to next session
+--------------------------------------------------------------------------------
+
+After 7 days of capture, a fresh session runs `scripts/analyze_oracle.py`
+against the captured oracle data and runs the gate. Out of scope for this
+session except to write `~/Desktop/phase-2-analysis-prompt.txt` at the end
+so the operator has the next-session prompt pre-staged.
+
+================================================================================
+GATE COMMAND — DO NOT RUN IN THIS SESSION
+================================================================================
+
+`runbooks/gates/phase-2.sh` is written but NOT run in this session. Asserts:
+
+1. `make verify` green.
+2. `lint-imports` green.
+3. `ls ticks/` shows ≥ 7 dated directories, each with the four expected
+   `.parquet` files.
+4. `uv run python scripts/analyze_oracle.py --days 7` reports all four
+   pass criteria green.
+5. Cross-feed sanity: oracle update timestamps are within ±2s of expected
+   60s cadence for any randomly chosen 5-minute window AND align with
+   spot tick coverage on the same window.
+
+Pass criteria for #4 (the thesis-validation gate):
+- Median inter-update gap ∈ [55s, 65s].
+- Zero sub-30s updates.
+- Sub-60s updates < 5% of total.
+- Zero gaps > 180s.
+
+If any criterion fails, the thesis needs revisiting BEFORE Phase 3 begins.
+Open `runbooks/incidents/oracle-behavior-N.md`, escalate, do not proceed.
+
+================================================================================
+ANTI-VIBE-CODING RULES — ENFORCE WITHOUT EXCEPTION
+================================================================================
+
+ 1. Design doc committed before any code in `src/` or `scripts/` for that area.
+ 2. Bug → failing test → fix → green. No symptom patches.
+ 3. 3-fix rule: three iterations on the same bug → stop, write
+    `runbooks/incidents/<date>-<slug>.md`, get user sign-off before iteration 4.
+ 4. Every `src/` or `scripts/` Python file ships with a one-paragraph header
+    docstring (≥80 chars). Pre-commit and CI enforce this.
+ 5. Type hints on every function; `mypy --strict` green on `src/`.
+ 6. Tests inject fakes for external calls — no real WS / RPC / HTTP in the
+    unit-test path. `pytest tests/ -q` must run with networking disabled.
+ 7. `import-linter` boundary: production code never imports
+    `polymarket_bot._paper`; tests never import `polymarket_bot._live`.
+ 8. No TODO/FIXME/// hack in committed code under `src/`, `tests/`, `scripts/`.
+ 9. Pinned deps; `uv.lock` always committed.
+10. Read every diff before committing.
+
+================================================================================
+PERMISSIONS / SCOPE
+================================================================================
+
+- Read/write on /Users/hamad/Desktop/PolyMarket-5m/ and ~/.claude/.
+- Read/write on `state/` (gitignored), `ticks/` (gitignored).
+- `.envrc` is read-only — do not edit. If a new env var is needed
+  (e.g. `BINANCE_WS_URL`), add a default in code with the env var as an
+  override; ASK before requiring `.envrc` changes.
+- `uv add <pkg>` for new deps — pin via uv.lock. No floating versions.
+- Bash for git, gh, tmux, curl (read-only verification).
+- NO money movement; Phase 1B is deferred.
+- NO modifications to Phase 1 code (`scripts/genwallets.py`,
+  `scripts/derive_creds.py`, `scripts/test_auth.py`,
+  `runbooks/gates/phase-1a.sh`, `runbooks/wallet-ops.md`,
+  `design/{gasless,genwallets,derive_creds,test_auth}.md`).
+- /security-review is NOT required for this phase (read-only feeds, no
+  signing). Re-evaluate at task 2.4b if any auth surface sneaks in.
+
+================================================================================
+SESSION BOUNDARY — THIS SESSION ENDS WHEN ONE OF
+================================================================================
+
+(a) Tasks 2.0 through 2.4b code committed, tests green, tmux capture
+    launched, `state/feeds_health.json` shows all four feeds healthy at
+    T+90s, runbook written, `~/Desktop/phase-2-analysis-prompt.txt`
+    written for the next-session task 2.6 + gate.    ✅
+
+(b) Pre-flight check fails (POLYGON_RPC_URL not WSS, Chainlink address
+    moved, etc.) → escalate to operator, session ends without proceeding. ⏸
+
+(c) Hard blocker (e.g. Alchemy WS limit hit, Polymarket WS endpoint
+    moved, Chainlink BTC/USD aggregator deprecated) → write
+    `runbooks/incidents/...`, ABORT the dev session, escalate.    🛑
+
+End every session with a 2-line note in `state/sessions/<utc-date>.md`:
+what shipped, what's next.
+
+================================================================================
+BEFORE YOU START — CONFIRM BY LISTING
+================================================================================
+
+(a) Which anchor docs you've read end-to-end this session.
+
+(b) The exact pre-flight items you'll verify (especially: WSS variant of
+    `POLYGON_RPC_URL` and the current Chainlink BTC/USD aggregator address).
+
+(c) Which branch you're operating on (`claude/bold-galileo-2d56ca` or new),
+    and the pre-flight commit you're branching from.
+
+(d) The total estimated wall-clock for this dev session in this environment.
+
+(e) Anything you intend to do that deviates from this prompt — flag it
+    explicitly, do not just proceed.
+
+Then WAIT for the operator's go before running task 2.0.
+
+================================================================================
+TWO OPERATOR-SIDE REMINDERS
+================================================================================
+
+1. Phase 1B is still parked. No CEX withdrawals, no on-chain transactions,
+   no MetaMask connections to Polymarket. The .age files and `.envrc` are
+   the only secret state we touch.
+
+2. The 7-day capture window starts the moment task 2.5 successfully
+   launches. Pick a start time (Mon-Tue is cleanest — avoids a weekend
+   gap mid-capture if the laptop sleeps; the tmux session does NOT
+   survive the laptop sleeping). If you suspend the laptop during the
+   capture, the gate's "≥ 7 dated directories" check forgives a small
+   gap, but the cross-feed sanity check (#5) penalizes any 5-minute
+   window where one feed is missing data. Plan accordingly.
+
+================================================================================
+
+When you paste this prompt into the new session and Claude responds with
+the five-item confirmation list, review it, then say "go task 2.0" to
+start the design-doc step.

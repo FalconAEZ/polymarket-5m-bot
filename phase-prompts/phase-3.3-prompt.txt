@@ -1,0 +1,172 @@
+Subject: Execute Phase 3.3 — A/B run + Phase 3 gate. Branch claude/bold-galileo-2d56ca @ 0ef2fbe. Capture should still be running; verify before any code.
+
+================================================================================
+CONTEXT ANCHORS  (read in order; do not skip)
+================================================================================
+
+ 1. /Users/hamad/Desktop/PolyMarket-5m/CLAUDE.md
+    — durable preferences, anti-vibe rules
+ 2. ~/.claude/projects/-Users-hamad-Desktop-PolyMarket-5m/memory/project_decisions.md
+    — 21 locked decisions; #14 (budget) and #16 (LLM A/B verdict) are
+      directly load-bearing for this session
+ 3. ~/.claude/projects/-Users-hamad-Desktop-PolyMarket-5m/memory/checkpoint_phase_3_dev.md
+    — what's done; commit chain; capture state at session pause
+ 4. /Users/hamad/Desktop/PolyMarket-5m/.claude/worktrees/bold-galileo-2d56ca/design/agents.md
+    — ensemble shape, Tier-3 fallback, cost estimate per pass, prompt sizing
+ 5. /Users/hamad/Desktop/PolyMarket-5m/.claude/worktrees/bold-galileo-2d56ca/design/backtest.md
+    — replay/fills/walk-forward/cost tracker spec
+ 6. /Users/hamad/Desktop/PolyMarket-5m/.claude/worktrees/bold-galileo-2d56ca/scripts/run_ab.py
+    — A/B harness shell (deterministic-only by default; --enable-ensemble gated)
+
+================================================================================
+BRANCH + HEAD
+================================================================================
+
+Branch:  claude/bold-galileo-2d56ca   (worktree at .claude/worktrees/bold-galileo-2d56ca/)
+HEAD:    0ef2fbe  feat(phase-3): scripts/run_ab.py — A/B harness shell
+Pushed:  yes, github.com/FalconAEZ/polymarket-5m-bot
+
+================================================================================
+PRE-FLIGHT  (do these BEFORE any code change)
+================================================================================
+
+[ ] cd /Users/hamad/Desktop/PolyMarket-5m/.claude/worktrees/bold-galileo-2d56ca
+[ ] git rev-parse HEAD                              → must equal 0ef2fbe
+[ ] make verify                                     → ruff + mypy --strict (37 files) + 221 pytest pass
+[ ] uv run lint-imports                             → 2 contracts kept, 0 broken
+[ ] cat state/capture.pid && kill -0 $(cat state/capture.pid)  → process alive
+    If dead: re-launch per runbooks/capture-launch.md Option A.
+[ ] cat state/feeds_health.json | jq '.feeds | to_entries | map({(.key): {msgs: .value.msgs_seen, healthy: .value.healthy}}) | add'
+    All 4 feeds healthy with growing msgs_seen.
+[ ] echo $ANTHROPIC_API_KEY                         → set (from .envrc)
+[ ] Confirm Anthropic credit balance ≥ $35 BEFORE the A/B run (operator: open
+    https://console.anthropic.com/settings/billing — locked decision #14
+    requires explicit go before live spend).
+
+================================================================================
+THE WORK — three deliverables
+================================================================================
+
+------------------------------------------------------------------------
+TASK 3.3a — Wire EnsembleStrategy into run_ab.py
+------------------------------------------------------------------------
+
+Currently scripts/run_ab.py rejects --enable-ensemble with a "needs
+operator $-approval" message. Replace the gate with a real implementation:
+
+1. New helper `_build_ensemble_strategy(adapter, threshold_pct) -> EnsembleStrategy`:
+   - Construct OrderbookAgent, OracleGapAgent, MomentumAgent (all share `adapter`)
+   - Construct MetaDecider(adapter)
+   - Return EnsembleStrategy(specialists=[3], meta=meta, threshold_pct=...)
+
+2. Branch run_ab.py:
+   - if --enable-ensemble: pass A = DeterministicStrategy@threshold_a;
+     pass B = ensemble built from a fresh AnthropicAdapter + BudgetTracker.
+   - else: existing deterministic-vs-deterministic flow.
+
+3. Add --hard-limit-usd flag (default 35.0). Print the BudgetTracker.report()
+   at the end of pass B if ensemble was enabled.
+
+4. Wire ANTHROPIC_API_KEY auto-discovery via env (the SDK's default).
+
+5. Tests: extend tests/strategies/test_ensemble.py with a small
+   integration test that runs run_ab's `_build_ensemble_strategy` against
+   a FakeAdapter and verifies the returned strategy is an EnsembleStrategy
+   with exactly 3 specialists + 1 meta.
+
+------------------------------------------------------------------------
+TASK 3.3b — Run the A/B against captured data
+------------------------------------------------------------------------
+
+PRECONDITION: operator typed "go" in chat after confirming Anthropic credit
+balance ≥ $35. If they haven't, do NOT run --enable-ensemble.
+
+1. Run the deterministic-only A/B first as a smoke (no spend):
+     uv run python scripts/run_ab.py --dates 2026-05-06,2026-05-07
+   Capture output to runbooks/gate-evidence/phase-3.3-deterministic-ab.txt.
+
+2. If smoke is clean AND operator confirms spend, run the ensemble A/B:
+     uv run python scripts/run_ab.py --dates 2026-05-06,2026-05-07 \
+       --threshold-a 0.6 --threshold-b 0.6 --enable-ensemble \
+       --hard-limit-usd 30.0
+   Capture output to runbooks/gate-evidence/phase-3.3-llm-ab.txt.
+
+3. If BudgetExceeded is raised mid-run: that's the BudgetTracker working
+   correctly. Capture the partial-result output and the
+   `BudgetTracker.report()` printout. Do NOT re-run blindly — diagnose
+   why the budget overran (likely cache miss-rate; see design/agents.md §5).
+
+4. Compute the **A/B verdict** per locked decision #16:
+   - LLM kept iff: win-rate uplift ≥ 3pp AND p99 decision latency ≤ 4s
+     AND $/decision ≤ $0.01.
+   - Either outcome (kept or cut) is a passing gate. Document the
+     verdict in `runbooks/decisions/llm-ab-result.md` with the actual
+     numbers + explicit "kept" or "cut" string.
+
+NOTE: this session's capture has ~hours of data, not the 21 days the
+masterplan envisaged. The win-rate from a few hours of quiet-market data
+is NOT statistically meaningful. Phase 4 paper testing (14 days) is the
+real out-of-sample validation. Treat this A/B as a wiring sanity check +
+calibration anchor, not as the definitive verdict.
+
+------------------------------------------------------------------------
+TASK 3.3c — Phase 3 gate script + evidence
+------------------------------------------------------------------------
+
+Write `runbooks/gates/phase-3.sh` that asserts:
+
+  1. `make verify` green
+  2. `uv run lint-imports` green
+  3. `runbooks/gate-evidence/phase-3.3-llm-ab.txt` exists OR
+     `runbooks/gate-evidence/phase-3.3-deterministic-ab.txt` exists
+  4. `runbooks/decisions/llm-ab-result.md` exists and contains the
+     string "VERDICT: KEPT" or "VERDICT: CUT"
+  5. If KEPT: cumulative API spend in the verdict file is ≤ $50
+
+On green: tag `phase-3-pass`, push, write
+`~/.claude/projects/-Users-hamad-Desktop-PolyMarket-5m/memory/checkpoint_phase_3.md`.
+
+================================================================================
+ANTI-VIBE RULES — UNCHANGED
+================================================================================
+
+Same 10 rules as Phase 2. Especially relevant for this session:
+
+- Design doc before code: design/agents.md is locked; if 3.3a needs a
+  shape change, edit the design doc first.
+- Bug → failing test → fix → green. The agent layer has 75 tests; add
+  more if the A/B run surfaces something.
+- 3-fix rule: 3 iterations on the same issue → stop, write
+  runbooks/incidents/<date>-<slug>.md.
+- Type hints + mypy --strict; no real network in unit tests; prompt-cache
+  discipline (read shared/prompt-caching.md first if cache miss-rate is
+  suspect).
+
+================================================================================
+HARD LIMITS (do not exceed without explicit operator go)
+================================================================================
+
+- Cumulative Anthropic spend this session: $35
+- Total LLM A/B passes: 1 (this session). If it overruns or surprises,
+  STOP and surface — do not loop.
+- Phase 1B (real money): still parked. No funder/signer activity.
+
+================================================================================
+SESSION BOUNDARY — ENDS WHEN ONE OF
+================================================================================
+
+(a) phase-3.sh green; tag phase-3-pass pushed; checkpoint_phase_3.md
+    written; either KEPT or CUT verdict landed in
+    runbooks/decisions/llm-ab-result.md.    ✅
+(b) BudgetExceeded raised; partial evidence captured; incident written;
+    operator escalated.    ⏸
+(c) Hard blocker (Anthropic auth fail, schema mismatch, capture died) →
+    runbooks/incidents/...; abort; escalate.    🛑
+
+================================================================================
+TWO REMINDERS
+================================================================================
+
+1. Phase 1B is still parked. No real money this session.
+2. The capture should keep running through this session too. If you stop
+   it for any reason, re-launch before closing.

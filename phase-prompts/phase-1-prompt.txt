@@ -1,0 +1,320 @@
+Subject: Execute RUNBOOK.md Phase 1 — Wallet & Auth. Real money on the table; respect the gates.
+
+================================================================================
+CONTEXT ANCHORS  (read each in order before doing anything)
+================================================================================
+
+1. /Users/hamad/Desktop/PolyMarket-5m/CLAUDE.md
+   — durable preferences, locked decisions, anti-vibe rules
+2. ~/.claude/projects/-Users-hamad-Desktop-PolyMarket-5m/memory/project_decisions.md
+   — 19 locked decisions
+3. ~/.claude/projects/-Users-hamad-Desktop-PolyMarket-5m/memory/checkpoint_phase_0.md
+   — Phase 0 close state
+4. /Users/hamad/Desktop/PolyMarket-5m/RUNBOOK.md
+   — open to "Phase 1 — Wallet & Auth" (section starts ~line 477)
+5. ~/.claude/skills/agent-skills/authentication.md
+   — L1 EIP-712 + L2 HMAC flow
+6. ~/.claude/skills/agent-skills/gasless.md
+   — relayer client, builder credentials
+7. /Users/hamad/Desktop/PolyMarket-5m/references/py-clob-client/README.md
+   — official Python client; the source of truth for setup_creds + signed calls
+8. /Users/hamad/Desktop/PolyMarket-5m/pdfs/BUILD_SPEC.pdf  p. 22-23
+   — 25 anti-vibe operating rules
+
+================================================================================
+STATED STATE
+================================================================================
+
+Phase 0 is closed (tag `phase-0-pass` at commit 3195d2c). All bootstrap is
+done; .envrc has Anthropic, Telegram, Polygon RPC live; Telegram smoke
+verified; `make verify` green; CI green. The POLY_* env vars in .envrc are
+still empty — they get filled by Phase 1.
+
+Operator wallet UI: MetaMask (Brave or Chrome, dedicated browser profile for
+this project). No additional wallets required.
+
+================================================================================
+PHASE 1 OWNER INTENT
+================================================================================
+
+Generate Funder + Signer wallet pair (locked decision #11), derive Polymarket
+L2 credentials, prove signing works BEFORE funding any wallet (locked
+decision #13), then fund minimally and execute one $5 gasless test order.
+
+End state: full auth + order flow demonstrated with $5 at risk.
+
+================================================================================
+SEQUENCE — DO NOT SKIP, DO NOT REORDER
+================================================================================
+
+PRE-FLIGHT  (verify before starting; STOP and ask if anything fails)
+
+[ ] Phase 0 gate green (`git tag -l | grep phase-0-pass` returns the tag).
+[ ] Operator has $60 USDC + ~$5 MATIC available on a CEX that supports
+    Polygon withdrawal, OR already on Polygon. Do not initiate withdrawals
+    yet.
+[ ] Operator has read agent-skills/authentication.md and gasless.md
+    end-to-end.
+[ ] Operator has MetaMask installed in a dedicated browser profile, with
+    Polygon mainnet enabled.
+[ ] /security-review was run on the current branch before any
+    signing-related code is written.
+
+--------------------------------------------------------------------------------
+TASK 1.0 — Resolve OD-4 (gasless relayer specifics) — DESIGN DOC ONLY, NO CODE
+--------------------------------------------------------------------------------
+
+1. Read ~/.claude/skills/agent-skills/gasless.md and the py-clob-client
+   source in references/.
+2. Write design/gasless.md documenting:
+   - Which transactions are gasless on Polymarket (orders? approvals? both?)
+   - Which still require MATIC on Signer
+   - Whether builder-program credentials are needed for our use case
+     (probably not for solo retail; confirm)
+   - The exact sign-and-submit flow we'll implement in 1.5
+3. Commit the design doc. No src/ or scripts/ code yet.
+
+If the gasless flow turns out to require builder-program credentials we
+don't have, STOP AND ASK — do not proceed to fund anything. Record the
+finding in runbooks/incidents/<date>-gasless-blocked.md if blocked.
+
+--------------------------------------------------------------------------------
+TASK 1.1 — Generate Funder + Signer wallets OFFLINE
+--------------------------------------------------------------------------------
+
+Design doc first (design/genwallets.md), then scripts/genwallets.py:
+
+- Uses eth-account + secrets.token_bytes(32), no internet.
+- Outputs two wallets to stdout (Funder + Signer addresses + private keys).
+- Operator runs the script, captures output, immediately:
+  * Encrypts Funder privkey to ~/secrets/polymarket-5m/funder.age via
+    `age -p` (passphrase prompt).
+  * Encrypts Signer privkey to ~/secrets/polymarket-5m/signer.age.
+  * Funder privkey NEVER goes into project .envrc. Signer privkey is the
+    only one that does.
+  * `shred -u` the temp file containing plaintext keys.
+- Verify: ~/secrets/polymarket-5m/{funder,signer}.age exist; no plaintext
+  key file remains anywhere.
+
+--------------------------------------------------------------------------------
+TASK 1.2 — Derive Polymarket L2 credentials (no funding needed)
+--------------------------------------------------------------------------------
+
+scripts/derive_creds.py (design doc first):
+
+- Reads POLY_PRIVATE_KEY from env (the SIGNER key).
+- Uses py-clob-client `create_or_derive_api_creds()` — this is L1 EIP-712
+  sign + handshake; no on-chain transaction, no funds required.
+- Prints POLY_API_KEY, POLY_API_SECRET, POLY_API_PASSPHRASE for the
+  operator to paste into .envrc.
+- Operator pastes, runs `direnv allow`.
+
+--------------------------------------------------------------------------------
+TASK 1.3 — Test signing WITHOUT funding (locked decision #13)
+--------------------------------------------------------------------------------
+
+scripts/test_auth.py:
+
+- Constructs a ClobClient with the derived L2 creds.
+- Calls a signed read-only endpoint (e.g. client.get_address() or a
+  position lookup).
+- Asserts the returned address matches the Signer address.
+- IF THIS FAILS, DO NOT FUND. Debug .envrc (most common cause: stray
+  whitespace in pasted creds).
+
+Only after scripts/test_auth.py exits 0 does Phase 1 proceed.
+
+--------------------------------------------------------------------------------
+TASK 1.4 — Fund the Funder, then sweep dust to Signer (HUMAN IN THE LOOP)
+--------------------------------------------------------------------------------
+
+This is the first real-money step. DO NOT execute on-chain transactions
+automatically — surface each step for operator confirmation.
+
+1. Operator withdraws $50 USDC + ~$3 MATIC from CEX → Funder address (use
+   the address printed in 1.1). Confirm balance on PolygonScan:
+   https://polygonscan.com/address/<FUNDER>
+
+2. Operator imports Funder + Signer into MetaMask:
+   - In MetaMask: account dropdown → "Add account or hardware wallet" →
+     "Import account" → paste Funder private key → name "Funder
+     (polymarket-bot)"
+   - Same for Signer → name "Signer (polymarket-bot)"
+
+3. Operator sends $20 USDC + 0.5 MATIC from Funder → Signer using
+   MetaMask's normal send UI. MetaMask signs; the key never leaves
+   MetaMask's vault.
+
+4. Operator approves the Polymarket exchange contract to spend Signer's
+   USDC. Two equivalent paths:
+   (a) Visit polymarket.com connected with the Signer account in MetaMask
+       — Polymarket UI prompts for the approval, sign in MetaMask. Costs
+       MATIC (not gasless).
+   (b) Run py-clob-client's approve helper from CLI — uses POLY_PRIVATE_KEY
+       in .envrc, no MetaMask interaction.
+
+After 1.4:
+- Signer USDC ≥ $20 (verify on PolygonScan).
+- Signer USDC allowance to Polymarket exchange ≥ unlimited (verify via
+  eth_call to allowance(signer, exchange)).
+
+After Phase 1 completes, operator may remove Funder from MetaMask. The
+age-encrypted backup is the source of truth. Re-import only when sending
+again.
+
+--------------------------------------------------------------------------------
+TASK 1.5 — Place + cancel a $5 limit via gasless relayer
+--------------------------------------------------------------------------------
+
+scripts/test_gasless_order.py:
+
+- Picks a low-volume non-time-critical market (NOT a 5-min BTC market —
+  pick a long-dated political market or similar where a stale $5 limit far
+  from mid won't accidentally fill).
+- Places a $5 limit far below the bid (so it cannot fill in this session).
+- Captures order ID; queries status (should be OPEN).
+- Cancels.
+- Final status must be CANCELED.
+- Capture all four states (placed, OPEN, cancel-submitted, CANCELED) into
+  runbooks/gate-evidence/phase-1.txt.
+
+--------------------------------------------------------------------------------
+TASK 1.6 — Document operational hygiene
+--------------------------------------------------------------------------------
+
+Write runbooks/wallet-ops.md:
+
+- Funder + Signer addresses (public, safe).
+- "Funder privkey never on the VPS (the running bot machine)."
+- Sweep policy: Signer balance > $50 → sweep excess to Funder. Funder >
+  $200 → cold storage (Phase 7).
+- Recovery procedure if Signer key is suspected leaked.
+- MetaMask account hygiene: dedicated browser profile, vault password
+  unique, optionally remove Funder from MetaMask between sweeps.
+
+================================================================================
+GATE COMMAND — MUST EXIT 0
+================================================================================
+
+  bash runbooks/gates/phase-1.sh
+
+Write this script before running. It must assert:
+
+1. `make verify` green.
+2. scripts/test_auth.py exits 0 returning Signer address.
+3. PolygonScan API confirms Signer USDC balance ≥ $20.
+4. Polymarket exchange-contract allowance from Signer ≥ unlimited.
+5. runbooks/gate-evidence/phase-1.txt contains the four order-state
+   transitions for the test order.
+6. ~/secrets/polymarket-5m/funder.age exists and is age-encrypted
+   (verifiable by file header).
+7. `grep -r "POLY_FUNDER_PRIVATE_KEY\|<funder-key-prefix>" .` returns
+   nothing (Funder key not in repo OR .envrc).
+
+When the script exits 0:
+- Capture output to runbooks/gate-evidence/phase-1.txt (already done by
+  the script).
+- `git add -A && git commit -m "feat(phase-1): wallet & auth gate green"`
+- `git tag -a phase-1-pass -m "Phase 1 gate passed."`
+- `git push origin main && git push --tags`
+- Write ~/.claude/projects/.../memory/checkpoint_phase_1.md recording:
+  Funder + Signer ADDRESSES (NOT keys), OD-4 resolution, total spent so
+  far ($5 gas + $50 funded = $55).
+
+================================================================================
+ANTI-VIBE-CODING RULES — ENFORCE WITHOUT EXCEPTION
+================================================================================
+
+1. Design doc committed before any code in src/ or scripts/ for that area.
+2. Bug → failing test → fix → green. No symptom patches.
+3. 3-fix rule: three iterations on the same bug → stop, write
+   runbooks/incidents/<date>-<slug>.md, get user sign-off before iteration 4.
+4. Every src/ or scripts/ Python file ships with a one-paragraph header
+   docstring (≥80 chars). Pre-commit and CI enforce this.
+5. Type hints on every function; mypy --strict green.
+6. Tests inject fakes for external calls — production never imports
+   polymarket_bot._paper; tests never import polymarket_bot._live.
+7. No TODO/FIXME/// hack in committed code under src/, tests/, scripts/.
+8. Pinned deps; uv.lock always committed.
+9. Read every diff before committing. This is not optional in Phase 1 —
+   you are signing checks.
+
+================================================================================
+PERMISSIONS / SCOPE
+================================================================================
+
+- Read/write on /Users/hamad/Desktop/PolyMarket-5m/ and ~/.claude/.
+- Read-only on ~/secrets/polymarket-5m/ — assume the operator manages
+  encryption/decryption manually.
+- Write .envrc to add derived POLY_* values ONLY AFTER the operator
+  confirms each value.
+- Bash for installs (uv add), git, gh, curl, age (read-only operations).
+- NO automatic on-chain transactions.
+- NO automatic fund movement.
+- NO signing without explicit operator approval per call.
+- NO plaintext private keys printed, logged, or written to any file other
+  than:
+  * .envrc (Signer privkey only, gitignored, mode 0600)
+  * ~/secrets/polymarket-5m/{funder,signer}.age (age-encrypted only)
+- NO Funder privkey on the VPS (when Phase 5 arrives) — only operator's
+  offline encrypted backup + ephemeral MetaMask import on the laptop.
+- Wallet UI: operator uses MetaMask (Brave/Chrome dedicated profile).
+  Funder + Signer get imported into MetaMask one at a time as separate
+  accounts during task 1.4; sends happen through MetaMask's normal UI.
+- If a step requires a decision the operator hasn't made, STOP and ASK.
+  Don't pick silently.
+- Run /security-review on the branch before any commit that touches
+  signing or fund movement.
+
+================================================================================
+SESSION BOUNDARY — THIS SESSION ENDS WHEN ONE OF
+================================================================================
+
+(a) `bash runbooks/gates/phase-1.sh` exits 0, gate evidence captured, tag
+    phase-1-pass pushed, memory checkpoint written.    ✅
+
+(b) Pre-flight or any in-flight gate check fails →
+    runbooks/incidents/<date>-<slug>.md written, blocking item escalated,
+    session ends without proceeding.    ⏸
+
+(c) Hard blocker (e.g. operator not in permitted jurisdiction, Funder/
+    Signer key generation aborted, gasless relayer requires unattainable
+    builder creds) → write runbooks/incidents/..., ABORT Phase 1,
+    escalate.    🛑
+
+End every session with a 2-line note in state/sessions/<utc-date>.md:
+what shipped, what's next.
+
+================================================================================
+BEFORE YOU START — CONFIRM BY LISTING
+================================================================================
+
+(a) Which anchor docs you've actually read end-to-end.
+
+(b) The exact pre-flight items you'll verify before task 1.0.
+
+(c) Any open decisions you've flagged for the operator (especially OD-4 on
+    gasless relayer specifics — name the question precisely).
+
+(d) The total estimated wall-clock for Phase 1 in this environment.
+
+Then WAIT for the operator's go before running task 1.0.
+
+================================================================================
+TWO OPERATOR-SIDE REMINDERS
+================================================================================
+
+1. Do not withdraw from your CEX yet. Withdrawal happens at task 1.4, only
+   after scripts/test_auth.py exits 0 in task 1.3. The locked order is a
+   hard rule.
+
+2. Use a dedicated browser profile for MetaMask in this project (Brave or
+   Chrome → new profile). Keeps the bot's MetaMask vault separate from any
+   personal browsing. Hardware wallet (Ledger) is NOT required at this
+   bankroll size — that triggers at the $2k step in Phase 7.
+
+================================================================================
+
+When you paste this prompt into the new session and Claude responds with
+the four-item confirmation list, review it, then say "go task 1.0" to
+start the design-doc step.

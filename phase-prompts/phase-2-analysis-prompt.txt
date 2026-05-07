@@ -1,0 +1,176 @@
+Subject: Execute RUNBOOK.md Phase 2.6 — oracle-behavior gate (next session, after 7 days of capture). Real money still parked; this gate is read-only and free, but the result decides whether the thesis survives.
+
+================================================================================
+CONTEXT ANCHORS  (read each in order before doing anything)
+================================================================================
+
+ 1. /Users/hamad/Desktop/PolyMarket-5m/CLAUDE.md
+    — durable preferences, locked decisions, anti-vibe rules
+ 2. ~/.claude/projects/-Users-hamad-Desktop-PolyMarket-5m/memory/project_decisions.md
+    — 20 locked decisions
+ 3. ~/.claude/projects/-Users-hamad-Desktop-PolyMarket-5m/memory/checkpoint_phase_0.md
+    — Phase 0 close state
+ 4. ~/.claude/projects/-Users-hamad-Desktop-PolyMarket-5m/memory/checkpoint_phase_1a.md
+    — Phase 1A close state
+ 5. ~/.claude/projects/-Users-hamad-Desktop-PolyMarket-5m/memory/checkpoint_phase_2_dev.md
+    — Phase 2 dev-side close state (this session)
+ 6. /Users/hamad/Desktop/PolyMarket-5m/RUNBOOK.md
+    — Phase 2.6 section + the formal gate (line ~794 onward)
+ 7. /Users/hamad/Desktop/PolyMarket-5m/MASTERPLAN.md
+    — line 31: the 60s-heartbeat thesis claim that this gate verifies
+ 8. /Users/hamad/Desktop/PolyMarket-5m/.claude/worktrees/bold-galileo-2d56ca/design/data_plane.md
+    — the four-feed architecture, schema pin, gate criteria summary
+ 9. /Users/hamad/Desktop/PolyMarket-5m/.claude/worktrees/bold-galileo-2d56ca/runbooks/gate-evidence/phase-2.2-smoke.txt
+    — the 5-min smoke that already revealed a 33s median heartbeat,
+      not 60s, on the 5/7 sample window. The 7-day data either
+      confirms or contradicts that.
+10. /Users/hamad/Desktop/PolyMarket-5m/.claude/worktrees/bold-galileo-2d56ca/runbooks/capture-launch.md
+    — how the capture was launched and how it's monitored
+
+================================================================================
+STATED STATE (as of phase-2-dev close)
+================================================================================
+
+Phase 2 dev (tasks 2.0 → 2.4b) is closed. Code is committed on branch
+`claude/bold-galileo-2d56ca`, four commits stacked on `phase-1a-pass`:
+  - cec0069 design/data_plane.md
+  - 14d006d spot feeds (Binance + Coinbase + aggregator) — 2.1
+  - 4fac98e oracle watcher (Chainlink BTC/USD on Polygon) — 2.2
+  - aa8b80e polymarket feed + resolver + storage/health/runtime — 2.3 + 2.4 + 2.4b
+
+(Plus capture-launch and gate-script commits made at 2.5 close.)
+
+`make verify` green: ruff, mypy --strict on 15 src files, 98 pytest pass.
+`lint-imports` green: production-never-imports-paper KEPT,
+paper-never-imports-live KEPT.
+
+Capture launched at <FILL_IN_LAUNCH_TIME_UTC> via:
+  nohup uv run python -u scripts/run_capture.py >> state/capture.log 2>&1 &
+PID file: state/capture.pid (or tmux/screen if reinstalled).
+
+Capture writes to ticks/<UTC-date>/<source>_<launch_id>.parquet (the
+launch_id suffix makes a re-launch after laptop sleep non-destructive).
+
+THESIS-RELEVANT SIGNAL FROM 5-MIN SMOKE: median oracle heartbeat = 33.0s,
+not the ~60s assumed in MASTERPLAN.md line 31. Documented in
+`runbooks/gate-evidence/phase-2.2-smoke.txt`. The 7-day analysis below is
+the authoritative measurement.
+
+================================================================================
+PHASE 2.6 OWNER INTENT
+================================================================================
+
+Run the formal oracle-behavior gate against ≥ 7 calendar days of captured
+data. The gate decides whether the trading thesis is on solid ground.
+
+Pass criteria (from phase-2-prompt.txt §"Gate command"):
+  1. Median inter-update gap ∈ [55s, 65s].
+  2. Zero sub-30s updates.
+  3. Sub-60s updates < 5% of total.
+  4. Zero gaps > 180s.
+
+Plus cross-feed sanity: pick a few random 5-minute windows; verify
+oracle/spot/polymarket all have coverage and timestamps align within ~2s.
+
+If the gate fails, the thesis is wrong as documented. Open
+`runbooks/incidents/oracle-behavior-1.md`, escalate to operator, do not
+proceed to Phase 3.
+
+================================================================================
+SEQUENCE
+================================================================================
+
+PRE-FLIGHT  (verify before starting; STOP and ask if anything fails)
+
+[ ] Capture has been running ≥ 7 calendar days. Check
+    `ls -d ticks/*/ | wc -l` ≥ 7.
+[ ] Capture is currently still running (not strictly required, but it
+    means no late-window gap):
+    `kill -0 $(cat state/capture.pid)` returns 0
+[ ] Each dated directory contains at least one of every source:
+    for d in ticks/*/; do
+      for s in binance coinbase oracle polymarket; do
+        compgen -G "$d${s}*.parquet" > /dev/null || echo "MISSING: $d $s"
+      done
+    done
+[ ] `make verify` still green at HEAD.
+
+--------------------------------------------------------------------------------
+TASK 2.6 — write `scripts/analyze_oracle.py` + `design/oracle_analysis.md`
+--------------------------------------------------------------------------------
+
+`design/oracle_analysis.md` first (anti-vibe rule #1):
+  - inputs: globs `ticks/*/oracle*.parquet`, reads via polars
+  - decode policy: trust the `ts_utc_ns` column; cross-check against the
+    `received_at_ns` to spot any per-window WS-lag biases
+  - per-day metrics + aggregate metrics
+  - reports the four pass criteria with explicit numbers + binary verdicts
+  - emits a small histogram of inter-update gaps to the gate-evidence file
+  - --days N (default 7) takes the last N calendar days from now-UTC
+
+`scripts/analyze_oracle.py`:
+  - argparse: --days, --ticks-root, --report-path
+  - load all oracle parquets across the requested dates, sort by ts_utc_ns
+  - compute inter-update gaps (in seconds), reject gaps spanning launch
+    boundaries (where multiple parquet files overlap a single day, the
+    sort handles it)
+  - write a JSON-or-text report and exit 0 on pass, 1 on fail
+
+Tests in `tests/test_analyze_oracle.py` against synthetic parquet fixtures
+covering all four pass and fail cases.
+
+--------------------------------------------------------------------------------
+TASK 2.6.5 — cross-feed sanity check
+--------------------------------------------------------------------------------
+
+`scripts/cross_feed_sanity.py`:
+  - pick K random 5-minute windows from the last 7 days
+  - for each window: assert oracle has ≥ 1 update, spot (binance OR
+    coinbase) has ≥ 100 events, polymarket has ≥ 1 book
+  - assert oracle event_ts and recv_ns are within ±2s of each other in
+    each window (or surface the worst skew)
+
+This is gate criterion #5.
+
+--------------------------------------------------------------------------------
+TASK 2.6.6 — run the gate
+--------------------------------------------------------------------------------
+
+`bash runbooks/gates/phase-2.sh`
+
+Captures evidence to `runbooks/gate-evidence/phase-2.txt`. On green:
+  git tag phase-2-pass <head>
+  git push origin claude/bold-galileo-2d56ca --tags
+  write ~/.claude/projects/-Users-hamad-Desktop-PolyMarket-5m/memory/checkpoint_phase_2.md
+
+On red:
+  write runbooks/incidents/oracle-behavior-1.md with the actual numbers,
+  the failed criterion, and a thesis-revision proposal (e.g. "median 33s
+  → strategy still viable but trading-window lag halved → revisit
+  win-rate target before Phase 3 backtest"). Escalate to operator. Do
+  not advance.
+
+================================================================================
+ANTI-VIBE-CODING RULES — UNCHANGED FROM PHASE 2 DEV
+================================================================================
+
+Same 10 rules as the dev session prompt. Especially:
+- Design doc before code. `design/oracle_analysis.md` precedes
+  `scripts/analyze_oracle.py`.
+- Bug → failing test → fix → green. No symptom patches.
+- 3-fix rule on iteration 4 → stop, write incident, get sign-off.
+- mypy --strict green on every src/scripts/ Python file.
+- No real network in unit tests.
+
+================================================================================
+SESSION BOUNDARY — ENDS WHEN ONE OF
+================================================================================
+
+(a) Phase 2 gate green; tag pushed; checkpoint written; Phase 3
+    unblocked.    ✅
+(b) Pre-flight fails (insufficient days, missing files) → escalate;
+    capture continues; retry next day.    ⏸
+(c) Gate red on the oracle-behavior criterion → incident written,
+    thesis-revision proposal drafted, escalated. Do NOT advance.    🛑
+
+================================================================================

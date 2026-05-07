@@ -1,0 +1,246 @@
+Subject: Execute Phase 4 dev — paper runtime + sim validation + decision logging. Branch claude/bold-galileo-2d56ca @ 3cd4a70 (tag phase-3-pass). Capture should still be running; verify before any code.
+
+================================================================================
+CONTEXT ANCHORS  (read in order; do not skip)
+================================================================================
+
+ 1. /Users/hamad/Desktop/PolyMarket-5m/CLAUDE.md
+    — durable preferences, anti-vibe rules
+ 2. ~/.claude/projects/-Users-hamad-Desktop-PolyMarket-5m/memory/MEMORY.md
+    — session-bridging memory index
+ 3. ~/.claude/projects/-Users-hamad-Desktop-PolyMarket-5m/memory/project_decisions.md
+    — 21 locked decisions; #9 (sizing), #11 (wallet split), #16 (LLM verdict),
+      #17 (gasless relayer) are load-bearing for this session
+ 4. ~/.claude/projects/-Users-hamad-Desktop-PolyMarket-5m/memory/checkpoint_phase_3.md
+    — Phase 3 outcome: VERDICT CUT; ensemble code retained; Phase 4 runs
+      deterministic-only. Note diagnostics owed before any Phase 8 ensemble re-run.
+ 5. /Users/hamad/Desktop/PolyMarket-5m/RUNBOOK.md  §"PHASE 4 — Paper Trading on Live Venue"
+    — sub-task list (4.1, 4.3, 4.4, 4.5) and gate criteria
+ 6. /Users/hamad/Desktop/PolyMarket-5m/MASTERPLAN.md
+    — Phase 4 sits between backtest harness and VPS provisioning
+ 7. /Users/hamad/Desktop/PolyMarket-5m/.claude/worktrees/bold-galileo-2d56ca/design/backtest.md
+    — Strategy / Decision / Fill protocol shapes; the paper runner consumes
+      the same Strategy contract as the backtest runner
+
+================================================================================
+BRANCH + HEAD
+================================================================================
+
+Branch:  claude/bold-galileo-2d56ca   (worktree at .claude/worktrees/bold-galileo-2d56ca/)
+HEAD:    3cd4a70  feat(phase-3): LLM A/B + verdict + gate — task 3.3 (CUT)
+Tag:     phase-3-pass   (pushed)
+Pushed:  yes, github.com/FalconAEZ/polymarket-5m-bot
+
+If a `claude/...` worktree already exists for this session under
+.claude/worktrees/, work there. The Phase-3 worktree directory above is the
+one with all the state (state/capture.pid, state/feeds_health.json, ticks/,
+state/token_side_index.json) — Phase 4 should keep using it.
+
+================================================================================
+PRE-FLIGHT  (do these BEFORE any code change)
+================================================================================
+
+[ ] cd /Users/hamad/Desktop/PolyMarket-5m/.claude/worktrees/bold-galileo-2d56ca
+[ ] git rev-parse HEAD                              → must equal 3cd4a70
+[ ] git tag --points-at HEAD                        → must include phase-3-pass
+[ ] export PATH="$HOME/.local/bin:$PATH"           ;# uv lives there, not in default PATH
+[ ] make verify                                     → ruff + mypy --strict (36 files) + 223 pytest pass
+[ ] uv run lint-imports                             → 2 contracts kept, 0 broken
+[ ] cat state/capture.pid && kill -0 $(cat state/capture.pid)  → process alive
+    If dead: re-launch per runbooks/capture-launch.md Option A.
+[ ] cat state/feeds_health.json | jq '.feeds | to_entries | map({(.key): {msgs: .value.msgs_seen, healthy: .value.healthy}}) | add'
+    All 4 feeds healthy with growing msgs_seen.
+[ ] ls ticks/ — should now have at least 2026-05-06 and 2026-05-07 dated dirs.
+
+NOTE: Anthropic top-up to $150 (locked decision #14) is NOT required for
+this session. Phase 3 cut the LLM ensemble (OD-5 = CUT), so Phase 4
+deterministic paper trading consumes ~$0 in API. Defer OD-3 until Phase 8
+ensemble revisit.
+
+================================================================================
+THE WORK — four deliverables (one session)
+================================================================================
+
+This session ships Phase 4 *dev* — the runtime + sim validation. The 14-day
+paper run itself (task 4.4) is wall-clock and doesn't fit in any single
+session; it gets kicked off at the end of this one and monitored by the
+operator daily. The Phase 4 *gate* fires at the end of those 14 days and
+is therefore a future session, not this one. Mirrors how Phase 2 capture
+ran in parallel with Phase 3 dev (decision #21).
+
+------------------------------------------------------------------------
+TASK 4.0 — Design doc (anti-vibe rule #1, before any code)
+------------------------------------------------------------------------
+
+Write `design/paper.md` covering:
+
+  - Why paper mode exists (validate the FillSimulator against live
+    microstructure before risking real money). Reference checkpoint_phase_3
+    diagnostic: backtest produced -$6.16 P&L on 60% win-rate over 15 fills,
+    so the paper run must show whether that's (a) the simulator
+    being optimistic, (b) the fee model being wrong, or (c) the strategy
+    actually being unprofitable at this size.
+  - Architecture: ShadowBook receives Decisions from Strategy, simulates
+    fills against the *live* orderbook seen at decision time (NOT the next
+    book like backtest does — paper sees the same book the live bot would).
+    Imports stay one-way: `_paper` may import `_live.feeds` (read-only) but
+    never `_live.execution`; production never imports `_paper`. Enforced
+    by the existing import-linter contracts.
+  - Decision-logging schema: every decision writes a JSON line with the
+    full input snapshot (orderbook, oracle state, deterministic composite,
+    rationale, simulated fill, simulated P&L). Stored at
+    `state/decisions/<UTC-date>.jsonl`. Goal: postmortems and Phase 8
+    ensemble re-runs can replay against this.
+  - Sim validation methodology: how task 4.3 will pick 100 hypothetical
+    decisions, how it pulls the actual top-of-book at each timestamp, how
+    it computes the ≥90% within-1¢ criterion.
+  - What is OUT of scope this session: the 14-day run itself, daily
+    PnL ritual, regime-coverage analysis. Those are future-session work
+    triggered when the gate is ready to fire.
+
+Lock the doc, commit it, then write the code.
+
+------------------------------------------------------------------------
+TASK 4.1 — Paper-mode runtime
+------------------------------------------------------------------------
+
+Files:
+  - `src/polymarket_bot/_paper/__init__.py`
+  - `src/polymarket_bot/_paper/shadow_book.py`
+      ShadowBook: maintains the latest BookUpdate per (asset_id, side).
+      `attempt_fill(decision: Decision, now_ts_ns: int) -> Fill | None`
+      simulates against the most recent book seen for the decision's
+      asset_id. Reuses `FillSimulator` math from
+      `src/polymarket_bot/backtest/fills.py` so the cost model is identical
+      between backtest and paper.
+  - `src/polymarket_bot/_paper/runner.py`
+      PaperRunner: subscribes to live MarketEvents (via the existing
+      `_live.feeds` interfaces), drives a Strategy, queues decisions,
+      attempts fills as new BookUpdates arrive within `decision.ttl_s`,
+      writes settlement P&L to the decision log on window close.
+
+Tests:
+  - `tests/paper/test_shadow_book.py` — unit tests with synthetic
+    BookUpdates: fill / no-fill / TTL expiry / size-cap behaviour
+    matches the backtest FillSimulator on identical inputs.
+  - `tests/paper/test_runner.py` — drive PaperRunner with a fake feed
+    that yields a fixed event stream, assert the resulting decision log
+    is shape-correct.
+
+Import-linter:
+  - Add a contract: `_paper` may import `_live.feeds.*` but never
+    `_live.execution.*`. Existing two contracts stay.
+
+------------------------------------------------------------------------
+TASK 4.3 — Sim validation harness  (data-permitting partial)
+------------------------------------------------------------------------
+
+`scripts/validate_paper_sim.py` — given a captured date range, picks N
+hypothetical decisions (deterministic strategy at threshold 0.6pp,
+randomly across the windows), then for each:
+  1. Records the simulated fill price the FillSimulator would produce.
+  2. Looks up the actual top-of-book at the decision's intended fill
+     timestamp (decision.ts_utc_ns + small latency budget).
+  3. Computes the absolute delta in cents.
+
+Outputs a report: count of decisions, mean / median / p95 delta, and
+the within-1¢ pass rate. Target per RUNBOOK §4.3: ≥ 90% within 1¢.
+
+Run it against the existing captured data (2026-05-06 + 2026-05-07).
+Capture output to `runbooks/gate-evidence/phase-4.3-sim-validation.txt`.
+If the pass rate is < 90% on the hours-of-data sample, that's
+diagnostic — write up the gap in the decision log and let the 14-day run
+provide the real validation.
+
+------------------------------------------------------------------------
+TASK 4.5 — Decision-logging skeleton
+------------------------------------------------------------------------
+
+`src/polymarket_bot/_paper/decision_log.py` — append-only JSONL writer at
+`state/decisions/<UTC-date>.jsonl`. Schema fields per design/paper.md.
+Wired into PaperRunner so every fire produces a line at decision time
+and a settlement-update line at window close.
+
+Tests: write 3 synthetic decisions + settlements, read the file back,
+assert round-trip.
+
+------------------------------------------------------------------------
+KICK-OFF — the 14-day run (NOT a deliverable to complete; just start it)
+------------------------------------------------------------------------
+
+End-of-session, after make verify is green:
+  - Launch PaperRunner in the background (mirror runbooks/capture-launch.md
+    Option A pattern; write `state/paper.pid`).
+  - Document the daily ritual in `runbooks/paper-monitor.md`: what to
+    inspect each morning, what divergences trigger investigation, how to
+    stop the run cleanly.
+  - Plan the 14-day window per RUNBOOK §4 pre-flight: must include ≥ 1
+    CPI/FOMC release, ≥ 1 weekend low-vol period, ≥ 1 BTC daily move
+    > 2%. If today's date doesn't make that workable in 14 days,
+    surface that to the operator before launching.
+
+The Phase 4 *gate* (`runbooks/gates/phase-4.sh`) is NOT for this session.
+Write the gate script if convenient (it's mostly mechanical), but do
+not run it — there's no 14-day evidence yet.
+
+================================================================================
+ANTI-VIBE RULES — UNCHANGED
+================================================================================
+
+Same 10 rules in CLAUDE.md. Especially relevant for this session:
+
+- **Design doc before code** (rule #1): `design/paper.md` lands first;
+  if 4.1 or 4.3 needs a shape change mid-implementation, edit the design
+  doc first.
+- **Bug → failing test → fix → green** (rule #2): the Phase 3 schema-shape
+  iterations went well because each fix had a regression test. Same
+  discipline for any FillSimulator divergence found in 4.3.
+- **3-fix rule**: 3 iterations on the same issue → stop, write
+  `runbooks/incidents/<date>-<slug>.md`.
+- **External calls behind interfaces** (rule #7): `_paper` and `_live`
+  are import-linted apart. The new `_paper` package must respect that.
+- **Type hints + mypy --strict**; 223 tests stay green.
+- **No `TODO`/`FIXME`/`hack`** in committed code under `src/`, `tests/`,
+  `scripts/`. Use icebox issues for follow-ups.
+
+================================================================================
+HARD LIMITS (do not exceed without explicit operator go)
+================================================================================
+
+- Cumulative Anthropic spend this session: $0 expected (LLM is cut). If
+  any API call is made, surface why before the call.
+- Phase 1B (real money): still parked. No funder/signer activity, no
+  real orders, no signing of anything that touches Polymarket execution.
+- Paper mode runs LOCAL (laptop), not VPS. VPS is Phase 5.
+
+================================================================================
+SESSION BOUNDARY — ENDS WHEN ONE OF
+================================================================================
+
+(a) design/paper.md committed; _paper/{shadow_book,runner,decision_log}.py
+    + tests landed and 223+ pytest pass; sim validation script run with
+    evidence captured; daily-ritual runbook written; PaperRunner kicked
+    off in background; checkpoint_phase_4_dev.md memory written.    ✅
+(b) 50% context burn before all four tasks land → close out whatever is
+    green, write a partial checkpoint, stop. Phase 4 dev finishes in a
+    follow-up session.    ⏸
+(c) Hard blocker (capture died and re-launch fails, lint-imports
+    contract conflict, MarketEvent shape doesn't fit live consumption) →
+    runbooks/incidents/...; abort; escalate.    🛑
+
+================================================================================
+THREE REMINDERS
+================================================================================
+
+1. **Capture stays running.** Phase 4 IS more capture, but the existing
+   capture process (PID was 23820 at Phase-3 close) is what's been
+   feeding ticks/. Don't kill it. If you launch PaperRunner, it should
+   subscribe alongside the capture — they're separate processes that
+   read from the same live feeds.
+2. **Phase 1B still parked.** No real money, no real orders. ShadowBook
+   is paper-only by design + import-linter.
+3. **Op-side cleanup carry-forward**: `env req.rtf` at project root has
+   the plaintext Signer privkey at mode 0644 (from Phase 1A). Tighten
+   to 0600 minimum, or move into `~/secrets/polymarket-5m/` per the
+   Phase 1A pattern. Do this before the next phase that touches real
+   money (Phase 1B / Phase 6).
