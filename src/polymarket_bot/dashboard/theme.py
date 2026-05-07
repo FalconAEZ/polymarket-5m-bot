@@ -120,10 +120,14 @@ CSS = """
             var(--bg-secondary);
         border: 1px solid var(--border-subtle);
         border-radius: var(--r-md);
-        padding: 10px 14px;
+        padding: 12px 14px;
         height: 100%;
+        min-height: 92px;            /* uniform card height — every KPI matches */
         box-shadow: var(--shadow-card);
         transition: border-color 160ms ease, transform 160ms ease, background 200ms ease;
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;  /* label up, value+sub down — even rhythm */
     }
     .pmb-kpi:hover {
         border-color: var(--border-strong);
@@ -147,14 +151,14 @@ CSS = """
         gap: 6px;
         transition: color 200ms ease;
     }
-    /* Hero variant — for the most important KPI (Cumulative PnL) */
+    /* Hero variant — slight bump only, so all cards stay the same height */
     .pmb-kpi--hero .pmb-kpi__value {
-        font-size: 30px;
-        font-weight: 700;
-        letter-spacing: -0.03em;
+        font-size: 26px;
+        font-weight: 600;
+        letter-spacing: -0.025em;
     }
     .pmb-kpi--hero .pmb-kpi__glyph {
-        font-size: 18px;
+        font-size: 16px;
     }
     .pmb-kpi__sub {
         color: var(--text-secondary);

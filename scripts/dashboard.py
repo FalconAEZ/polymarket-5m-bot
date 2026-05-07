@@ -216,7 +216,6 @@ def _render_kpi_row(rows: list[DecisionRow], paper: ProcessStatus) -> None:
             else None,
             tone=pnl_tone,
             glyph=pnl_glyph,
-            hero=True,
         ),
         kpi_card(
             label="Win Rate",
@@ -235,7 +234,9 @@ def _render_kpi_row(rows: list[DecisionRow], paper: ProcessStatus) -> None:
         kpi_card(
             label="Last Decision",
             value=last_dec,
-            subtitle="silence is normal at threshold 0.6pp" if not rows else None,
+            subtitle=(
+                "silence is normal at 0.6pp threshold" if not rows else f"{n_fired} fired total"
+            ),
             tone=last_dec_tone,
         ),
         kpi_card(
