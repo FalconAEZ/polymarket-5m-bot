@@ -1,0 +1,10 @@
+=== Phase 4.3 — Paper Sim Validation Report ===
+dates: 2026-05-06,2026-05-07
+strategy: deterministic threshold_pct=0.2
+latency_budget_ns: 150000000  (150 ms)
+decisions_total: 0
+samples_requested: 100
+samples_validated: 0
+samples_excluded: 0
+
+FATAL: no usable samples. Cannot compute pass-rate.

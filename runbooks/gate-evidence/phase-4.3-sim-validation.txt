@@ -1,0 +1,68 @@
+=== Phase 4.3 — Paper Sim Validation Report (canonical) ===
+generated: 2026-05-07
+script: scripts/validate_paper_sim.py
+dates: 2026-05-06,2026-05-07
+strategy: deterministic threshold_pct=0.6  (matches prompt; locked decision #6)
+latency_budget_ns: 150000000  (150 ms — gasless relayer typical p99 confirm time)
+
+--- Result ---
+decisions_total: 0
+samples_validated: 0
+samples_excluded: 0
+
+STATUS: NO_SIGNAL — at the locked threshold of 0.6pp, the deterministic
+strategy did not fire on the captured 28 5m windows of 2026-05-06 +
+2026-05-07. This matches the Phase 3 backtest result
+(checkpoint_phase_3.md: deterministic 0/0 fires; ensemble 9/15). At
+BTC ~$67k, a 0.6pp composite signal needs roughly a $400 5m move — the
+captured windows did not produce that. Pass-rate cannot be computed
+from zero samples.
+
+--- Supplementary: threshold sweep for simulator-vs-live divergence ---
+
+To get usable samples for the simulator-validation question (separate
+from the strategy-edge question), the script was re-run at lower
+thresholds. Output preserved alongside this file:
+  - phase-4.3-sim-validation-thr0.2.txt   → still 0 decisions
+  - phase-4.3-sim-validation-thr0.01.txt  → 11 decisions; FAIL gap
+
+At threshold_pct=0.01, 11 samples; results:
+  mean delta:    2.7364¢
+  median delta:  1.1000¢
+  p95 delta:     9.1000¢
+  max delta:     9.1000¢
+  within_1c_rate: 0.4545  (target >= 0.90)
+
+STATUS for that supplementary run: GAP — 45.5% within 1¢, far below
+the 90% target. Simulator's +0.1¢-per-$5-vs-$5K-depth impact model is
+too aggressive for these 11 samples; the live book at decision_ts +
+150ms is consistently lower than the FillSimulator's effective ask.
+
+--- Interpretation ---
+
+Per design/paper.md §6 + §10 the gate does NOT fail on this run —
+hours-of-data is too small a sample to reach a verdict, and the 14-day
+paper run is the real validation. The gap at threshold 0.01 surfaces
+two follow-ups, both deferred until 14-day evidence:
+
+  (1) The FillSimulator's impact model may need recalibration after
+      Phase 1B produces real fills.
+  (2) The 0.6pp threshold may be empirically too high for the captured
+      regime; Phase 3.3's calibration sweep is the place to revisit
+      this, not Phase 4.
+
+--- Reproduction ---
+
+  # canonical pass (locked threshold)
+  uv run python -u scripts/validate_paper_sim.py \
+      --dates 2026-05-06,2026-05-07 \
+      --threshold-pct 0.6 \
+      --n-samples 100 \
+      --report runbooks/gate-evidence/phase-4.3-sim-validation.txt
+
+  # supplementary diagnostic at lower thresholds
+  uv run python -u scripts/validate_paper_sim.py \
+      --dates 2026-05-06,2026-05-07 \
+      --threshold-pct 0.01 \
+      --n-samples 100 \
+      --report runbooks/gate-evidence/phase-4.3-sim-validation-thr0.01.txt
