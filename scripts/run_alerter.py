@@ -39,6 +39,9 @@ def _configure_logging() -> None:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
         handlers=[logging.StreamHandler()],
     )
+    # httpx logs the full request URL at INFO, which exposes the Telegram
+    # bot token in the systemd journal. Suppress unless something fails.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 async def _amain() -> int:
