@@ -7,6 +7,7 @@ Canonical sources for the units installed at `/etc/systemd/system/` on the VPS. 
 | File | Purpose | Phase | Enabled? |
 |---|---|---|---|
 | `bot-staging.service` | Paper-mode runtime (`scripts/run_paper.py`) running against live data | 5 | enabled (active once `.envrc` is populated) |
+| `tg-alerter.service` | Telegram alerter daemon (`scripts/run_alerter.py`) — drains `polybot:alerts` from Redis, writes `state/halt.sentinel` on `/halt` | 5.5 | enabled (active once `.envrc` has Redis + Telegram vars) |
 | `bot.service` | Live-mode runtime — runs `scripts/run_live.py` (does not exist until Phase 6) | 6 | **disabled** until Phase 6 gate passes |
 
 `bot.service` declares `ConditionPathExists=/home/ops/polymarket-5m-bot/scripts/run_live.py` so even an accidental `systemctl start bot.service` is a no-op until that file lands in Phase 6.
@@ -18,15 +19,18 @@ From the operator's local repo, with the linted file committed:
 ```bash
 scp -i ~/Downloads/LightsailDefaultKey-eu-west-1.pem -P 2222 \
     runbooks/systemd/bot-staging.service runbooks/systemd/bot.service \
+    runbooks/systemd/tg-alerter.service \
     ops@108.132.51.116:/tmp/
 
 ssh -i ~/Downloads/LightsailDefaultKey-eu-west-1.pem -p 2222 ops@108.132.51.116 \
   'sudo install -m 644 /tmp/bot-staging.service /etc/systemd/system/bot-staging.service \
    && sudo install -m 644 /tmp/bot.service          /etc/systemd/system/bot.service \
+   && sudo install -m 644 /tmp/tg-alerter.service   /etc/systemd/system/tg-alerter.service \
    && sudo systemctl daemon-reload \
    && sudo systemctl enable  bot-staging.service \
+   && sudo systemctl enable  tg-alerter.service \
    && sudo systemctl disable bot.service \
-   && rm /tmp/bot-staging.service /tmp/bot.service'
+   && rm /tmp/bot-staging.service /tmp/bot.service /tmp/tg-alerter.service'
 ```
 
 Then start staging once `.envrc` has all required vars:
@@ -42,6 +46,7 @@ ssh -i ~/Downloads/LightsailDefaultKey-eu-west-1.pem -p 2222 ops@108.132.51.116 
 | Var | Used by | Notes |
 |---|---|---|
 | `POLYGON_RPC_URL` | `_live/feeds/oracle.py` | Required — `os.environ[…]` lookup, raises if missing. |
+| `REDIS_URL` | `bot-staging` (RedisAlertSink) + `tg-alerter` (RedisQueue) | `redis://127.0.0.1:6379/0` on the VPS. Phase 5.5. |
 | `TELEGRAM_BOT_TOKEN` | Phase 5.5 `tg-alerter` | Already in operator's local `.envrc` from Phase 0. |
 | `TELEGRAM_CHAT_ID`  | Phase 5.5 `tg-alerter` | Same. |
 

@@ -1,0 +1,28 @@
+[Unit]
+Description=Polymarket bot — Telegram alerter + /halt watcher (Phase 5.5)
+Documentation=file:///home/ops/polymarket-5m-bot/RUNBOOK.md
+After=network-online.target redis-server.service
+Wants=network-online.target redis-server.service
+
+[Service]
+Type=simple
+User=ops
+Group=ops
+WorkingDirectory=/home/ops/polymarket-5m-bot
+# .envrc uses `export KEY=VAL` (shell-sourceable, direnv-compatible).
+# Wrap with bash so the same file works for both interactive shell and systemd.
+ExecStart=/bin/bash -c 'source /home/ops/polymarket-5m-bot/.envrc && exec /home/ops/.local/bin/uv run python -u scripts/run_alerter.py'
+Restart=on-failure
+RestartSec=15
+TimeoutStopSec=15
+KillSignal=SIGTERM
+StandardOutput=journal
+StandardError=journal
+# Hardening parity with bot-staging.service. The alerter writes only
+# state/halt.sentinel under /home/ops/polymarket-5m-bot/.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target

@@ -24,6 +24,7 @@ from dataclasses import dataclass
 
 from polymarket_bot._paper.decision_log import DecisionLog
 from polymarket_bot._paper.shadow_book import ShadowBook
+from polymarket_bot.alerts import Alert, AlertSink, Level, NullAlertSink
 from polymarket_bot.backtest.replay import SideResolver, decode_record
 from polymarket_bot.backtest.types import (
     BookUpdate,
@@ -61,6 +62,8 @@ class PaperRunner:
         decision_log: DecisionLog | None = None,
         clock_ns: Callable[[], int] | None = None,
         queue_size: int = DEFAULT_QUEUE_SIZE,
+        alert_sink: AlertSink | None = None,
+        alert_source: str = "bot-staging",
     ) -> None:
         if not feeds:
             raise ValueError("PaperRunner requires at least one Feed")
@@ -74,6 +77,24 @@ class PaperRunner:
         self._stop = asyncio.Event()
         self._dropped = 0
         self._state = _RunState()
+        self._alerts: AlertSink = alert_sink if alert_sink is not None else NullAlertSink()
+        self._alert_source = alert_source
+
+    def _alert(self, level: Level, message: str, **fields: str | int | float) -> None:
+        try:
+            self._alerts.publish(
+                Alert(
+                    level=level,
+                    message=message,
+                    ts_ns=self._clock_ns(),
+                    source=self._alert_source,
+                    fields=fields,
+                )
+            )
+        except Exception:
+            # AlertSink contract says publish never raises, but defend anyway —
+            # the trading hot path must not break if a sink misbehaves.
+            LOG.exception("alert publish raised; suppressed")
 
     @property
     def dropped_records_total(self) -> int:
@@ -103,6 +124,12 @@ class PaperRunner:
                             queue.get_nowait()
                         with contextlib.suppress(asyncio.QueueFull):
                             queue.put_nowait(record)
+                        if self._dropped == 1 or self._dropped % 100 == 0:
+                            self._alert(
+                                Level.WARN,
+                                f"paper-runner queue overflow; dropped={self._dropped}",
+                                dropped_total=self._dropped,
+                            )
             except asyncio.CancelledError:
                 raise
             finally:
@@ -192,11 +219,17 @@ class PaperRunner:
         # dropped with a log line.
         if self._state.window_ts is None:
             LOG.warning("decision arrived before window boundary; dropping")
+            self._alert(Level.WARN, "decision arrived before window boundary; dropped")
             return
         if self._state.pending_decision is not None or self._state.settled_fill is not None:
             LOG.warning(
                 "second decision in window %s; dropping",
                 self._state.window_ts,
+            )
+            self._alert(
+                Level.WARN,
+                f"second decision in window {self._state.window_ts}; dropped",
+                window_ts=self._state.window_ts,
             )
             return
         side = _side_from_rationale(decision.rationale)
@@ -204,6 +237,11 @@ class PaperRunner:
             LOG.warning(
                 "decision rationale missing side= marker; dropping (asset=%s)",
                 decision.asset_id,
+            )
+            self._alert(
+                Level.WARN,
+                "decision rationale missing side= marker; dropped",
+                asset_id=decision.asset_id,
             )
             return
         # Try immediate fill against the latest book in the shadow book.

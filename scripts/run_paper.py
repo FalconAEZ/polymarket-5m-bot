@@ -16,6 +16,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
+import os.path
 import signal
 import sys
 import time
@@ -33,6 +35,7 @@ from polymarket_bot._live.feeds.spot_coinbase import CoinbaseMatchFeed  # noqa: 
 from polymarket_bot._paper.decision_log import DecisionLog  # noqa: E402
 from polymarket_bot._paper.runner import PaperRunner  # noqa: E402
 from polymarket_bot._paper.shadow_book import ShadowBook  # noqa: E402
+from polymarket_bot.alerts import AlertSink, NullAlertSink, RedisAlertSink  # noqa: E402
 from polymarket_bot.backtest.side_index import TokenSideIndex  # noqa: E402
 from polymarket_bot.feeds.protocols import Feed  # noqa: E402
 from polymarket_bot.resolver import WINDOW_SECONDS, active_window_ts  # noqa: E402
@@ -44,6 +47,8 @@ from polymarket_bot.strategies.deterministic import (  # noqa: E402
 LOG = logging.getLogger("polymarket_bot.scripts.run_paper")
 WARM_LOOKAHEAD_WINDOWS = 12  # ~1 hour of windows pre-resolved
 WARMER_INTERVAL_S = 60.0
+HALT_SENTINEL_PATH = Path("state/halt.sentinel")
+HALT_POLL_INTERVAL_S = 1.0
 
 
 def _configure_logging() -> None:
@@ -64,6 +69,38 @@ def _default_feeds() -> list[Feed]:
         OracleFeed(),
         PolymarketFeed(),
     ]
+
+
+def _sentinel_present(sentinel_str: str) -> bool:
+    """Sync wrapper around os.path.exists.
+
+    Kept sync (and out of any async function) because ruff's ASYNC240 flags
+    pathlib/os.path calls inside async defs. The check is a microsecond
+    stat() — pushing it to a worker thread would cost more than the syscall.
+    """
+    return os.path.exists(sentinel_str)
+
+
+async def _halt_watcher(
+    stop: asyncio.Event,
+    *,
+    sentinel: Path = HALT_SENTINEL_PATH,
+    interval_s: float = HALT_POLL_INTERVAL_S,
+) -> None:
+    """Poll for the halt sentinel; on presence, set the runner stop_event.
+
+    Per design/alerter.md §4.4: the bot reads the sentinel as opaque presence.
+    Corrupt JSON inside still halts. The poll interval is 1s, well below any
+    operator-perceptible delay between `/halt` and the bot exiting.
+    """
+    sentinel_str = str(sentinel)
+    while not stop.is_set():
+        if _sentinel_present(sentinel_str):
+            LOG.warning("halt sentinel detected at %s; setting stop_event", sentinel)
+            stop.set()
+            return
+        with contextlib.suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(stop.wait(), timeout=interval_s)
 
 
 async def _warmer(
@@ -94,9 +131,28 @@ async def _warmer(
             await asyncio.wait_for(stop.wait(), timeout=WARMER_INTERVAL_S)
 
 
+def _build_alert_sink() -> AlertSink:
+    redis_url = os.environ.get("REDIS_URL")
+    if not redis_url:
+        LOG.info("REDIS_URL not set; using NullAlertSink (alerts dropped)")
+        return NullAlertSink()
+    LOG.info("RedisAlertSink wired to %s", redis_url)
+    return RedisAlertSink(url=redis_url, source="bot-staging")
+
+
 async def main() -> int:
     _configure_logging()
     LOG.info("paper-mode runtime starting")
+
+    if _sentinel_present(str(HALT_SENTINEL_PATH)):
+        LOG.critical(
+            "halt sentinel %s present at startup; refusing to run. "
+            "Remove it manually before restarting bot-staging.",
+            HALT_SENTINEL_PATH,
+        )
+        return 1
+
+    alert_sink = _build_alert_sink()
 
     gamma = GammaClient()
     side_index = TokenSideIndex(
@@ -122,6 +178,7 @@ async def main() -> int:
         side_resolver=side_index,
         shadow_book=ShadowBook(),
         decision_log=decision_log,
+        alert_sink=alert_sink,
     )
 
     stop_event = asyncio.Event()
@@ -132,12 +189,14 @@ async def main() -> int:
 
     warmer_task = asyncio.create_task(_warmer(side_index, stop=stop_event), name="warmer")
     runner_task = asyncio.create_task(runner.run(stop=stop_event), name="paper-runner")
+    halt_task = asyncio.create_task(_halt_watcher(stop_event), name="halt-watcher")
 
-    LOG.info("paper-mode runtime up; waiting for SIGTERM/SIGINT")
+    LOG.info("paper-mode runtime up; waiting for SIGTERM/SIGINT or halt sentinel")
     await stop_event.wait()
     LOG.info("shutdown signal received")
     runner.stop()
-    await asyncio.gather(runner_task, warmer_task, return_exceptions=True)
+    await asyncio.gather(runner_task, warmer_task, halt_task, return_exceptions=True)
+    alert_sink.close()
     LOG.info("shutdown complete; dropped_records=%d", runner.dropped_records_total)
     return 0
 
