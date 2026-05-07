@@ -227,33 +227,101 @@ fast enough (file I/O, no DB) that no caching is required for v1.
 
 ### 4.3 What goes in each panel
 
-**System health row** (`st.columns([1, 1, 1, 1])`):
-  - capture: status badge + pid + "X minutes ago last health"
-  - paper: status badge + pid + "X minutes ago last health"
-  - state-dir: path + size of decisions/ + size of feeds_health.json
-  - total decisions logged across all dates
+**Visual design system.** Custom CSS injected via `st.markdown` to
+override Streamlit defaults toward a deliberate, dense-but-clean
+financial-tooling aesthetic:
 
-**Feeds health row** (`st.columns([1, 1, 1, 1])`, one per feed):
-  - feed name + healthy badge
-  - msgs_seen, reconnects
-  - last_error (truncated to 80 chars)
-  - "X seconds ago last seen"
+  - Dark theme via `.streamlit/config.toml` (base = "dark", primaryColor
+    = `#1ed760`, backgroundColor = `#0d1117`, secondary = `#161b22`)
+  - Typography: Inter / SF Pro stack; tabular-nums for all numbers;
+    larger weights for KPI hero values, regular weight for labels
+  - Status colors: `--good = #1ed760` (green), `--warn = #f0b400`
+    (amber), `--bad = #ff5572` (red), `--muted = #8b949e` (gray)
+  - Card pattern: every panel inside a `<div class="card">` with
+    1px border, 12px radius, 16px padding — consistent visual rhythm
 
-**Decisions table** (`st.dataframe` with sortable columns):
-  - All DecisionRow records since `date_filter`
-  - Columns visible by default: decision_dt_utc, side, asset_id (first 14
-    chars + …), price_limit, fill_price, resolution, pnl_usd
-  - Hidden by default: window_ts, composite_pct, ttl_s — toggleable
+**Layout (top to bottom):**
 
-**PnL chart** (`st.altair_chart`):
-  - Cumulative pnl over decision_dt_utc (line)
-  - Per-day pnl bars
-  - Win-rate text: "filled W/N (rate)" + 7d rolling
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  HEADER: title + last-refresh + "since: <date>" + refresh button│
+├─────────────────────────────────────────────────────────────────┤
+│  KPI ROW (st.columns([1,1,1,1,1])) — five hero cards            │
+│  Cumulative PnL │ Win-rate │ Decisions │ Avg PnL/trade │ Uptime │
+├─────────────────────────────────────────────────────────────────┤
+│  CENTER HERO: live PnL chart (full-width, ~360px tall)          │
+│   - Cumulative PnL line over decision_dt_utc                    │
+│   - Color: green when positive, red when negative               │
+│   - Zero baseline + per-day vertical separators                 │
+├─────────────────────────────────────────────────────────────────┤
+│  SYSTEM ROW (2 cols)                                            │
+│  ┌──────────────┐   ┌──────────────────────────────────────┐    │
+│  │ Process card │   │ Feeds health card (4 mini-stats)     │    │
+│  │ capture +    │   │ binance / coinbase / oracle /        │    │
+│  │ paper status │   │ polymarket — msgs, healthy, reconns  │    │
+│  └──────────────┘   └──────────────────────────────────────┘    │
+├─────────────────────────────────────────────────────────────────┤
+│  AGENT ACTIVITY PANEL (full-width)                              │
+│  - "LIVE" badge if ensemble enabled, "HISTORICAL" badge if not  │
+│  - When live: most recent ensemble votes from JSONL             │
+│  - When historical: parsed transcript from                      │
+│    runbooks/gate-evidence/phase-3.3-llm-ab.txt                  │
+│  - Each entry: window_ts, three specialist votes (orderbook /   │
+│    oracle-gap / momentum), Sonnet meta verdict, latency, cost   │
+├─────────────────────────────────────────────────────────────────┤
+│  DECISIONS TABLE (full-width, st.dataframe with filters)        │
+│  - sortable, 50-row paginated                                   │
+│  - columns: dt, side, asset (truncated), limit, fill, resolved, │
+│    pnl, composite_pct                                           │
+├─────────────────────────────────────────────────────────────────┤
+│  LIVE LOGS (2-col tabs)                                         │
+│  ┌──────────────────────┐   ┌──────────────────────────────┐    │
+│  │  paper.log (last 60) │   │  capture.log (last 60)       │    │
+│  │  color-coded INFO/   │   │  color-coded by level        │    │
+│  │  WARN/ERROR          │   │                              │    │
+│  └──────────────────────┘   └──────────────────────────────┘    │
+└─────────────────────────────────────────────────────────────────┘
+```
 
-**Log tails** (`st.code` blocks, 30 lines each):
-  - paper.log tail
-  - capture.log tail
-  - Marked stale (red badge) if file mtime > 5 minutes ago
+**KPI hero cards:**
+  - Cumulative PnL: $X.XX (green/red), with delta vs yesterday
+  - Win rate: 60.0% (small "n=15" subscript)
+  - Decisions: total fired / total settled
+  - Avg PnL/trade: ${X.XX}
+  - Uptime: paper-process uptime hours; ⚠ if < 24h
+
+**Live PnL center hero (`st.altair_chart`, 360px height):**
+  - X axis: decision_dt_utc, full date range
+  - Y axis: cumulative pnl_usd
+  - Line color encoded by sign (green above zero, red below)
+  - Zero baseline (gray dashed)
+  - Tooltip on hover shows window_ts + that decision's pnl + cumulative
+  - Per-day vertical rule (thin gray) to separate sessions
+
+**Agent activity panel:**
+  - Header: "LIVE" badge (green) when paper-mode ensemble is enabled,
+    else "HISTORICAL · Phase 3 A/B evidence" badge (amber)
+  - Body when live: per-decision row showing the three specialist
+    votes + Sonnet verdict + latency + cost. Reads from extended
+    DecisionLog schema (Phase 8 work; not part of v1 dashboard build —
+    panel scaffolding present, populates when ensemble flag enabled)
+  - Body when historical: parsed transcript from
+    `runbooks/gate-evidence/phase-3.3-llm-ab.txt`. One row per
+    window decision; columns: window_ts, agent_orderbook,
+    agent_oracle_gap, agent_momentum, meta_verdict, latency_s,
+    cost_usd
+  - Why have it at all when ensemble is CUT: gives the operator a
+    visceral sense of what the ensemble used to look like and primes
+    the panel for Phase 8 re-enable. Per locked decision #16 the
+    ensemble code is retained.
+
+**Live logs:**
+  - 2 tabs side-by-side
+  - 60 most recent lines each
+  - Color rule: lines containing " ERROR " or "Traceback" → red;
+    " WARN " → amber; everything else → muted gray
+  - Stale badge if file mtime > 5 min ago
+  - Auto-scrolls to bottom on refresh
 
 ## 5. State files committed to git
 
@@ -325,9 +393,13 @@ Install size impact: ~80MB. All laptop-side; no impact on bot runtime.
 | `design/dashboard.md` (this file) | 4.5.0 | Architecture, locked first |
 | `src/polymarket_bot/dashboard/__init__.py` | 4.5.1 | Package marker |
 | `src/polymarket_bot/dashboard/loaders.py` | 4.5.1 | Pure-function loaders |
+| `src/polymarket_bot/dashboard/agents_loader.py` | 4.5.1 | Phase 3 A/B transcript parser |
+| `src/polymarket_bot/dashboard/theme.py` | 4.5.2 | Custom CSS injection |
 | `scripts/dashboard.py` | 4.5.2 | Streamlit single-page app |
+| `.streamlit/config.toml` | 4.5.2 | Dark theme config |
 | `tests/dashboard/__init__.py` | 4.5.1 | Package marker |
 | `tests/dashboard/test_loaders.py` | 4.5.1 | Loader tests |
+| `tests/dashboard/test_agents_loader.py` | 4.5.1 | Transcript parser tests |
 | `runbooks/dashboard.md` | 4.5.3 | Operator runbook (launch, daily use) |
 | `runbooks/gates/phase-4.5.sh` | 4.5.3 | Gate script |
 | `RUNBOOK.md` | 4.5.4 | Add Phase 4.5 entry between Phase 4 and Phase 5 |

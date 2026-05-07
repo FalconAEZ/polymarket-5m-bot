@@ -16,6 +16,11 @@ references/
 
 # Project state (bot-written runbooks, postmortems, sessions, dashboards)
 state/
+# Phase 4.5 exception: keep decision-log JSONL in git so the dashboard
+# has data the moment the repo is cloned on a new machine. Per
+# design/dashboard.md §5. Everything else under state/ stays excluded.
+!state/decisions/
+!state/decisions/*.jsonl
 
 # Captured market data (Phase 2+)
 ticks/

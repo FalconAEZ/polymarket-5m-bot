@@ -1,0 +1,50 @@
+=== Phase 4.5 gate ===
+started: 2026-05-07T08:27:50Z
+branch:  claude/bold-galileo-2d56ca
+head:    319a5c3618d537fcc77d2f6248d1684bb20480b2
+
+--- 1. make verify ---
+uv run ruff check src/ tests/ scripts/ 2>/dev/null || uv run ruff check src/ tests/
+All checks passed!
+uv run mypy --strict src/
+Success: no issues found in 43 source files
+uv run pytest -q
+........................................................................ [ 26%]
+........................................................................ [ 52%]
+........................................................................ [ 78%]
+..........................................................               [100%]
+274 passed in 1.78s
+--- 2. lint-imports ---
+
+╔══╗─────────▶╔╗ ╔╗      ╔╗◀───┐
+╚╣╠╝◀─────┐  ╔╝╚╗║║────▶╔╝╚╗   │
+ ║║   ╔══╦══╦╩╗╔╝║║  ╔╦═╩╗╔╝╔═╦══╗
+ ║║╔══╣╔╗║╔╗║╔╣║ ║║ ╔╬╣╔╗║║ ║│║╔═╝
+╔╣╠╣║║║╚╝║╚╝║║║╚╗║╚═╝║║║║║╚╗║═╣║
+╚══╩╩╩╣╔═╩══╩╝╚═╝╚═══╩╩╝╚╩═╩╩═╩╝
+  └──▶║║                    ▲ 
+      ╚╝────────────────────┘
+
+
+---------
+Contracts
+---------
+
+Analyzed 43 files, 67 dependencies.
+-----------------------------------
+
+production never imports paper KEPT
+paper never imports live runtime, health, storage, or execution KEPT
+dashboard never imports live, paper-runtime, backtest-runtime, or strategies KEPT
+
+Contracts: 3 kept, 0 broken.
+--- 3. scripts/dashboard.py imports cleanly ---
+OK: scripts/dashboard.py module loadable
+--- 4. headless Streamlit smoke (curl /) ---
+OK: served page is 5381 bytes and contains Streamlit marker
+OK: Streamlit stopped
+--- 5. .streamlit/config.toml has dark theme ---
+OK: .streamlit/config.toml declares dark theme
+
+=== Phase 4.5 gate green ===
+Tag with: git tag phase-4.5-pass && git push --tags

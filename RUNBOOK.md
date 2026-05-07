@@ -1035,6 +1035,67 @@ $5-15 in API + RPC.
 
 ---
 
+# PHASE 4.5 — Operations Dashboard (out-of-band tooling)
+
+**Owner intent.** Single-page Streamlit dashboard the operator runs locally to monitor the paper-mode bot. Born from the realisation that a 14-day uninterrupted MacBook clock is unrealistic; the operator needs a glanceable view that survives sleep / migration to a Windows PC. Replaces the CLI daily-ritual block in `runbooks/paper-monitor.md` with a browser tab.
+
+## Pre-flight checklist
+- [ ] Phase 4 dev complete (PaperRunner running or stoppable; JSONL writes are well-formed).
+- [ ] `uv sync` has installed streamlit + psutil + pandas + altair.
+
+## Tasks
+
+### 4.5.0 — Design + import boundaries
+- `design/dashboard.md` — read-only consumer of `state/`; no Streamlit imports in src; cross-platform via psutil; theme tokens locked.
+- `.importlinter` adds contract 3: `polymarket_bot.dashboard` cannot import `_live`, `_paper.runner`, `_paper.shadow_book`, `backtest.{replay,runner,fills,walk_forward,side_index}`, `strategies`, or `agents`. The pure-dataclass `backtest.types` is allowed (the JSONL schema depends on it).
+- `.gitignore` narrowed: `state/decisions/*.jsonl` un-ignored so the JSONL data lives in git for migration / fresh-checkout dashboard rendering. Everything else under `state/` stays excluded (parquet too big, logs leak machine paths, pid files machine-local).
+
+### 4.5.1 — Loaders + tests
+- `src/polymarket_bot/dashboard/loaders.py` — `load_process_status` (psutil.pid_exists + create_time), `load_feeds_health` (parses `state/feeds_health.json`), `load_decisions` (joins fired+settled JSONL), `tail_log` (last-N-lines via seek), `aggregate_pnl`.
+- `src/polymarket_bot/dashboard/agents_loader.py` — parses Phase 3 A/B evidence (`runbooks/gate-evidence/phase-3.3-llm-ab.txt`) for the historical agent activity panel.
+- `tests/dashboard/test_loaders.py` + `tests/dashboard/test_agents_loader.py` — 28 tests; cross-platform PID checks; missing/malformed inputs handled.
+
+### 4.5.2 — Streamlit app + theme
+- `scripts/dashboard.py` — single-file Streamlit app. Layout: header → 5 KPI hero cards → cumulative-PnL Altair chart (full-width, 360px) → processes + feeds row → agent activity panel (HISTORICAL when ensemble cut; primed for LIVE in Phase 8) → decisions table (pandas) → live logs (paper.log + capture.log tabs, color-coded by level).
+- `src/polymarket_bot/dashboard/theme.py` — design tokens + `kpi_card()` + `badge()` helpers; injected via `st.markdown(unsafe_allow_html=True)`.
+- `.streamlit/config.toml` — base="dark", primaryColor="#1ed760", localhost-only binding (no remote access; no auth).
+
+### 4.5.3 — Operator runbook
+- `runbooks/dashboard.md` — launch (`uv run streamlit run scripts/dashboard.py`), what each panel shows, sidebar controls, daily ritual replacement, Mac→Windows migration steps, troubleshooting.
+
+### 4.5.4 — RUNBOOK.md update (this section)
+- Phase 4.5 entered between Phase 4 and Phase 5. Out of band — does not gate Phase 5; does not depend on the 14-day paper run.
+
+## Gate command
+
+`bash runbooks/gates/phase-4.5.sh` (or `make gate-4.5`) asserts:
+1. `make verify` green.
+2. `lint-imports` 3/3 contracts kept.
+3. `scripts/dashboard.py` is module-loadable.
+4. Streamlit serves a non-empty page on `127.0.0.1:8501` within 30s of headless launch (curl smoke); page is then stopped cleanly.
+5. `.streamlit/config.toml` declares `theme.base = "dark"`.
+
+Tag `phase-4.5-pass` by hand on green. Phase 4.5 is purely additive; passing it does not unblock Phase 5 (which still gates on the 14-day paper evidence).
+
+## Rollback
+
+- Streamlit upgrade breaks the app: pin streamlit to a prior known-good version in `pyproject.toml`; `uv sync`.
+- A loader silently mis-renders: tests catch shape regressions; if a runtime regression surfaces in production, add a failing test before fixing.
+
+## Wall-clock
+
+½–1 day of dev. No 14-day clock; the dashboard is a tool, not an experiment.
+
+## USD cost
+
+$0 — laptop-only. (Phase 5 brings Prometheus + Grafana Cloud free tier on the VPS for production observability; that stack coexists with this dashboard.)
+
+## Memory checkpoint
+
+`checkpoint_phase_4.5.md`: dashboard PID at last launch, gate evidence path, any UX adjustments observed during the 14-day run.
+
+---
+
 # PHASE 5 — VPS Provisioning
 
 **Owner intent.** Move execution to Dublin. Verify latency in the way that matters (WS to CLOB). Stand up monitoring + Telegram alerts. Stage the bot in paper mode against live data on the VPS for 24h before declaring the gate.

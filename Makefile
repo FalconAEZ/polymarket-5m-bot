@@ -1,4 +1,4 @@
-.PHONY: verify lint format type test gate-0 gate-1a gate-1 gate-2 gate-3 gate-4 gate-5 gate-6 study-A study-B study-C study-D study-E study-F study-G clean
+.PHONY: verify lint format type test gate-0 gate-1a gate-1 gate-2 gate-3 gate-4 gate-4.5 gate-5 gate-6 dashboard study-A study-B study-C study-D study-E study-F study-G clean
 
 # Default target — full local verification (mirrors CI)
 verify: lint type test
@@ -15,6 +15,10 @@ type:
 test:
 	uv run pytest -q
 
+# === Phase 4.5 dashboard ===
+dashboard:
+	@uv run streamlit run scripts/dashboard.py
+
 # === Phase gates (each runs the matching gate script) ===
 gate-0:
 	@bash runbooks/gates/phase-0.sh
@@ -28,6 +32,8 @@ gate-3:
 	@bash runbooks/gates/phase-3.sh
 gate-4:
 	@bash runbooks/gates/phase-4.sh
+gate-4.5:
+	@bash runbooks/gates/phase-4.5.sh
 gate-5:
 	@bash runbooks/gates/phase-5.sh
 gate-6:

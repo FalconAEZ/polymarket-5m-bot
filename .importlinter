@@ -21,3 +21,25 @@ forbidden_modules =
     polymarket_bot._live.health
     polymarket_bot._live.storage
     polymarket_bot._live.execution
+
+[importlinter:contract:layered3]
+# Phase 4.5: dashboard is observability only. It reads the decision log
+# JSONL + state/feeds_health.json directly. It never instantiates Feeds,
+# never runs strategies, never replays the backtest. The pure-dataclass
+# types (polymarket_bot.backtest.types) are allowed — they're the schema
+# the JSONL log encodes, and _paper.decision_log already depends on them.
+# Per design/dashboard.md §3.
+name = dashboard never imports live, paper-runtime, backtest-runtime, or strategies
+type = forbidden
+source_modules = polymarket_bot.dashboard
+forbidden_modules =
+    polymarket_bot._live
+    polymarket_bot._paper.runner
+    polymarket_bot._paper.shadow_book
+    polymarket_bot.backtest.replay
+    polymarket_bot.backtest.runner
+    polymarket_bot.backtest.fills
+    polymarket_bot.backtest.walk_forward
+    polymarket_bot.backtest.side_index
+    polymarket_bot.strategies
+    polymarket_bot.agents
