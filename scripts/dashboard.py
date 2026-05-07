@@ -206,49 +206,58 @@ def _render_kpi_row(rows: list[DecisionRow], paper: ProcessStatus) -> None:
     last_dec = _last_decision_label(rows)
     last_dec_tone = "neutral" if rows else "warn"
 
-    cols = st.columns(5, gap="small")
-    cards: list[str] = [
-        kpi_card(
-            label="Cumulative PnL",
-            value=_fmt_currency(pnl) if isinstance(pnl, float) else "—",
-            subtitle=f"avg {_fmt_currency(avg_pnl, decimals=3)} / trade"
-            if isinstance(avg_pnl, float)
-            else None,
-            tone=pnl_tone,
-            glyph=pnl_glyph,
-        ),
-        kpi_card(
-            label="Win Rate",
-            value=_fmt_pct(win_rate) if isinstance(win_rate, float) else "—",
-            subtitle=f"{n_won}/{n_settled} settled"
-            if isinstance(n_won, int) and isinstance(n_settled, int)
-            else None,
-            tone=wr_tone,
-        ),
-        kpi_card(
-            label="Decisions Fired",
-            value=_fmt_int(n_fired) if isinstance(n_fired, int) else "—",
-            subtitle=f"{agg['n_filled']} filled" if isinstance(agg["n_filled"], int) else None,
-            tone="neutral",
-        ),
-        kpi_card(
-            label="Last Decision",
-            value=last_dec,
-            subtitle=(
-                "silence is normal at 0.6pp threshold" if not rows else f"{n_fired} fired total"
-            ),
-            tone=last_dec_tone,
-        ),
-        kpi_card(
-            label="Paper Uptime",
-            value=uptime_value,
-            subtitle=f"PID {paper.pid}" if paper.pid is not None else "no PID file",
-            tone=uptime_tone,
-        ),
-    ]
-    for col, card in zip(cols, cards, strict=True):
-        with col:
-            st.markdown(card, unsafe_allow_html=True)
+    pnl_card = kpi_card(
+        label="Cumulative PnL",
+        value=_fmt_currency(pnl) if isinstance(pnl, float) else "—",
+        subtitle=f"avg {_fmt_currency(avg_pnl, decimals=3)} / trade"
+        if isinstance(avg_pnl, float)
+        else None,
+        tone=pnl_tone,
+        glyph=pnl_glyph,
+    )
+    win_card = kpi_card(
+        label="Win Rate",
+        value=_fmt_pct(win_rate) if isinstance(win_rate, float) else "—",
+        subtitle=f"{n_won}/{n_settled} settled"
+        if isinstance(n_won, int) and isinstance(n_settled, int)
+        else None,
+        tone=wr_tone,
+    )
+    decisions_card = kpi_card(
+        label="Decisions Fired",
+        value=_fmt_int(n_fired) if isinstance(n_fired, int) else "—",
+        subtitle=f"{agg['n_filled']} filled" if isinstance(agg["n_filled"], int) else None,
+        tone="neutral",
+    )
+    last_card = kpi_card(
+        label="Last Decision",
+        value=last_dec,
+        subtitle=("silence is normal at 0.6pp threshold" if not rows else f"{n_fired} fired total"),
+        tone=last_dec_tone,
+    )
+    uptime_card = kpi_card(
+        label="Paper Uptime",
+        value=uptime_value,
+        subtitle=f"PID {paper.pid}" if paper.pid is not None else "no PID file",
+        tone=uptime_tone,
+    )
+
+    # KPI grid uses the SAME 55/25/20 column ratios as the panel grid
+    # below so each KPI vertically aligns with its related panel.
+    main_kpi_col, side_kpi_col, log_kpi_col = st.columns([0.55, 0.25, 0.20], gap="small")
+    with main_kpi_col:
+        # 3 sub-KPIs (PnL / Win / Decisions) above the chart+table panel
+        a, b, c = st.columns(3, gap="small")
+        with a:
+            st.html(pnl_card)
+        with b:
+            st.html(win_card)
+        with c:
+            st.html(decisions_card)
+    with side_kpi_col:
+        st.html(last_card)  # above the Processes/Feeds panel
+    with log_kpi_col:
+        st.html(uptime_card)  # above the Live Logs panel
 
 
 def _section_header(title: str, badge_html: str = "") -> None:
