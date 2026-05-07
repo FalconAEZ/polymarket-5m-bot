@@ -46,16 +46,14 @@ WARM_LOOKAHEAD_WINDOWS = 12  # ~1 hour of windows pre-resolved
 WARMER_INTERVAL_S = 60.0
 
 
-def _configure_logging(log_path: Path) -> None:
-    log_path.parent.mkdir(parents=True, exist_ok=True)
-    handlers: list[logging.Handler] = [
-        logging.StreamHandler(),
-        logging.FileHandler(log_path),
-    ]
+def _configure_logging() -> None:
+    # nohup-style launchers redirect stdout/stderr to state/paper.log; a
+    # second FileHandler would duplicate every line. StreamHandler only.
+    Path("state").mkdir(parents=True, exist_ok=True)
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-        handlers=handlers,
+        handlers=[logging.StreamHandler()],
     )
 
 
@@ -97,8 +95,7 @@ async def _warmer(
 
 
 async def main() -> int:
-    log_path = Path("state/paper.log")
-    _configure_logging(log_path)
+    _configure_logging()
     LOG.info("paper-mode runtime starting")
 
     gamma = GammaClient()
