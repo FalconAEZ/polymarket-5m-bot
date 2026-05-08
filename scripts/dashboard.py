@@ -614,6 +614,7 @@ def _render_decisions_table(rows: list[DecisionRow]) -> None:
         [
             {
                 "When (UTC)": r.decision_dt_utc.strftime("%H:%M:%S · %b %d"),
+                "Market": r.window_ts,
                 "Strategy": (r.strategy or "—"),
                 "Side": ("🟢 UP" if r.side == "UP" else "🔴 DOWN"),
                 "Asset": r.asset_id[:10] + "…" if len(r.asset_id) > 10 else r.asset_id,
@@ -642,6 +643,14 @@ def _render_decisions_table(rows: list[DecisionRow]) -> None:
         hide_index=True,
         column_config={
             "When (UTC)": st.column_config.TextColumn("When", width="small"),
+            "Market": st.column_config.NumberColumn(
+                "Market",
+                help="5-min market window_ts (Unix seconds). "
+                "Same identifier used in the Polymarket slug "
+                "btc-updown-5m-<window_ts>.",
+                format="%d",
+                width="small",
+            ),
             "Side": st.column_config.TextColumn("Side", width="small"),
             "Asset": st.column_config.TextColumn("Asset", width="small"),
             "Limit": st.column_config.NumberColumn("Limit", format="$%.4f"),
