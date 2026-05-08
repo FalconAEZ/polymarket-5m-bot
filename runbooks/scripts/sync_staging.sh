@@ -56,6 +56,19 @@ python3 "$LOCAL_ROOT/runbooks/scripts/synthesize_feeds_health.py" \
   --out "$STAGING/feeds_health.json" \
   --bot-active "$ACTIVE_FLAG"
 
+# Re-resolve settled decisions against Polymarket Gamma — see
+# runbooks/incidents/2026-05-09-oracle-resolver-mismatch.md. Our local
+# Chainlink AnswerUpdated samples are off by up to 90s vs the timestamps
+# Polymarket itself uses, so we'd otherwise show wrong PnL on ~1/3 of
+# settled trades. Best-effort; if Gamma is unreachable the dashboard
+# falls back to oracle-truth (better than nothing).
+echo "==> re-resolve settled decisions against Polymarket (truth source)"
+if uv run python "$LOCAL_ROOT/scripts/resolve_decisions.py" "$STAGING/decisions/" 2>&1 | sed 's/^/  /'; then
+  :
+else
+  echo "  (re-resolution failed — dashboard will show oracle-truth)"
+fi
+
 echo "==> live VPS status:"
 ssh -i "$KEY" -p "$PORT" "$HOST" '
   echo "  bot-staging:    $(systemctl is-active bot-staging.service)  (since $(systemctl show -p ActiveEnterTimestamp --value bot-staging.service))"
