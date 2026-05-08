@@ -32,13 +32,20 @@ class ShadowBook:
     def latest(self, asset_id: str) -> BookUpdate | None:
         return self._book_by_asset.get(asset_id)
 
-    def attempt_fill(self, decision: Decision, now_ts_ns: int) -> Fill | None:
+    def attempt_fill(
+        self, decision: Decision, now_ts_ns: int, *, is_taker: bool = True
+    ) -> Fill | None:
         """Try to fill against the latest book for decision.asset_id.
 
         Returns Fill if the decision's limit allows fill against the latest
         book and the elapsed time since decision creation is within ttl_s.
         Returns None if no book is known, the TTL has expired, or the
         FillSimulator rejects the fill.
+
+        ``is_taker`` discriminates immediate vs pending fills. Default True
+        preserves the original (taker-only) behavior for callers that
+        haven't been updated. PaperRunner passes is_taker=True from
+        _on_decision and is_taker=False from _try_fill_pending.
         """
         book = self._book_by_asset.get(decision.asset_id)
         if book is None:
@@ -46,4 +53,4 @@ class ShadowBook:
         elapsed_s = (now_ts_ns - decision.ts_utc_ns) / 1e9
         if elapsed_s < 0 or elapsed_s > decision.ttl_s:
             return None
-        return self._sim.attempt_fill(decision, book)
+        return self._sim.attempt_fill(decision, book, is_taker=is_taker)

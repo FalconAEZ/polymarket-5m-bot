@@ -36,28 +36,57 @@ class FillSimulator:
         self._ref_trade = reference_trade_usd
         self._ref_depth = reference_depth_usd
 
-    def attempt_fill(self, decision: Decision, book: BookUpdate) -> Fill | None:
+    def attempt_fill(
+        self, decision: Decision, book: BookUpdate, *, is_taker: bool = True
+    ) -> Fill | None:
         """Return Fill if the decision's limit allows a fill against this book.
 
-        Filter rules:
-          - book.asset_id must match decision.asset_id
-          - book.best_ask must exist
+        Two paths, controlled by ``is_taker``:
+
+        TAKER (initial fill at decision time) — we cross the spread; our
+        buy walks the ask side and incurs impact.
           - effective_ask = best_ask + impact(size_usd, depth=ask_size_top USD)
-          - limit must be >= effective_ask for the order to fill
+          - limit must be >= effective_ask
+          - fill_price = effective_ask  (we got the ask + slippage)
+
+        MAKER (pending-order match against a later book update) — our limit
+        is resting; an incoming seller crosses our bid. Standard CLOB
+        price-improvement rule: the maker's resting price is the trade
+        price, and the maker incurs no impact (the seller is aggressor).
+          - limit must be >= best_ask  (a seller has crossed our bid)
+          - fill_price = decision.price_limit  (NOT min(limit, ask))
+
+        Why this distinction matters: without it, a buy resting at $0.30
+        would "fill" at $0.011 if the ask later crashed to $0.011 — which
+        is impossible on a real CLOB, where any seller offering at $0.011
+        crosses our $0.30 bid first and we'd be filled at $0.30. The naive
+        ``min(limit, ask)`` model produced phantom 90x returns in
+        paper-mode that wouldn't reproduce live (e.g., window 1778275800
+        on 2026-05-08).
+
+        The caller (PaperRunner / BacktestRunner) is responsible for
+        passing the correct ``is_taker`` flag — True for immediate fills
+        at decision time, False for pending fills against later book
+        updates.
         """
         if book.asset_id != decision.asset_id:
             return None
         if book.best_ask is None:
             return None
-        depth_usd = self._ask_depth_usd(book)
-        impact = self._impact(decision.size_usd, depth_usd)
-        effective_ask = book.best_ask + impact
-        if decision.price_limit < effective_ask:
-            return None
-        # Buyer fills at the better of best_ask+impact and the limit (just
-        # effective_ask in this model). Real CLOB matching is more nuanced
-        # (the buy ladder eats the ask side); this is the paper estimate.
-        fill_price = min(decision.price_limit, effective_ask)
+        if is_taker:
+            depth_usd = self._ask_depth_usd(book)
+            impact = self._impact(decision.size_usd, depth_usd)
+            effective_ask = book.best_ask + impact
+            if decision.price_limit < effective_ask:
+                return None
+            fill_price = effective_ask
+        else:
+            # Maker path: a later book update has dropped the ask to or
+            # below our resting limit. Treat as an incoming seller crossing
+            # our bid; fill at the resting limit price.
+            if decision.price_limit < book.best_ask:
+                return None
+            fill_price = decision.price_limit
         size_filled = decision.size_usd / fill_price
         fee_usd = decision.size_usd * (self._fee_bps / 10_000.0)
         return Fill(

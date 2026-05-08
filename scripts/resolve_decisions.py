@@ -101,14 +101,48 @@ def gamma_resolution(window_ts: int, *, client: httpx.Client) -> str | None:
     return None
 
 
-def realised_pnl(*, side: str, resolution: str, fill: dict[str, Any]) -> float:
-    """Mirrors backtest.fills.realised_pnl_usd. shares*price - fees + payout."""
+SIM_FILL_BUG_THRESHOLD_USD = 0.05
+
+
+def realised_pnl(
+    *,
+    side: str,
+    resolution: str,
+    fill: dict[str, Any],
+    price_limit: float | None = None,
+) -> tuple[float, float, bool]:
+    """Mirrors backtest.fills.realised_pnl_usd. shares*price - fees + payout.
+
+    Returns (pnl, effective_fill_price, was_corrected).
+
+    Pre-2026-05-09 the FillSimulator's pending-fill path could produce a
+    fill at a price MUCH lower than the decision's limit (the price-
+    improvement-to-the-buyer bug; see fills.py docstring). On a real CLOB
+    the maker-style match would have happened at the limit price. If we
+    detect such a logged fill (`price_filled < price_limit - 5¢`), we
+    treat it as a phantom and recompute PnL using ``price_limit`` as the
+    fill price — the conservative correct value.
+    """
     size_filled = float(fill["size_filled"])
     price_filled = float(fill["price_filled"])
     fee = float(fill.get("fee_usd") or 0.0)
+    was_corrected = False
+    if price_limit is not None and price_filled < price_limit - SIM_FILL_BUG_THRESHOLD_USD:
+        # Recompute size as it would have been at the limit price (since
+        # `size_filled = size_usd / fill_price`), keeping the original
+        # USD stake constant.
+        usd_stake = size_filled * price_filled  # original notional cost
+        # Stake assumed to be the original $5 (or whatever the strategy
+        # set); back-derive from the bug-fill: cost = size_filled *
+        # price_filled. At the corrected price, cost stays the same; the
+        # number of shares is fewer.
+        price_filled = price_limit
+        size_filled = usd_stake / price_filled
+        was_corrected = True
     cost = size_filled * price_filled
     payout = size_filled if side == resolution else 0.0
-    return payout - cost - fee
+    pnl = payout - cost - fee
+    return (pnl, price_filled, was_corrected)
 
 
 def re_resolve_file(
@@ -127,7 +161,9 @@ def re_resolve_file(
     n_changed = 0
     n_unresolvable = 0
 
-    # First pass: collect side+window from fired records.
+    by_id_limit: dict[str, float] = {}
+
+    # First pass: collect side+window+price_limit from fired records.
     for raw in lines:
         if not raw.strip():
             continue
@@ -136,10 +172,13 @@ def re_resolve_file(
             decision_id = rec.get("decision_id")
             side = rec.get("side")
             window_ts = rec.get("window_ts")
+            price_limit = rec.get("price_limit")
             if isinstance(decision_id, str) and side in ("UP", "DOWN"):
                 by_id_side[decision_id] = side
             if isinstance(decision_id, str) and isinstance(window_ts, int):
                 by_id_window[decision_id] = window_ts
+            if isinstance(decision_id, str) and isinstance(price_limit, int | float):
+                by_id_limit[decision_id] = float(price_limit)
 
     # Second pass: rewrite settled records with Gamma resolution.
     out: list[str] = []
@@ -152,42 +191,71 @@ def re_resolve_file(
             out.append(raw)
             continue
         n_settled += 1
-        # Already re-resolved on a prior run?
-        if rec.get("resolution_source") == "polymarket":
+        already_corrected = bool(rec.get("fill_correction"))
+        already_resolved = rec.get("resolution_source") == "polymarket"
+        fill = rec.get("fill_at_settle")
+
+        # Skip records that are fully processed (resolution corrected AND
+        # fill-correction step already done OR no fill to correct).
+        if already_resolved and (already_corrected or not isinstance(fill, dict)):
             out.append(raw)
             continue
 
         decision_id = rec.get("decision_id")
-        window_ts = rec.get("window_ts") or by_id_window.get(decision_id) or 0
-        if not isinstance(window_ts, int) or window_ts <= 0:
-            n_unresolvable += 1
-            out.append(raw)
-            continue
+        truth: str | None = None
 
-        truth = gamma_resolution(window_ts, client=client)
+        if already_resolved:
+            # Resolution is already truth; just need to apply the fill
+            # correction. No Gamma round-trip needed.
+            r = rec.get("resolution")
+            if r in ("UP", "DOWN"):
+                truth = r
+        else:
+            # Look up resolution from Gamma.
+            window_ts = rec.get("window_ts") or by_id_window.get(decision_id) or 0
+            if not isinstance(window_ts, int) or window_ts <= 0:
+                n_unresolvable += 1
+                out.append(raw)
+                continue
+            truth = gamma_resolution(window_ts, client=client)
+            if truth is None:
+                n_unresolvable += 1
+                out.append(raw)
+                continue
+            old_resolution = rec.get("resolution")
+            rec["resolution"] = truth
+            rec["resolution_source"] = "polymarket"
+            if old_resolution is not None:
+                rec["resolution_oracle_local"] = old_resolution
+
         if truth is None:
-            n_unresolvable += 1
             out.append(raw)
             continue
-
-        old_resolution = rec.get("resolution")
-        rec["resolution"] = truth
-        rec["resolution_source"] = "polymarket"
-        if old_resolution is not None:
-            rec["resolution_oracle_local"] = old_resolution
 
         # Recompute pnl_usd if there's a fill we can score.
-        fill = rec.get("fill_at_settle")
         side = by_id_side.get(decision_id or "")
         old_pnl = rec.get("pnl_usd")
         if isinstance(fill, dict) and side in ("UP", "DOWN"):
-            new_pnl = realised_pnl(side=side, resolution=truth, fill=fill)
+            price_limit = by_id_limit.get(decision_id or "")
+            new_pnl, eff_fill_price, was_corrected = realised_pnl(
+                side=side, resolution=truth, fill=fill, price_limit=price_limit
+            )
             rec["pnl_usd"] = new_pnl
+            if was_corrected:
+                rec["fill_correction"] = {
+                    "logged_price_filled": float(fill["price_filled"]),
+                    "corrected_price_filled": eff_fill_price,
+                    "reason": "pre-fix simulator gave price improvement on maker fill",
+                }
             if old_pnl != new_pnl:
                 n_changed += 1
+                marker = " [SIM-FILL-BUG]" if was_corrected else ""
+                window_ts_disp = rec.get("window_ts") or "?"
+                old_resolution_disp = rec.get("resolution_oracle_local") or rec.get("resolution")
                 print(
-                    f"  window {window_ts}: side={side} oracle-said={old_resolution} "
-                    f"polymarket={truth}  pnl {old_pnl:+.2f} → {new_pnl:+.2f}"
+                    f"  window {window_ts_disp}: side={side} "
+                    f"oracle-said={old_resolution_disp} polymarket={truth}  "
+                    f"pnl {old_pnl:+.2f} → {new_pnl:+.2f}{marker}"
                 )
         else:
             # No fill (or no side) — resolution still gets corrected; PnL stays

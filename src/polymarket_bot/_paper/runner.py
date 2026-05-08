@@ -245,7 +245,8 @@ class PaperRunner:
             )
             return
         # Try immediate fill against the latest book in the shadow book.
-        fill = self._shadow.attempt_fill(decision, decision.ts_utc_ns)
+        # Taker path — we're crossing the existing book at decision time.
+        fill = self._shadow.attempt_fill(decision, decision.ts_utc_ns, is_taker=True)
         snapshot = self._snapshot_for_log(decision)
         composite = _composite_from_rationale(decision.rationale)
         decision_id = self._log.record_fired(
@@ -262,7 +263,11 @@ class PaperRunner:
         pending = self._state.pending_decision
         if pending is None:
             return
-        fill = self._shadow.attempt_fill(pending, now_ts_ns)
+        # Maker path — our limit is resting; an incoming seller crosses the
+        # spread to hit it. Fill at our limit (price-improvement to maker),
+        # NOT at the new (potentially much lower) ask. See fills.py docstring
+        # for the simulator-bug postmortem this guards against.
+        fill = self._shadow.attempt_fill(pending, now_ts_ns, is_taker=False)
         if fill is None:
             return
         self._state.settled_fill = fill
