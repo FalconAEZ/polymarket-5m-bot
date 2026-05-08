@@ -140,11 +140,42 @@ async def _warmer(
             await asyncio.wait_for(stop.wait(), timeout=WARMER_INTERVAL_S)
 
 
+def _env_float(name: str, default: float | None) -> float | None:
+    """Read an optional float-valued env var. Returns default on missing/empty."""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError as e:
+        raise ValueError(f"env var {name}={raw!r} is not a float") from e
+
+
 def _build_strategy(name: str) -> Strategy:
     if name == "deterministic":
         return DeterministicStrategy(threshold_pct=DEFAULT_THRESHOLD_PCT)
     if name == "spot_aware":
-        return SpotAwareStrategy(priors=load_priors())
+        # Optional env overrides for the loose-start exploratory mode
+        # documented in runbooks/decisions/loose-start-2026-05-09.md.
+        # Unset → strategy uses its own defaults (Δ_min=8, EV_min=0.5¢).
+        kwargs: dict[str, float] = {}
+        d_min = _env_float("SPOT_AWARE_DELTA_MIN_BPS", None)
+        if d_min is not None:
+            kwargs["delta_min_bps"] = d_min
+        d_max = _env_float("SPOT_AWARE_DELTA_MAX_BPS", None)
+        if d_max is not None:
+            kwargs["delta_max_bps"] = d_max
+        ev_min = _env_float("SPOT_AWARE_EV_MIN_DOLLARS", None)
+        if ev_min is not None:
+            kwargs["ev_min_dollars_per_share"] = ev_min
+        if kwargs:
+            LOG.info(
+                "spot_aware overrides: delta_min=%s delta_max=%s ev_min=%s",
+                kwargs.get("delta_min_bps"),
+                kwargs.get("delta_max_bps"),
+                kwargs.get("ev_min_dollars_per_share"),
+            )
+        return SpotAwareStrategy(priors=load_priors(), **kwargs)
     raise ValueError(f"unknown STRATEGY env value {name!r}; pick deterministic or spot_aware")
 
 
