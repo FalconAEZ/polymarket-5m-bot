@@ -274,20 +274,22 @@ def _render_md(
     n_markets_with_trades: int,
     n_markets_total: int,
     elapsed_s: float,
+    user_addr: str = BONEREAPER_ADDR,
 ) -> str:
     lines: list[str] = []
     today = _today_utc_str()
-    lines.append("# Bonereaper microstructure — entry-time vs resolution-time")
+    label = "Bonereaper" if user_addr.lower() == BONEREAPER_ADDR.lower() else "wallet"
+    lines.append(f"# {label} microstructure — entry-time vs resolution-time")
     lines.append("")
     lines.append(
-        f"Run date: {today}. Wallet: `{BONEREAPER_ADDR}`. Lookback: {days} days. "
-        f"Markets enumerated: {n_markets_total}; markets with bonereaper trades: "
+        f"Run date: {today}. Wallet: `{user_addr}`. Lookback: {days} days. "
+        f"Markets enumerated: {n_markets_total}; markets with {label.lower()} trades: "
         f"{n_markets_with_trades}. Trades analysed: {len(enriched)}. "
         f"Fetch time: {elapsed_s:.1f}s."
     )
     lines.append("")
     lines.append(
-        "**Hypothesis under test (operator's 2026-05-08 framing):** Bonereaper "
+        "**Hypothesis under test (operator's 2026-05-08 framing):** the wallet "
         "is a *late-window favorite sniper* — most fills at >=70¢ entry land "
         "in the final 30-60s of a 5-min window, exploiting spot-vs-book lag "
         "on near-certain resolutions."
@@ -454,6 +456,12 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--days", type=int, default=7, help="Lookback in days (default 7).")
     parser.add_argument(
+        "--user",
+        type=str,
+        default=BONEREAPER_ADDR,
+        help="Wallet address to analyse (default = Bonereaper).",
+    )
+    parser.add_argument(
         "--out-md",
         type=Path,
         default=None,
@@ -466,11 +474,12 @@ def main(argv: list[str] | None = None) -> int:
         help="Raw enriched-trades JSON output.",
     )
     args = parser.parse_args(argv)
+    user_addr = args.user.lower()
 
     started = time.time()
     now_unix = int(time.time())
 
-    print(f"== Bonereaper microstructure ({args.days}d lookback) ==", flush=True)
+    print(f"== microstructure ({args.days}d lookback, user={user_addr}) ==", flush=True)
     slugs = _generate_btc5m_slugs(now_unix, args.days)
     print(f"  candidate slugs: {len(slugs):,}", flush=True)
 
@@ -491,8 +500,8 @@ def main(argv: list[str] | None = None) -> int:
         market_pairs.append((slug, cid))
         market_lookup[slug] = m
 
-    print(f"  pulling bonereaper trades on {len(market_pairs):,} markets...", flush=True)
-    raw_trades = _resolve_trades_concurrent(BONEREAPER_ADDR, market_pairs)
+    print(f"  pulling user trades on {len(market_pairs):,} markets...", flush=True)
+    raw_trades = _resolve_trades_concurrent(user_addr, market_pairs)
     print(f"  raw trade rows: {len(raw_trades):,}", flush=True)
 
     enriched: list[dict[str, Any]] = []
@@ -523,6 +532,7 @@ def main(argv: list[str] | None = None) -> int:
         n_markets_with_trades=n_markets_with_trades,
         n_markets_total=len(events),
         elapsed_s=elapsed,
+        user_addr=user_addr,
     )
 
     out_md = args.out_md or (RUNBOOK_DIR / f"bonereaper-microstructure-{_today_utc_str()}.md")
@@ -532,7 +542,7 @@ def main(argv: list[str] | None = None) -> int:
     args.out_json.write_text(
         json.dumps(
             {
-                "wallet": BONEREAPER_ADDR,
+                "wallet": user_addr,
                 "days": args.days,
                 "n_markets_total": len(events),
                 "n_markets_with_trades": n_markets_with_trades,
