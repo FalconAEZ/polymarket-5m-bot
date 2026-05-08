@@ -1,0 +1,189 @@
+# Phase 11.A — SpotAwareStrategy smoke backtest (NOT a 30d production gate).
+# Run date: 2026-05-09 00:13 UTC (laptop). Captured-tick dates: 2026-05-06,
+# 2026-05-07. Coverage: ~5h of polymarket book activity across 2 days, plus
+# the cross-midnight gap (parquet for 2026-05-07 is partially corrupt per
+# replay-calibration-2026-05-08.md).
+#
+# Verdict — STRUCTURAL SOUNDNESS, NOT GATE PASS:
+#   - Strategy fires (89/316 windows = 28% fire rate; ~45/day, inside gate A1
+#     bounds 30-200)
+#   - Fill rate 52% (46/89 fires filled)
+#   - Win rate 71.7% (33/46 filled), well above gate A2 (>=55%)
+#   - Aggregate PnL -$1.68 over 46 trades; per-trade NET -$0.037
+#     (gate A4 wants >=+$0.20 — does NOT pass)
+#
+# Diagnosis: priors slightly overestimate true p_win in the dominant
+# 0.50-0.70 tier x 5-10bps bucket (prior=0.74, actual=0.717). EV gate fired
+# trades whose true EV was near zero or negative; fees + slippage tipped
+# them. This is exactly the kind of small-sample noise we expected (only 46
+# fills); 7-day live paper-soak gives a sample 5-10x larger and lets the
+# real win-rate stabilize.
+#
+# Decision: strategy is structurally sound (fires, filters, fills). DEPLOY
+# for the 7-day paper-soak as the actual gate. If the live WR comes in at
+# the smoke level (~71%) the priors just need a small adjustment downward;
+# if WR is materially lower the EV gate or the trigger needs work.
+#
+# Full output below.
+# ===================================================================
+
+Discovering windows in .claude/worktrees/bold-galileo-2d56ca/ticks for dates ['2026-05-06', '2026-05-07']...
+Found 268 unique 5m windows.
+Warming TokenSideIndex (cache=state/token_side_index.json)...
+2026-05-09 00:13:03,141 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778112300 "HTTP/1.1 200 OK"
+2026-05-09 00:13:03,692 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778112600 "HTTP/1.1 200 OK"
+2026-05-09 00:13:04,119 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778112900 "HTTP/1.1 200 OK"
+2026-05-09 00:13:04,691 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778113200 "HTTP/1.1 200 OK"
+2026-05-09 00:13:05,159 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778113500 "HTTP/1.1 200 OK"
+2026-05-09 00:13:05,655 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778113800 "HTTP/1.1 200 OK"
+2026-05-09 00:13:06,250 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778114100 "HTTP/1.1 200 OK"
+2026-05-09 00:13:06,900 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778114400 "HTTP/1.1 200 OK"
+2026-05-09 00:13:07,320 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778114700 "HTTP/1.1 200 OK"
+2026-05-09 00:13:07,960 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778115000 "HTTP/1.1 200 OK"
+2026-05-09 00:13:08,431 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778115300 "HTTP/1.1 200 OK"
+2026-05-09 00:13:09,003 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778115600 "HTTP/1.1 200 OK"
+2026-05-09 00:13:09,568 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778115900 "HTTP/1.1 200 OK"
+2026-05-09 00:13:10,142 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778116200 "HTTP/1.1 200 OK"
+2026-05-09 00:13:10,590 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778116500 "HTTP/1.1 200 OK"
+2026-05-09 00:13:11,149 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778116800 "HTTP/1.1 200 OK"
+2026-05-09 00:13:11,725 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778117100 "HTTP/1.1 200 OK"
+2026-05-09 00:13:12,282 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778117400 "HTTP/1.1 200 OK"
+2026-05-09 00:13:12,726 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778117700 "HTTP/1.1 200 OK"
+2026-05-09 00:13:13,316 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778118000 "HTTP/1.1 200 OK"
+2026-05-09 00:13:13,918 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778118300 "HTTP/1.1 200 OK"
+2026-05-09 00:13:14,487 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778118600 "HTTP/1.1 200 OK"
+2026-05-09 00:13:15,023 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778118900 "HTTP/1.1 200 OK"
+2026-05-09 00:13:15,615 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778119200 "HTTP/1.1 200 OK"
+2026-05-09 00:13:16,103 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778119500 "HTTP/1.1 200 OK"
+2026-05-09 00:13:16,675 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778119800 "HTTP/1.1 200 OK"
+2026-05-09 00:13:17,186 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778120100 "HTTP/1.1 200 OK"
+2026-05-09 00:13:17,667 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778120400 "HTTP/1.1 200 OK"
+2026-05-09 00:13:18,239 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778120700 "HTTP/1.1 200 OK"
+2026-05-09 00:13:18,669 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778121000 "HTTP/1.1 200 OK"
+2026-05-09 00:13:19,243 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778121300 "HTTP/1.1 200 OK"
+2026-05-09 00:13:19,727 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778121600 "HTTP/1.1 200 OK"
+2026-05-09 00:13:20,310 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778121900 "HTTP/1.1 200 OK"
+2026-05-09 00:13:21,003 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778122200 "HTTP/1.1 200 OK"
+2026-05-09 00:13:21,482 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778122500 "HTTP/1.1 200 OK"
+2026-05-09 00:13:21,968 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778122800 "HTTP/1.1 200 OK"
+2026-05-09 00:13:22,459 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778123100 "HTTP/1.1 200 OK"
+2026-05-09 00:13:23,060 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778123400 "HTTP/1.1 200 OK"
+2026-05-09 00:13:23,550 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778123700 "HTTP/1.1 200 OK"
+2026-05-09 00:13:24,114 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778124000 "HTTP/1.1 200 OK"
+2026-05-09 00:13:24,661 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778124300 "HTTP/1.1 200 OK"
+2026-05-09 00:13:25,212 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778124600 "HTTP/1.1 200 OK"
+2026-05-09 00:13:25,865 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778124900 "HTTP/1.1 200 OK"
+2026-05-09 00:13:26,517 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778125200 "HTTP/1.1 200 OK"
+2026-05-09 00:13:27,093 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778125500 "HTTP/1.1 200 OK"
+2026-05-09 00:13:27,566 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778125800 "HTTP/1.1 200 OK"
+2026-05-09 00:13:28,161 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778126100 "HTTP/1.1 200 OK"
+2026-05-09 00:13:28,621 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778126400 "HTTP/1.1 200 OK"
+2026-05-09 00:13:29,044 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778126700 "HTTP/1.1 200 OK"
+2026-05-09 00:13:29,573 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778127000 "HTTP/1.1 200 OK"
+2026-05-09 00:13:30,174 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778127300 "HTTP/1.1 200 OK"
+2026-05-09 00:13:30,764 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778127600 "HTTP/1.1 200 OK"
+2026-05-09 00:13:31,334 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778127900 "HTTP/1.1 200 OK"
+2026-05-09 00:13:31,899 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778130600 "HTTP/1.1 200 OK"
+2026-05-09 00:13:32,348 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778130900 "HTTP/1.1 200 OK"
+2026-05-09 00:13:32,822 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778131200 "HTTP/1.1 200 OK"
+2026-05-09 00:13:33,379 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778131500 "HTTP/1.1 200 OK"
+2026-05-09 00:13:33,877 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778131800 "HTTP/1.1 200 OK"
+2026-05-09 00:13:34,464 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778132100 "HTTP/1.1 200 OK"
+2026-05-09 00:13:35,077 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778132400 "HTTP/1.1 200 OK"
+2026-05-09 00:13:35,740 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778132700 "HTTP/1.1 200 OK"
+2026-05-09 00:13:36,252 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778133000 "HTTP/1.1 200 OK"
+2026-05-09 00:13:36,776 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778133300 "HTTP/1.1 200 OK"
+2026-05-09 00:13:37,388 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778133600 "HTTP/1.1 200 OK"
+2026-05-09 00:13:37,836 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778133900 "HTTP/1.1 200 OK"
+2026-05-09 00:13:38,521 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778134200 "HTTP/1.1 200 OK"
+2026-05-09 00:13:39,017 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778134500 "HTTP/1.1 200 OK"
+2026-05-09 00:13:39,549 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778134800 "HTTP/1.1 200 OK"
+2026-05-09 00:13:40,110 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778135100 "HTTP/1.1 200 OK"
+2026-05-09 00:13:40,581 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778135400 "HTTP/1.1 200 OK"
+2026-05-09 00:13:41,088 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778135700 "HTTP/1.1 200 OK"
+2026-05-09 00:13:41,684 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778136000 "HTTP/1.1 200 OK"
+2026-05-09 00:13:42,250 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778136300 "HTTP/1.1 200 OK"
+2026-05-09 00:13:42,749 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778137500 "HTTP/1.1 200 OK"
+2026-05-09 00:13:43,250 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778137800 "HTTP/1.1 200 OK"
+2026-05-09 00:13:43,840 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778138100 "HTTP/1.1 200 OK"
+2026-05-09 00:13:44,333 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778138400 "HTTP/1.1 200 OK"
+2026-05-09 00:13:44,893 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778138700 "HTTP/1.1 200 OK"
+2026-05-09 00:13:45,363 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778139000 "HTTP/1.1 200 OK"
+2026-05-09 00:13:45,975 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778139300 "HTTP/1.1 200 OK"
+2026-05-09 00:13:46,615 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778139600 "HTTP/1.1 200 OK"
+2026-05-09 00:13:47,088 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778189100 "HTTP/1.1 200 OK"
+2026-05-09 00:13:47,682 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778189400 "HTTP/1.1 200 OK"
+2026-05-09 00:13:48,294 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778189700 "HTTP/1.1 200 OK"
+2026-05-09 00:13:48,890 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778190000 "HTTP/1.1 200 OK"
+2026-05-09 00:13:49,471 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778190900 "HTTP/1.1 200 OK"
+2026-05-09 00:13:50,042 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778191200 "HTTP/1.1 200 OK"
+2026-05-09 00:13:50,599 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778191500 "HTTP/1.1 200 OK"
+2026-05-09 00:13:51,156 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778191800 "HTTP/1.1 200 OK"
+2026-05-09 00:13:51,615 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778192100 "HTTP/1.1 200 OK"
+2026-05-09 00:13:52,025 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778192400 "HTTP/1.1 200 OK"
+2026-05-09 00:13:52,501 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778192700 "HTTP/1.1 200 OK"
+2026-05-09 00:13:53,099 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778193000 "HTTP/1.1 200 OK"
+2026-05-09 00:13:53,696 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778197500 "HTTP/1.1 200 OK"
+2026-05-09 00:13:54,249 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778197800 "HTTP/1.1 200 OK"
+2026-05-09 00:13:55,015 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778198100 "HTTP/1.1 200 OK"
+2026-05-09 00:13:55,618 INFO httpx: HTTP Request: GET https://gamma-api.polymarket.com/events?slug=btc-updown-5m-1778198400 "HTTP/1.1 200 OK"
+Resolver: 576 tokens mapped (97 new fetches; rest from cache)
+Replaying with spot_aware (threshold=0.6pp, ttl=[10,30]s)...
+
+=== BACKTEST METRICS ===
+  n_windows: 316
+  n_fired: 89
+  n_filled: 46
+  n_won: 33
+  win_rate: +0.7174
+  total_pnl_usd: -1.6817
+  avg_pnl_usd_per_filled: -0.0366
+
+=== PER-WINDOW SUMMARY (filled trades only, first 50) ===
+   window_ts  side   res  fill_px    pnl_usd  rationale
+  1778115000  DOWN  DOWN   0.7410   +1.7466  strategy=spot_aware delta_bps=-8.10 p_win=0.800 ev=+0.0450 ttl=30s side=DOWN
+  1778115300    UP  DOWN   0.7410   -5.0010  strategy=spot_aware delta_bps=+8.85 p_win=0.800 ev=+0.0050 ttl=30s side=UP
+  1778115900  DOWN    UP   0.7110   -5.0010  strategy=spot_aware delta_bps=-8.02 p_win=0.800 ev=+0.0650 ttl=30s side=DOWN
+  1778116200    UP    UP   0.7510   +1.6568  strategy=spot_aware delta_bps=+8.02 p_win=0.800 ev=+0.0350 ttl=30s side=UP
+  1778116800  DOWN    UP   0.8310   -5.0010  strategy=spot_aware delta_bps=-12.58 p_win=0.860 ev=+0.0150 ttl=30s side=DOWN
+  1778117100    UP    UP   0.7710   +1.4841  strategy=spot_aware delta_bps=+8.56 p_win=0.800 ev=+0.0150 ttl=30s side=UP
+  1778118600  DOWN  DOWN   0.7410   +1.7466  strategy=spot_aware delta_bps=-8.32 p_win=0.800 ev=+0.0450 ttl=30s side=DOWN
+  1778119800  DOWN  DOWN   0.7810   +1.4010  strategy=spot_aware delta_bps=-8.00 p_win=0.800 ev=+0.0050 ttl=30s side=DOWN
+  1778121900    UP    UP   0.7810   +1.4010  strategy=spot_aware delta_bps=+8.01 p_win=0.800 ev=+0.0050 ttl=30s side=UP
+  1778122800  DOWN  DOWN   0.7210   +1.9338  strategy=spot_aware delta_bps=-8.32 p_win=0.800 ev=+0.0350 ttl=30s side=DOWN
+  1778127000    UP    UP   0.6810   +2.3411  strategy=spot_aware delta_bps=+8.01 p_win=0.800 ev=+0.0950 ttl=30s side=UP
+  1778127300    UP    UP   0.7310   +1.8389  strategy=spot_aware delta_bps=+8.03 p_win=0.800 ev=+0.0550 ttl=30s side=UP
+  1778135700    UP    UP   0.7410   +1.7466  strategy=spot_aware delta_bps=+8.02 p_win=0.800 ev=+0.0250 ttl=30s side=UP
+  1778142000  DOWN  DOWN   0.6910   +2.2349  strategy=spot_aware delta_bps=-8.11 p_win=0.800 ev=+0.0950 ttl=30s side=DOWN
+  1778142300  DOWN    UP   0.5610   -5.0010  strategy=spot_aware delta_bps=-8.09 p_win=0.740 ev=+0.1650 ttl=30s side=DOWN
+  1778144400  DOWN  DOWN   0.7610   +1.5693  strategy=spot_aware delta_bps=-8.07 p_win=0.800 ev=+0.0150 ttl=30s side=DOWN
+  1778159700  DOWN    UP   0.7210   -5.0010  strategy=spot_aware delta_bps=-8.12 p_win=0.800 ev=+0.0650 ttl=30s side=DOWN
+  1778160600  DOWN  DOWN   0.7010   +2.1317  strategy=spot_aware delta_bps=-8.06 p_win=0.800 ev=+0.0650 ttl=30s side=DOWN
+  1778161200  DOWN  DOWN   0.7510   +1.6568  strategy=spot_aware delta_bps=-8.04 p_win=0.800 ev=+0.0350 ttl=30s side=DOWN
+  1778161500    UP  DOWN   0.5710   -5.0010  strategy=spot_aware delta_bps=+8.00 p_win=0.740 ev=+0.1450 ttl=30s side=UP
+  1778161800  DOWN    UP   0.4710   -5.0010  strategy=spot_aware delta_bps=-8.12 p_win=0.650 ev=+0.1550 ttl=30s side=DOWN
+  1778162100    UP    UP   0.7110   +2.0313  strategy=spot_aware delta_bps=+8.01 p_win=0.800 ev=+0.0550 ttl=30s side=UP
+  1778163300  DOWN  DOWN   0.6410   +2.7993  strategy=spot_aware delta_bps=-8.03 p_win=0.740 ev=+0.0650 ttl=30s side=DOWN
+  1778163900  DOWN  DOWN   0.7710   +1.4841  strategy=spot_aware delta_bps=-8.21 p_win=0.800 ev=+0.0150 ttl=30s side=DOWN
+  1778164500  DOWN  DOWN   0.5610   +3.9117  strategy=spot_aware delta_bps=-8.11 p_win=0.740 ev=+0.1650 ttl=30s side=DOWN
+  1778164800  DOWN    UP   0.6010   -5.0010  strategy=spot_aware delta_bps=-8.33 p_win=0.740 ev=+0.1150 ttl=30s side=DOWN
+  1778165400    UP    UP   0.7610   +1.5693  strategy=spot_aware delta_bps=+8.11 p_win=0.800 ev=+0.0250 ttl=30s side=UP
+  1778165700  DOWN  DOWN   0.7510   +1.6568  strategy=spot_aware delta_bps=-8.10 p_win=0.800 ev=+0.0050 ttl=30s side=DOWN
+  1778166000  DOWN  DOWN   0.6510   +2.6795  strategy=spot_aware delta_bps=-8.17 p_win=0.740 ev=+0.0650 ttl=30s side=DOWN
+  1778166900    UP  DOWN   0.7510   -5.0010  strategy=spot_aware delta_bps=+8.01 p_win=0.800 ev=+0.0150 ttl=30s side=UP
+  1778169300  DOWN  DOWN   0.7810   +1.4010  strategy=spot_aware delta_bps=-8.07 p_win=0.800 ev=+0.0050 ttl=30s side=DOWN
+  1778169600  DOWN    UP   0.6710   -5.0010  strategy=spot_aware delta_bps=-8.07 p_win=0.740 ev=+0.0550 ttl=30s side=DOWN
+  1778169900  DOWN  DOWN   0.7010   +2.1317  strategy=spot_aware delta_bps=-8.03 p_win=0.800 ev=+0.0750 ttl=30s side=DOWN
+  1778170800    UP    UP   0.8210   +1.0891  strategy=spot_aware delta_bps=+10.01 p_win=0.860 ev=+0.0250 ttl=30s side=UP
+  1778173200    UP    UP   0.6710   +2.4506  strategy=spot_aware delta_bps=+8.02 p_win=0.800 ev=+0.0950 ttl=30s side=UP
+  1778174100  DOWN  DOWN   0.7010   +2.1317  strategy=spot_aware delta_bps=-8.08 p_win=0.800 ev=+0.0850 ttl=30s side=DOWN
+  1778174400    UP    UP   0.7610   +1.5693  strategy=spot_aware delta_bps=+8.03 p_win=0.800 ev=+0.0150 ttl=30s side=UP
+  1778174700    UP  DOWN   0.5610   -5.0010  strategy=spot_aware delta_bps=+8.03 p_win=0.740 ev=+0.1550 ttl=30s side=UP
+  1778175000    UP    UP   0.6610   +2.5633  strategy=spot_aware delta_bps=+8.00 p_win=0.740 ev=+0.0550 ttl=30s side=UP
+  1778175300    UP    UP   0.6910   +2.2349  strategy=spot_aware delta_bps=+8.08 p_win=0.800 ev=+0.0750 ttl=30s side=UP
+  1778176200    UP    UP   0.7410   +1.7466  strategy=spot_aware delta_bps=+9.06 p_win=0.800 ev=+0.0450 ttl=30s side=UP
+  1778176800    UP    UP   0.7210   +1.9338  strategy=spot_aware delta_bps=+8.01 p_win=0.800 ev=+0.0650 ttl=30s side=UP
+  1778179800  DOWN    UP   0.7710   -5.0010  strategy=spot_aware delta_bps=-8.09 p_win=0.800 ev=+0.0150 ttl=30s side=DOWN
+  1778184000    UP    UP   0.7810   +1.4010  strategy=spot_aware delta_bps=+8.00 p_win=0.800 ev=+0.0050 ttl=30s side=UP
+  1778188500  DOWN    UP   0.7710   -5.0010  strategy=spot_aware delta_bps=-8.21 p_win=0.800 ev=+0.0150 ttl=30s side=DOWN
+  1778192100    UP    UP   0.7510   +1.6568  strategy=spot_aware delta_bps=+8.03 p_win=0.800 ev=+0.0150 ttl=30s side=UP

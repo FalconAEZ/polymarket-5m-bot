@@ -43,12 +43,21 @@ from polymarket_bot.strategies.deterministic import (  # noqa: E402
     DEFAULT_THRESHOLD_PCT,
     DeterministicStrategy,
 )
+from polymarket_bot.strategies.protocol import Strategy  # noqa: E402
+from polymarket_bot.strategies.spot_aware import SpotAwareStrategy  # noqa: E402
+from polymarket_bot.strategies.spot_aware_priors import load_priors  # noqa: E402
 
 LOG = logging.getLogger("polymarket_bot.scripts.run_paper")
 WARM_LOOKAHEAD_WINDOWS = 12  # ~1 hour of windows pre-resolved
 WARMER_INTERVAL_S = 60.0
 HALT_SENTINEL_PATH = Path("state/halt.sentinel")
 HALT_POLL_INTERVAL_S = 1.0
+
+# Strategy selection (Phase 11.A: spot_aware deployed solo per
+# design/spot_aware_strategy.md §"Concurrency + state isolation"). Override
+# via STRATEGY env var = "deterministic" | "spot_aware". Default = spot_aware
+# now that phase-5-pass is in.
+DEFAULT_STRATEGY_NAME = "spot_aware"
 
 
 def _configure_logging() -> None:
@@ -131,6 +140,14 @@ async def _warmer(
             await asyncio.wait_for(stop.wait(), timeout=WARMER_INTERVAL_S)
 
 
+def _build_strategy(name: str) -> Strategy:
+    if name == "deterministic":
+        return DeterministicStrategy(threshold_pct=DEFAULT_THRESHOLD_PCT)
+    if name == "spot_aware":
+        return SpotAwareStrategy(priors=load_priors())
+    raise ValueError(f"unknown STRATEGY env value {name!r}; pick deterministic or spot_aware")
+
+
 def _build_alert_sink() -> AlertSink:
     redis_url = os.environ.get("REDIS_URL")
     if not redis_url:
@@ -170,7 +187,8 @@ async def main() -> int:
     )
 
     feeds = _default_feeds()
-    strategy = DeterministicStrategy(threshold_pct=DEFAULT_THRESHOLD_PCT)
+    strategy = _build_strategy(os.environ.get("STRATEGY", DEFAULT_STRATEGY_NAME))
+    LOG.info("active strategy: %s", strategy.name)
     decision_log = DecisionLog(root="state/decisions")
     runner = PaperRunner(
         feeds=feeds,

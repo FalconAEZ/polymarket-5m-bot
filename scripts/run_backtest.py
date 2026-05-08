@@ -38,6 +38,9 @@ from polymarket_bot.backtest.runner import BacktestRunner, aggregate_metrics  # 
 from polymarket_bot.backtest.side_index import TokenSideIndex  # noqa: E402
 from polymarket_bot.resolver import active_window_ts  # noqa: E402
 from polymarket_bot.strategies.deterministic import DeterministicStrategy  # noqa: E402
+from polymarket_bot.strategies.protocol import Strategy  # noqa: E402
+from polymarket_bot.strategies.spot_aware import SpotAwareStrategy  # noqa: E402
+from polymarket_bot.strategies.spot_aware_priors import load_priors  # noqa: E402
 
 LOG = logging.getLogger("polymarket_bot.scripts.run_backtest")
 
@@ -56,11 +59,32 @@ def _discover_windows(ticks_root: Path, dates: list[str]) -> list[int]:
     return sorted(windows)
 
 
+def _build_strategy(
+    name: str,
+    *,
+    threshold_pct: float,
+    ttl_low_s: int,
+    ttl_high_s: int,
+) -> Strategy:
+    if name == "deterministic":
+        return DeterministicStrategy(
+            threshold_pct=threshold_pct, ttl_low_s=ttl_low_s, ttl_high_s=ttl_high_s
+        )
+    if name == "spot_aware":
+        return SpotAwareStrategy(
+            priors=load_priors(),
+            ttl_low_s=ttl_low_s,
+            ttl_high_s=ttl_high_s,
+        )
+    raise ValueError(f"unknown --strategy {name!r}; pick deterministic or spot_aware")
+
+
 async def main(
     dates: list[str],
     *,
     ticks_root: Path,
     cache_path: Path,
+    strategy_name: str,
     threshold_pct: float,
     ttl_low_s: int,
     ttl_high_s: int,
@@ -87,13 +111,16 @@ async def main(
     )
 
     print(
-        f"Replaying with DeterministicStrategy "
+        f"Replaying with {strategy_name} "
         f"(threshold={threshold_pct}pp, ttl=[{ttl_low_s},{ttl_high_s}]s)...",
         flush=True,
     )
     replay = ReplayEngine(ticks_root, dates, side_resolver=index)
-    strategy = DeterministicStrategy(
-        threshold_pct=threshold_pct, ttl_low_s=ttl_low_s, ttl_high_s=ttl_high_s
+    strategy = _build_strategy(
+        strategy_name,
+        threshold_pct=threshold_pct,
+        ttl_low_s=ttl_low_s,
+        ttl_high_s=ttl_high_s,
     )
     runner = BacktestRunner(replay, simulator=FillSimulator())
     results = await runner.run(strategy)
@@ -136,6 +163,12 @@ def cli() -> None:
     )
     parser.add_argument("--ticks-root", default="ticks")
     parser.add_argument("--cache-path", default="state/token_side_index.json")
+    parser.add_argument(
+        "--strategy",
+        default="deterministic",
+        choices=["deterministic", "spot_aware"],
+        help="Which Strategy to run through the replay engine.",
+    )
     parser.add_argument("--threshold-pct", type=float, default=0.6)
     parser.add_argument("--ttl-low", type=int, default=10)
     parser.add_argument("--ttl-high", type=int, default=30)
@@ -146,6 +179,7 @@ def cli() -> None:
             dates,
             ticks_root=Path(args.ticks_root),
             cache_path=Path(args.cache_path),
+            strategy_name=args.strategy,
             threshold_pct=args.threshold_pct,
             ttl_low_s=args.ttl_low,
             ttl_high_s=args.ttl_high,

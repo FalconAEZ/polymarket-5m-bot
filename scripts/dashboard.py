@@ -562,6 +562,7 @@ def _render_decisions_table(rows: list[DecisionRow]) -> None:
         [
             {
                 "When (UTC)": r.decision_dt_utc.strftime("%H:%M:%S · %b %d"),
+                "Strategy": (r.strategy or "—"),
                 "Side": ("🟢 UP" if r.side == "UP" else "🔴 DOWN"),
                 "Asset": r.asset_id[:10] + "…" if len(r.asset_id) > 10 else r.asset_id,
                 "Limit": r.price_limit,
@@ -574,6 +575,9 @@ def _render_decisions_table(rows: list[DecisionRow]) -> None:
                     else "— pending"
                 ),
                 "PnL": r.pnl_usd if r.pnl_usd is not None else None,
+                "Δ_bps": r.delta_bps,
+                "p_win": r.p_win,
+                "EV($)": r.ev_dollars,
                 "Composite": r.composite_pct,
                 "TTL": f"{r.ttl_s}s",
             }

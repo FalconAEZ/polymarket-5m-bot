@@ -70,6 +70,15 @@ class DecisionRow:
     price_limit: float
     ttl_s: int
     composite_pct: float | None
+    # Strategy discriminator + spot_aware-specific metrics, parsed from the
+    # decision rationale. Older decisions written by DeterministicStrategy
+    # have strategy="deterministic" (inferred when composite_pct is set and
+    # spot_aware markers are absent). delta_bps / p_win / ev_dollars are
+    # only populated for spot_aware decisions.
+    strategy: str | None
+    delta_bps: float | None
+    p_win: float | None
+    ev_dollars: float | None
     fill_price: float | None
     fee_usd: float | None
     resolution: Side | None
@@ -206,6 +215,11 @@ def _row_from_pair(fired: dict[str, Any], settled: dict[str, Any] | None) -> Dec
     fee_usd = float(fill["fee_usd"]) if isinstance(fill, dict) else None
     composite = fired.get("composite_pct")
     composite_pct = float(composite) if isinstance(composite, int | float) else None
+    rationale = str(fired.get("rationale", ""))
+    strategy = _strategy_from_rationale(rationale, composite_pct=composite_pct)
+    delta_bps = _float_marker(rationale, "delta_bps=")
+    p_win = _float_marker(rationale, "p_win=")
+    ev_dollars = _float_marker(rationale, "ev=")
     resolution: Side | None = None
     pnl_usd: float | None = None
     if settled is not None:
@@ -225,11 +239,46 @@ def _row_from_pair(fired: dict[str, Any], settled: dict[str, Any] | None) -> Dec
         price_limit=float(fired.get("price_limit", 0.0) or 0.0),
         ttl_s=int(fired.get("ttl_s", 0) or 0),
         composite_pct=composite_pct,
+        strategy=strategy,
+        delta_bps=delta_bps,
+        p_win=p_win,
+        ev_dollars=ev_dollars,
         fill_price=fill_price,
         fee_usd=fee_usd,
         resolution=resolution,
         pnl_usd=pnl_usd,
     )
+
+
+def _strategy_from_rationale(rationale: str, *, composite_pct: float | None) -> str | None:
+    """Infer the strategy name from the rationale string + composite signal.
+
+    spot_aware writes 'strategy=spot_aware' explicitly. DeterministicStrategy
+    pre-dates that marker; we infer 'deterministic' when composite_pct is
+    populated and the spot_aware marker is absent.
+    """
+    if "strategy=spot_aware" in rationale:
+        return "spot_aware"
+    if composite_pct is not None or "composite=" in rationale:
+        return "deterministic"
+    return None
+
+
+def _float_marker(rationale: str, marker: str) -> float | None:
+    """Parse 'marker<number>' out of a rationale string. Returns None if absent."""
+    idx = rationale.find(marker)
+    if idx < 0:
+        return None
+    tail = rationale[idx + len(marker) :]
+    end = 0
+    while end < len(tail) and (tail[end].isdigit() or tail[end] in "+-.eE"):
+        end += 1
+    if end == 0:
+        return None
+    try:
+        return float(tail[:end])
+    except ValueError:
+        return None
 
 
 def tail_log(path: Path | str, *, n_lines: int = 60, max_bytes: int = 65536) -> list[str]:

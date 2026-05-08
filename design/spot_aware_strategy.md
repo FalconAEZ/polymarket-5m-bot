@@ -273,15 +273,29 @@ class SpotAwareStrategy:
 
 `SpotAwareStrategy` shares the `Strategy` protocol so it drops into
 `PaperRunner`'s existing strategy slot. Phase 4's runner only knows how to
-run *one* strategy at a time. To run two strategies side-by-side in shadow
-paper mode, we extend the runner with a `strategies: list[Strategy]` field.
-Both receive every event; both write to `state/decisions/<date>.jsonl` with
-a `strategy: "deterministic" | "spot_aware"` discriminator field already
-present in the `Decision` schema. Dashboard groups by this field.
+run *one* strategy at a time.
 
-The runner extension is a small change to `src/polymarket_bot/_paper/
-runner.py`; it lives in this design doc as scope but the failing test goes
-in `tests/_paper/` first per anti-vibe rule #2.
+**Deployment plan revision (2026-05-09):** the side-by-side runner refactor
+is deferred to a v2 follow-up commit. For the initial 7-day paper-soak,
+`spot_aware` is deployed **solo** on `bot-staging.service` — replacing
+`deterministic` as the active strategy on the VPS. Justification:
+1. `deterministic` was replay-calibrated to fire **zero** at any threshold
+   on 28 windows of real BTC ticks (`runbooks/gate-evidence/
+   replay-calibration-2026-05-08.md`). Running it 7 more days in shadow
+   would not add information.
+2. The `_RunState` class in `src/polymarket_bot/_paper/runner.py` is
+   per-window-single-strategy; refactoring it to per-window-per-strategy
+   is ~2h of careful test-first work. Doing that refactor *while* the
+   phase-5-pass deployment is running risks a regression on the live
+   service.
+3. After the 7-day paper-soak, we'll have `spot_aware` fire-rate data to
+   *actually compare against* and the refactor will be informed by real
+   numbers, not a placeholder.
+
+**Follow-up scope (committed before Phase 6):** extend `_RunState` to host
+a `dict[strategy_name, _StrategyState]`; `DecisionLog.record_fired` adds a
+`strategy: str` field; dashboard groups by that field. Failing tests in
+`tests/_paper/test_multi_strategy.py` first per rule #2.
 
 ## 8. Sizing
 
