@@ -21,13 +21,18 @@ REMOTE_ROOT="/home/ops/polymarket-5m-bot"
 LOCAL_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 STAGING="$LOCAL_ROOT/state/staging"
 
-mkdir -p "$STAGING/decisions"
+mkdir -p "$STAGING/decisions" "$STAGING/decisions.raw"
 
-echo "==> rsync VPS state/decisions/ → $STAGING/decisions/"
+# Two-stage path so the dashboard never reads a half-resolved view:
+#   decisions.raw/  ← rsynced from VPS (oracle-truth, partially WRONG per
+#                     runbooks/incidents/2026-05-09-oracle-resolver-mismatch.md)
+#   decisions/      ← rewritten by resolve_decisions.py with Polymarket truth.
+#                     Atomic-rename writes; dashboard reads from here.
+echo "==> rsync VPS state/decisions/ → $STAGING/decisions.raw/"
 rsync -az --delete \
   -e "ssh -i $KEY -p $PORT -o ConnectTimeout=10" \
   "$HOST:$REMOTE_ROOT/state/decisions/" \
-  "$STAGING/decisions/"
+  "$STAGING/decisions.raw/"
 
 echo "==> rsync VPS state/token_side_index.json"
 rsync -az \
@@ -57,16 +62,16 @@ python3 "$LOCAL_ROOT/runbooks/scripts/synthesize_feeds_health.py" \
   --bot-active "$ACTIVE_FLAG"
 
 # Re-resolve settled decisions against Polymarket Gamma — see
-# runbooks/incidents/2026-05-09-oracle-resolver-mismatch.md. Our local
-# Chainlink AnswerUpdated samples are off by up to 90s vs the timestamps
-# Polymarket itself uses, so we'd otherwise show wrong PnL on ~1/3 of
-# settled trades. Best-effort; if Gamma is unreachable the dashboard
-# falls back to oracle-truth (better than nothing).
-echo "==> re-resolve settled decisions against Polymarket (truth source)"
-if uv run python "$LOCAL_ROOT/scripts/resolve_decisions.py" "$STAGING/decisions/" 2>&1 | sed 's/^/  /'; then
+# runbooks/incidents/2026-05-09-oracle-resolver-mismatch.md. Reads from
+# decisions.raw/ (just-rsynced, oracle-truth) and writes to decisions/
+# (Polymarket-truth). Atomic-rename writes per file; the dashboard's
+# read path NEVER sees a half-synced or half-resolved view.
+echo "==> re-resolve raw → cooked (Polymarket truth source)"
+if uv run python "$LOCAL_ROOT/scripts/resolve_decisions.py" \
+    "$STAGING/decisions.raw/" "$STAGING/decisions/" 2>&1 | sed 's/^/  /'; then
   :
 else
-  echo "  (re-resolution failed — dashboard will show oracle-truth)"
+  echo "  (re-resolution failed — dashboard will continue reading prior cooked dir)"
 fi
 
 echo "==> live VPS status:"

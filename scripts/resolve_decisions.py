@@ -15,14 +15,16 @@ Why this exists:
   corrected `resolution` and `pnl_usd`.
 
 Usage:
+    # In-place rewrite (legacy, single arg):
     uv run python scripts/resolve_decisions.py state/staging/decisions/
 
-  It rewrites the *.jsonl files in-place. The original is preserved at
-  *.jsonl.bak the first time it runs; subsequent runs skip the backup.
+    # Two-arg mode: read from SRC, write to DST atomically. Used by
+    # sync_staging.sh so the dashboard never reads a half-resolved view.
+    uv run python scripts/resolve_decisions.py SRC_DIR DST_DIR
 
-Idempotent. Safe to call repeatedly. Records that already have a Gamma
-resolution recorded under the new ``resolution_source: "polymarket"``
-field are skipped.
+  Records that already have a Gamma resolution recorded under
+  ``resolution_source: "polymarket"`` are skipped. Idempotent. Safe to
+  call repeatedly.
 """
 
 from __future__ import annotations
@@ -109,9 +111,16 @@ def realised_pnl(*, side: str, resolution: str, fill: dict[str, Any]) -> float:
     return payout - cost - fee
 
 
-def re_resolve_file(path: Path, *, client: httpx.Client) -> tuple[int, int, int]:
-    """Returns (n_settled, n_changed, n_unresolvable)."""
-    lines = path.read_text(encoding="utf-8").splitlines()
+def re_resolve_file(
+    src: Path, *, client: httpx.Client, dst: Path | None = None
+) -> tuple[int, int, int]:
+    """Returns (n_settled, n_changed, n_unresolvable).
+
+    Reads from ``src``. Writes to ``dst`` (atomic via tmp+rename). If
+    ``dst`` is None, rewrites ``src`` in place (legacy behavior).
+    """
+    target = dst if dst is not None else src
+    lines = src.read_text(encoding="utf-8").splitlines()
     by_id_side: dict[str, str] = {}
     by_id_window: dict[str, int] = {}
     n_settled = 0
@@ -192,12 +201,16 @@ def re_resolve_file(path: Path, *, client: httpx.Client) -> tuple[int, int, int]
 
         out.append(json.dumps(rec, separators=(",", ":")))
 
-    if n_changed > 0 or any('"resolution_source":"polymarket"' in line for line in out):
-        # Backup once if not already backed up.
-        bak = path.with_suffix(path.suffix + ".bak")
-        if not bak.exists():
-            bak.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        path.write_text("\n".join(out) + "\n", encoding="utf-8")
+    # Always write the destination (even on no-changes runs) when in two-arg
+    # mode, so the dashboard read path is freshly populated. In-place mode
+    # only writes when something changed (legacy behavior).
+    write_target = dst is not None or n_changed > 0
+    if write_target:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        # Atomic write via tmp + rename — dashboard never reads a partial file.
+        tmp = target.with_suffix(target.suffix + ".tmp")
+        tmp.write_text("\n".join(out) + "\n", encoding="utf-8")
+        tmp.rename(target)
 
     return (n_settled, n_changed, n_unresolvable)
 
@@ -205,16 +218,27 @@ def re_resolve_file(path: Path, *, client: httpx.Client) -> tuple[int, int, int]
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "decisions_dir",
+        "src_dir",
         type=Path,
-        help="Path to a decisions/ directory containing *.jsonl files.",
+        help="Source decisions/ directory containing *.jsonl files.",
+    )
+    parser.add_argument(
+        "dst_dir",
+        type=Path,
+        nargs="?",
+        default=None,
+        help="Optional destination dir. Omit for in-place rewrite (legacy mode).",
     )
     args = parser.parse_args()
-    if not args.decisions_dir.is_dir():
-        print(f"not a directory: {args.decisions_dir}", file=sys.stderr)
+    src: Path = args.src_dir
+    dst: Path | None = args.dst_dir
+    if not src.is_dir():
+        print(f"not a directory: {src}", file=sys.stderr)
         return 2
+    if dst is not None:
+        dst.mkdir(parents=True, exist_ok=True)
 
-    paths = sorted(args.decisions_dir.glob("*.jsonl"))
+    paths = sorted(src.glob("*.jsonl"))
     if not paths:
         print("no .jsonl files found")
         return 0
@@ -225,8 +249,9 @@ def main() -> int:
     with httpx.Client() as client:
         for p in paths:
             print(f"== {p.name} ==")
-            n_settled, n_changed, n_unresolvable = re_resolve_file(p, client=client)
-            print(f"   settled={n_settled} changed={n_changed} " f"unresolvable={n_unresolvable}")
+            target = (dst / p.name) if dst is not None else None
+            n_settled, n_changed, n_unresolvable = re_resolve_file(p, client=client, dst=target)
+            print(f"   settled={n_settled} changed={n_changed} unresolvable={n_unresolvable}")
             total_settled += n_settled
             total_changed += n_changed
             total_unresolvable += n_unresolvable
