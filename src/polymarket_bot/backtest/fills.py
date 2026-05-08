@@ -16,6 +16,13 @@ DEFAULT_FEE_BPS = 2.0
 DEFAULT_IMPACT_PER_5USD_PER_5K_DEPTH = 0.001  # 0.1¢ per $5 trade vs $5K depth
 DEFAULT_REFERENCE_TRADE_USD = 5.0
 DEFAULT_REFERENCE_DEPTH_USD = 5_000.0
+# Cap the linear-impact estimate at 1¢. The naive linear model
+# overshoots wildly when ask_size_top is small but the deeper ladder is
+# fine — e.g., $76 of top depth gives 6.6¢ impact, but a $5 trade
+# really only walks the top tier (worst case ~0.5-1¢ slippage on a
+# Polymarket BTC 5m market). Without the cap, thin-top books make
+# every fill rejected even though they'd execute fine in practice.
+DEFAULT_MAX_IMPACT_USD = 0.01
 
 
 class FillSimulator:
@@ -28,6 +35,7 @@ class FillSimulator:
         impact_per_5usd_per_5k: float = DEFAULT_IMPACT_PER_5USD_PER_5K_DEPTH,
         reference_trade_usd: float = DEFAULT_REFERENCE_TRADE_USD,
         reference_depth_usd: float = DEFAULT_REFERENCE_DEPTH_USD,
+        max_impact_usd: float = DEFAULT_MAX_IMPACT_USD,
     ) -> None:
         if fee_bps < 0:
             raise ValueError(f"fee_bps must be >= 0, got {fee_bps}")
@@ -35,6 +43,7 @@ class FillSimulator:
         self._impact_per_5usd_per_5k = impact_per_5usd_per_5k
         self._ref_trade = reference_trade_usd
         self._ref_depth = reference_depth_usd
+        self._max_impact = max(0.0, max_impact_usd)
 
     def attempt_fill(
         self, decision: Decision, book: BookUpdate, *, is_taker: bool = True
@@ -102,7 +111,8 @@ class FillSimulator:
             # Without depth info, assume reference depth.
             depth_usd = self._ref_depth
         ratio = (trade_size_usd / self._ref_trade) * (self._ref_depth / depth_usd)
-        return self._impact_per_5usd_per_5k * ratio
+        linear = self._impact_per_5usd_per_5k * ratio
+        return min(linear, self._max_impact)
 
     def _ask_depth_usd(self, book: BookUpdate) -> float | None:
         if book.ask_size_top is None or book.best_ask is None:

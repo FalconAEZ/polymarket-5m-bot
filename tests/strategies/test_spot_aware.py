@@ -343,9 +343,9 @@ async def test_decision_carries_size_and_ttl() -> None:
     assert decision.size_usd == DEFAULT_SIZE_USD
     assert decision.side == "BUY"
     assert 10 <= decision.ttl_s <= 30
-    # price_limit = best_ask + DEFAULT_LIMIT_BUFFER_USD (1¢) so the fill
+    # price_limit = best_ask + DEFAULT_LIMIT_BUFFER_USD (2¢) so the fill
     # simulator's self-impact estimate doesn't reject the trade.
-    assert decision.price_limit == pytest.approx(0.55 + 0.01)
+    assert decision.price_limit == pytest.approx(0.55 + 0.02)
 
 
 async def test_decision_rationale_carries_metrics() -> None:

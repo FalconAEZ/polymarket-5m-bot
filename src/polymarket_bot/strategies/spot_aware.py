@@ -43,11 +43,12 @@ DEFAULT_TTL_LOW_S = 10
 DEFAULT_TTL_HIGH_S = 30
 # Slippage buffer added to price_limit so the FillSimulator's self-impact
 # model doesn't reject trades on $0.001 - $0.01 of estimated impact when the
-# real fill would have hit at the quoted ask. Set to 1¢ — covers default-
-# depth impact (~0.1¢) with a 10x margin, but won't cover thin-book extremes
-# (>1¢ impact) which we accept as legitimate non-fills. Operator can widen
+# real fill would have hit at the quoted ask. Combined with the simulator's
+# own 1¢ impact cap (DEFAULT_MAX_IMPACT_USD in backtest/fills.py), 2¢ buffer
+# gives 1¢ slack against effective_ask in the worst-case (ask + 1¢ capped
+# impact = limit, so limit >= effective_ask trivially). Operator can widen
 # via SPOT_AWARE_LIMIT_BUFFER_USD env var if fill rate stays low.
-DEFAULT_LIMIT_BUFFER_USD = 0.01
+DEFAULT_LIMIT_BUFFER_USD = 0.02
 
 # Aggressive-mode fallback: when priors lookup returns None (Δ outside the
 # 5-50bps buckets OR tier outside the table), use this p_win as a fallback
