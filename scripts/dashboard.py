@@ -34,9 +34,12 @@ from polymarket_bot.dashboard.loaders import (  # noqa: E402
     HealthSnapshot,
     ProcessStatus,
     aggregate_pnl,
+    fire_rate_per_hour,
+    latest_active_mode,
     load_decisions,
     load_feeds_health,
     load_process_status,
+    per_tier_stats,
     tail_log,
 )
 from polymarket_bot.dashboard.theme import (  # noqa: E402
@@ -160,19 +163,49 @@ def _detect_incidents(
 # ----------------------------- panels ----------------------------------------
 
 
-def _render_header(refreshed_at: datetime, since_filter: str | None) -> None:
+_MODE_BADGE = {
+    "aggressive": ("AGGRESSIVE MODE", "bad"),
+    "spot_aware": ("SPOT_AWARE", "good"),
+    "deterministic": ("DETERMINISTIC", "warn"),
+}
+
+
+def _render_header(
+    refreshed_at: datetime,
+    since_filter: str | None,
+    *,
+    rows: list[DecisionRow],
+    last_sync_age_s: float | None,
+) -> None:
     sub_parts = [f"refreshed {refreshed_at.strftime('%H:%M:%S')} UTC"]
     if since_filter:
         sub_parts.append(f"since {since_filter}")
+    if last_sync_age_s is not None:
+        sub_parts.append(f"vps sync: {_humanize_age(last_sync_age_s)} ago")
+    else:
+        sub_parts.append("vps sync: never")
     sub = " · ".join(sub_parts)
-    mode_badge = badge("DETERMINISTIC", tone="warn")
+
+    mode = latest_active_mode(rows)
+    if mode in _MODE_BADGE:
+        label, tone = _MODE_BADGE[mode]
+    elif mode is not None:
+        label, tone = (mode.upper(), "warn")
+    else:
+        label, tone = ("WAITING", "warn")
+    mode_badge = badge(label, tone=tone)
+
+    sub_text = "Phase 11.A · spot_aware paper-soak"
+    if mode == "aggressive":
+        sub_text = "Phase 11.A.2 · aggressive_mode test (48h gate)"
+
     st.html(
         '<div class="pmb-header">'
         '<div class="pmb-header__left">'
         '<span class="pmb-live-dot" title="live"></span>'
         '<h1 class="pmb-header__title">Polymarket 5m BTC · Operations</h1>'
         f"{mode_badge}"
-        '<span class="pmb-header__sub">ensemble CUT · Phase 3 OD-5</span>'
+        f'<span class="pmb-header__sub">{html.escape(sub_text)}</span>'
         "</div>"
         f'<div class="pmb-header__sub">{html.escape(sub)}</div>'
         "</div>"
@@ -205,6 +238,15 @@ def _render_kpi_row(rows: list[DecisionRow], paper: ProcessStatus) -> None:
 
     last_dec = _last_decision_label(rows)
     last_dec_tone = "neutral" if rows else "warn"
+    rate_per_hour, fires_24h = fire_rate_per_hour(rows, lookback_hours=24.0)
+    rate_label = f"{rate_per_hour:.1f}/hr"
+    rate_subtitle = f"{fires_24h} in 24h · {int(rate_per_hour * 24)}/d projected"
+    if rate_per_hour == 0:
+        rate_tone: str = "warn"
+    elif rate_per_hour > 14.5:  # >350/d → trip wire #2 in aggressive runbook
+        rate_tone = "bad"
+    else:
+        rate_tone = "good"
 
     pnl_card = kpi_card(
         label="Cumulative PnL",
@@ -229,10 +271,18 @@ def _render_kpi_row(rows: list[DecisionRow], paper: ProcessStatus) -> None:
         subtitle=f"{agg['n_filled']} filled" if isinstance(agg["n_filled"], int) else None,
         tone="neutral",
     )
+    rate_card = kpi_card(
+        label="Fire Rate",
+        value=rate_label,
+        subtitle=rate_subtitle,
+        tone=rate_tone,
+    )
     last_card = kpi_card(
         label="Last Decision",
         value=last_dec,
-        subtitle=("silence is normal at 0.6pp threshold" if not rows else f"{n_fired} fired total"),
+        subtitle=(
+            "no fires yet — bot is waiting for signal" if not rows else f"{n_fired} fired total"
+        ),
         tone=last_dec_tone,
     )
     uptime_card = kpi_card(
@@ -246,14 +296,16 @@ def _render_kpi_row(rows: list[DecisionRow], paper: ProcessStatus) -> None:
     # below so each KPI vertically aligns with its related panel.
     main_kpi_col, side_kpi_col, log_kpi_col = st.columns([0.55, 0.25, 0.20], gap="small")
     with main_kpi_col:
-        # 3 sub-KPIs (PnL / Win / Decisions) above the chart+table panel
-        a, b, c = st.columns(3, gap="small")
+        # 4 sub-KPIs (PnL / Win / Decisions / Fire Rate) above the chart+table panel
+        a, b, c, d = st.columns(4, gap="small")
         with a:
             st.html(pnl_card)
         with b:
             st.html(win_card)
         with c:
             st.html(decisions_card)
+        with d:
+            st.html(rate_card)
     with side_kpi_col:
         st.html(last_card)  # above the Processes/Feeds panel
     with log_kpi_col:
@@ -275,8 +327,8 @@ def _render_pnl_chart(rows: list[DecisionRow]) -> None:
     if not settled:
         st.html(
             '<div class="pmb-empty">'
-            "No settled decisions yet. The deterministic strategy at 0.6pp threshold "
-            "may go many windows without firing — that matches the Phase 3 baseline."
+            "No settled decisions yet. Settled records appear after the 5-min "
+            "window closes and oracle resolution lands."
             "</div>"
         )
         return
@@ -554,7 +606,7 @@ def _render_decisions_table(rows: list[DecisionRow]) -> None:
         st.html(
             '<div class="pmb-empty">'
             "No decisions logged yet. Files at <code>state/decisions/&lt;UTC-date&gt;.jsonl</code> populate "
-            "as the deterministic strategy fires."
+            "as the active strategy fires."
             "</div>"
         )
         return
@@ -650,6 +702,164 @@ def _log_age_label(mtime: float | None) -> str:
 # ----------------------------- main ------------------------------------------
 
 
+SYNC_SCRIPT = ROOT / "runbooks" / "scripts" / "sync_staging.sh"
+
+
+def _maybe_auto_sync(state_dir: Path) -> float | None:
+    """Run sync_staging.sh if enabled, return last-sync age in seconds."""
+    sentinel = state_dir / "feeds_health.json"
+    if not sentinel.exists():
+        return None
+    return (
+        datetime.now(tz=UTC) - datetime.fromtimestamp(sentinel.stat().st_mtime, tz=UTC)
+    ).total_seconds()
+
+
+def _run_sync(state_dir: Path) -> bool:
+    if not SYNC_SCRIPT.exists():
+        return False
+    try:
+        import subprocess
+
+        # `bash` and SYNC_SCRIPT are both controlled paths inside this repo;
+        # there's no untrusted input. Streamlit-side; never runs in prod bot.
+        subprocess.run(  # noqa: S603
+            ["/bin/bash", str(SYNC_SCRIPT)],
+            check=False,
+            cwd=str(ROOT),
+            timeout=20,
+            capture_output=True,
+        )
+        return True
+    except Exception:
+        return False
+
+
+def _render_aggressive_trip_wires(rows: list[DecisionRow]) -> None:
+    """Trip-wire panel for the aggressive-mode 48h experiment.
+
+    Shows progress against the four numerical exit criteria from
+    runbooks/decisions/aggressive-mode-2026-05-09.md so the operator can
+    see at a glance whether we're still safely inside the experiment.
+    """
+    mode = latest_active_mode(rows)
+    if mode != "aggressive":
+        return
+
+    aggressive_rows = [r for r in rows if r.mode == "aggressive"]
+    if not aggressive_rows:
+        return
+
+    # PnL trip wire (-$50 in any rolling 24h)
+    cutoff = datetime.now(tz=UTC) - timedelta(hours=24)
+    rows_24h = [r for r in aggressive_rows if r.decision_dt_utc >= cutoff]
+    pnl_24h = sum((r.pnl_usd or 0.0) for r in rows_24h)
+
+    # Fire rate trip wire (>350/d)
+    rate_24h, fires_24h = fire_rate_per_hour(aggressive_rows, lookback_hours=24.0)
+    fires_per_day = rate_24h * 24
+
+    # WR trip wire (<47% on 100+ settled)
+    settled = [r for r in aggressive_rows if r.resolution is not None and r.fill_price is not None]
+    won = [r for r in settled if r.resolution == r.side]
+    wr = (len(won) / len(settled)) if settled else None
+
+    # 48h elapsed (from earliest aggressive decision)
+    earliest = min(r.decision_dt_utc for r in aggressive_rows)
+    elapsed_h = (datetime.now(tz=UTC) - earliest).total_seconds() / 3600
+    review_due = elapsed_h >= 48
+
+    rows_html = []
+
+    def _row(label: str, current: str, threshold: str, breach: bool) -> str:
+        cls = "bad" if breach else "good"
+        glyph = "🛑" if breach else "✓"
+        return (
+            f'<tr><td>{glyph} {html.escape(label)}</td>'
+            f'<td><b>{html.escape(current)}</b></td>'
+            f'<td style="color: var(--text-muted);">{html.escape(threshold)}</td>'
+            f'<td><span class="pmb-pill pmb-pill--{cls}">'
+            f'{"BREACH" if breach else "OK"}</span></td></tr>'
+        )
+
+    rows_html.append(_row("PnL (24h)", f"${pnl_24h:+.2f}", "≥ -$50.00", pnl_24h < -50.0))
+    rows_html.append(
+        _row(
+            "Fire rate (24h)",
+            f"{fires_24h} fires · {fires_per_day:.0f}/d",
+            "≤ 350/d",
+            fires_per_day > 350,
+        )
+    )
+    rows_html.append(
+        _row(
+            "Net win-rate",
+            f"{(wr*100):.1f}%" if wr is not None else "—",
+            "≥ 47% (after 100 settled)",
+            wr is not None and len(settled) >= 100 and wr < 0.47,
+        )
+    )
+    rows_html.append(
+        _row(
+            "Elapsed since 1st aggressive fire",
+            f"{elapsed_h:.1f}h",
+            "review at 48h",
+            review_due,
+        )
+    )
+
+    table = (
+        '<table class="pmb-trip-table" style="width:100%; font-size: 11px;">'
+        '<thead><tr>'
+        '<th style="text-align: left; color: var(--text-muted);">Trip wire</th>'
+        '<th style="text-align: left; color: var(--text-muted);">Current</th>'
+        '<th style="text-align: left; color: var(--text-muted);">Threshold</th>'
+        '<th style="text-align: left; color: var(--text-muted);">Status</th>'
+        '</tr></thead>'
+        f'<tbody>{"".join(rows_html)}</tbody>'
+        '</table>'
+    )
+    st.html(
+        '<div class="pmb-section"><div class="pmb-card__title">'
+        "🛑 Aggressive-mode exit criteria</div></div>" + table
+    )
+
+
+def _render_tier_panel(rows: list[DecisionRow]) -> None:
+    stats = per_tier_stats(rows)
+    st.html(
+        '<div class="pmb-section"><div class="pmb-card__title">'
+        "🎯 Per-tier discipline check</div></div>"
+    )
+    if not stats:
+        st.html('<div class="pmb-empty">No fires yet to break down by tier.</div>')
+        return
+    df = pd.DataFrame(
+        [
+            {
+                "Tier": s.tier,
+                "Fires": s.n_fired,
+                "Filled": s.n_filled,
+                "Settled": s.n_settled,
+                "Won": s.n_won,
+                "WR": (s.win_rate * 100 if s.win_rate is not None else None),
+                "PnL": s.pnl_usd,
+            }
+            for s in stats
+        ]
+    )
+    st.dataframe(
+        df,
+        width="stretch",
+        hide_index=True,
+        column_config={
+            "Tier": st.column_config.TextColumn("Tier", width="small"),
+            "WR": st.column_config.NumberColumn("WR", format="%.1f%%", width="small"),
+            "PnL": st.column_config.NumberColumn("PnL", format="$%+.2f", width="small"),
+        },
+    )
+
+
 def main() -> None:
     st.set_page_config(
         page_title="Polymarket Bot — Operations",
@@ -663,6 +873,11 @@ def main() -> None:
     st.sidebar.title("Dashboard")
     refresh_s = st.sidebar.slider("Auto-refresh (sec)", 2, 30, 4, step=1)
     refresh_paused = st.sidebar.toggle("⏸ Pause refresh", value=False)
+    auto_sync = st.sidebar.toggle(
+        "🔁 Auto-sync from VPS",
+        value=True,
+        help="Run runbooks/scripts/sync_staging.sh before each refresh",
+    )
     state_dir = Path(st.sidebar.text_input("state/ dir", value=str(DEFAULT_STATE_DIR)))
     default_since = (datetime.now(tz=UTC) - timedelta(days=14)).strftime("%Y-%m-%d")
     since = st.sidebar.text_input("Decisions since (YYYY-MM-DD)", value=default_since)
@@ -671,7 +886,13 @@ def main() -> None:
     if not refresh_paused:
         st_autorefresh(interval=refresh_s * 1000, key="pmb_autorefresh")
 
+    # Pull fresh VPS state if requested. Best-effort; the rest of the
+    # page renders from local files regardless.
+    if auto_sync and "staging" in str(state_dir):
+        _run_sync(state_dir)
+
     # Load state.
+    last_sync_age_s = _maybe_auto_sync(state_dir)
     capture, paper = load_process_status(state_dir)
     snap = load_feeds_health(state_dir)
     rows = load_decisions(state_dir / DECISIONS_SUBDIR, since_utc_date=since or None)
@@ -679,7 +900,12 @@ def main() -> None:
 
     # ABOVE THE FOLD — fits in a single viewport (~900px tall).
     # Header → incident banner → KPI strip → 3-column terminal grid.
-    _render_header(refreshed_at=datetime.now(tz=UTC), since_filter=since)
+    _render_header(
+        refreshed_at=datetime.now(tz=UTC),
+        since_filter=since,
+        rows=rows,
+        last_sync_age_s=last_sync_age_s,
+    )
     if issues:
         st.html(incident_banner(issues))
     _render_kpi_row(rows, paper)
@@ -693,6 +919,11 @@ def main() -> None:
         _render_feeds_inline(snap)
     with log_col, st.container(border=True, key="pmb-log-panel"):
         _render_log_panel(state_dir)
+
+    # Below-the-fold panels: aggressive-mode trip wires (only renders if
+    # mode==aggressive) + per-tier discipline breakdown.
+    _render_aggressive_trip_wires(rows)
+    _render_tier_panel(rows)
 
     # Historical reference (Phase 3 ensemble that was CUT) — collapsed by
     # default so the live above-fold content fills the viewport. Operator

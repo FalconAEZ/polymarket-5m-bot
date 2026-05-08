@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
 
@@ -74,8 +74,10 @@ class DecisionRow:
     # decision rationale. Older decisions written by DeterministicStrategy
     # have strategy="deterministic" (inferred when composite_pct is set and
     # spot_aware markers are absent). delta_bps / p_win / ev_dollars are
-    # only populated for spot_aware decisions.
+    # only populated for spot_aware decisions. mode is "aggressive" |
+    # "spot_aware" | None (None for deterministic / pre-mode-tagging).
     strategy: str | None
+    mode: str | None
     delta_bps: float | None
     p_win: float | None
     ev_dollars: float | None
@@ -213,10 +215,24 @@ def _row_from_pair(fired: dict[str, Any], settled: dict[str, Any] | None) -> Dec
     fill = fired.get("fill")
     fill_price = float(fill["price_filled"]) if isinstance(fill, dict) else None
     fee_usd = float(fill["fee_usd"]) if isinstance(fill, dict) else None
+    # Fallback: a trade that didn't fill at decision-time but filled later
+    # via the simulator's pending-fill loop has its fill recorded on the
+    # *settled* line as fill_at_settle. Surface that on the dashboard so
+    # operators don't see "fill=—" on a trade that actually executed and
+    # produced PnL.
+    if fill_price is None and isinstance(settled, dict):
+        fas = settled.get("fill_at_settle")
+        if isinstance(fas, dict):
+            try:
+                fill_price = float(fas["price_filled"])
+                fee_usd = float(fas["fee_usd"])
+            except (KeyError, TypeError, ValueError):
+                pass
     composite = fired.get("composite_pct")
     composite_pct = float(composite) if isinstance(composite, int | float) else None
     rationale = str(fired.get("rationale", ""))
     strategy = _strategy_from_rationale(rationale, composite_pct=composite_pct)
+    mode = _mode_from_rationale(rationale)
     delta_bps = _float_marker(rationale, "delta_bps=")
     p_win = _float_marker(rationale, "p_win=")
     ev_dollars = _float_marker(rationale, "ev=")
@@ -240,6 +256,7 @@ def _row_from_pair(fired: dict[str, Any], settled: dict[str, Any] | None) -> Dec
         ttl_s=int(fired.get("ttl_s", 0) or 0),
         composite_pct=composite_pct,
         strategy=strategy,
+        mode=mode,
         delta_bps=delta_bps,
         p_win=p_win,
         ev_dollars=ev_dollars,
@@ -261,6 +278,20 @@ def _strategy_from_rationale(rationale: str, *, composite_pct: float | None) -> 
         return "spot_aware"
     if composite_pct is not None or "composite=" in rationale:
         return "deterministic"
+    return None
+
+
+def _mode_from_rationale(rationale: str) -> str | None:
+    """Extract mode={aggressive|spot_aware} from a rationale string.
+
+    Returns None for older decisions that pre-date the mode marker
+    (deterministic and early-spot_aware before the aggressive_mode flag
+    landed).
+    """
+    if "mode=aggressive" in rationale:
+        return "aggressive"
+    if "mode=spot_aware" in rationale:
+        return "spot_aware"
     return None
 
 
@@ -305,6 +336,109 @@ def tail_log(path: Path | str, *, n_lines: int = 60, max_bytes: int = 65536) -> 
     text = data.decode("utf-8", errors="replace")
     lines = text.splitlines()
     return lines[-n_lines:]
+
+
+PRICE_TIER_BUCKETS: tuple[tuple[float, float, str], ...] = (
+    (0.00, 0.15, "<15%"),
+    (0.15, 0.30, "15-30%"),
+    (0.30, 0.50, "30-50%"),
+    (0.50, 0.70, "50-70%"),
+    (0.70, 0.85, "70-85%"),
+    (0.85, 1.01, "85-100%"),
+)
+
+
+def _tier_label(price: float | None) -> str:
+    if price is None:
+        return "—"
+    for lo, hi, label in PRICE_TIER_BUCKETS:
+        if lo <= price < hi:
+            return label
+    return "—"
+
+
+@dataclass(frozen=True, slots=True)
+class TierStat:
+    tier: str
+    n_fired: int
+    n_filled: int
+    n_settled: int
+    n_won: int
+    win_rate: float | None
+    pnl_usd: float
+
+
+def per_tier_stats(rows: Iterable[DecisionRow]) -> list[TierStat]:
+    """Group decisions by entry-price tier; report fires/fills/WR/PnL per tier."""
+    groups: dict[str, list[DecisionRow]] = {}
+    for r in rows:
+        groups.setdefault(_tier_label(r.price_limit), []).append(r)
+    out: list[TierStat] = []
+    for _, _, label in PRICE_TIER_BUCKETS:
+        bucket = groups.get(label, [])
+        if not bucket:
+            continue
+        n_fired = len(bucket)
+        filled = [r for r in bucket if r.fill_price is not None]
+        settled = [r for r in filled if r.resolution is not None]
+        won = [r for r in settled if r.resolution == r.side]
+        wr = (len(won) / len(settled)) if settled else None
+        pnl = sum((r.pnl_usd or 0.0) for r in bucket)
+        out.append(
+            TierStat(
+                tier=label,
+                n_fired=n_fired,
+                n_filled=len(filled),
+                n_settled=len(settled),
+                n_won=len(won),
+                win_rate=wr,
+                pnl_usd=pnl,
+            )
+        )
+    other_label = "—"
+    if other_label in groups:
+        bucket = groups[other_label]
+        if bucket:
+            filled = [r for r in bucket if r.fill_price is not None]
+            settled = [r for r in filled if r.resolution is not None]
+            won = [r for r in settled if r.resolution == r.side]
+            wr = (len(won) / len(settled)) if settled else None
+            pnl = sum((r.pnl_usd or 0.0) for r in bucket)
+            out.append(
+                TierStat(
+                    tier=other_label,
+                    n_fired=len(bucket),
+                    n_filled=len(filled),
+                    n_settled=len(settled),
+                    n_won=len(won),
+                    win_rate=wr,
+                    pnl_usd=pnl,
+                )
+            )
+    return out
+
+
+def fire_rate_per_hour(
+    rows: Iterable[DecisionRow], *, lookback_hours: float = 24.0
+) -> tuple[float, int]:
+    """Recent fire rate. Returns (fires_per_hour, fires_in_window)."""
+    if lookback_hours <= 0:
+        return (0.0, 0)
+    cutoff = datetime.now(tz=UTC) - timedelta(hours=lookback_hours)
+    recent = [r for r in rows if r.decision_dt_utc >= cutoff]
+    if not recent:
+        return (0.0, 0)
+    rate = len(recent) / lookback_hours
+    return (rate, len(recent))
+
+
+def latest_active_mode(rows: Iterable[DecisionRow]) -> str | None:
+    """Mode from the most recent decision, or None if no decisions yet."""
+    rows_list = list(rows)
+    if not rows_list:
+        return None
+    most_recent = max(rows_list, key=lambda r: r.decision_dt_utc)
+    return most_recent.mode or most_recent.strategy
 
 
 def aggregate_pnl(rows: Iterable[DecisionRow]) -> dict[str, float | int | None]:
