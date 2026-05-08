@@ -26,7 +26,8 @@ message of a Claude Code session that landed a phase or sub-phase.
 | `phase-4-prompt.txt` | 2026-05-07 | Phase 4 dev (paper runtime + sim validation) | closed @ `43f64af`; 14-day paper run kicked off |
 | `phase-windows-resume-prompt.txt` | 2026-05-07 evening | Mac → Windows migration hand-off | superseded by [`RESUME-WINDOWS.md`](../RESUME-WINDOWS.md) at repo root, but kept here as the original artifact |
 | `phase-5-prompt.txt` | 2026-05-07 late | Phase 5 VPS lockdown + runtime + latency check (5.1 → 5.4) | 5.1-5.4 GREEN @ `15d8e48` (Lightsail eu-west-1, **actual IP `108.132.51.116`** — the README originally listed `108.130.237.88` which was wrong). Latency gate revised per Option B in `runbooks/incidents/2026-05-07-clob-latency-gate-analysis.md`. |
-| `phase-5.5-chunk2-prompt.txt` | 2026-05-07 evening | Phase 5.5 alerter daemon + halt-watcher + Telegram smoke (after Chunk 1 set up grafana-agent + bot-staging) | _in progress_ — Chunk 1 closed @ `fae32e5`; bot-staging running on real feeds since 18:05:54 UTC; grafana-agent pushing since 18:41:44 UTC. Chunk 2 lands the operator-facing surface. |
+| `phase-5.5-chunk2-prompt.txt` | 2026-05-07 evening | Phase 5.5 alerter daemon + halt-watcher + Telegram smoke (after Chunk 1 set up grafana-agent + bot-staging) | Phase 5.5 GREEN @ `6713b97` (operator-confirmed e2e Telegram + /halt smoke 19:31 UTC; bot restarted 19:32:54 UTC). |
+| `phase-5.7-litestream-prompt.txt` | 2026-05-08 evening | Phase 5.7 close — wire litestream + capture gate evidence + tag `phase-5-pass` (after a 22h+ clean soak with criteria #1-#7 already passing) | _pending_ — at session-write time bot-staging had run 22h39m clean, 0 unhandled exceptions, 0 alerts queued, 0 decisions fired (signal-quiet validated). Optional step 7: start `design/spot_aware_strategy.md`. |
 
 ## Naming convention
 

@@ -1,0 +1,433 @@
+Subject: Execute Phase 5.7 close — wire litestream + capture gate evidence + tag
+phase-5-pass. Branch main @ 7477c22 (or wherever the prior session lands;
+check `git rev-parse main`). VPS provisioned (Dublin, Ubuntu 24.04 @
+108.132.51.116:2222). bot-staging running on 4 live feeds since 2026-05-07
+19:32:54 UTC; 22h39m clean as of operator's 2026-05-08 18:12 UTC check, 0
+unhandled exceptions, 0 alerts queued, 0 decisions fired (predicted —
+deterministic composite signal too quiet for 5-min BTC windows; replay
+calibration showed zero fires at any threshold). Operator pastes outputs;
+you drive each step. **One operator action gates this session** at step 2:
+choosing the S3-compatible storage backend (Backblaze B2 default; can sub
+Cloudflare R2, AWS S3, etc.).
+
+[Phase 5.5 closed GREEN at d5d038f → 6713b97. Phase 5.6 (Signer key)
+deferred until pre-live per locked decision #11. Phase 5.7's gate has 8
+criteria; #1-#7 already pass (operator-confirmed e2e smoke 2026-05-07,
+22h39m clean uptime as of 2026-05-08 18:12 UTC, chrony offset 2.8μs); #8
+(litestream replicating trades.db) is THE only blocker. This session is
+pure execution against criterion #8 + the gate evidence capture + the
+phase-5-pass tag. Verify state before driving:
+  ssh -i ~/Downloads/LightsailDefaultKey-eu-west-1.pem -p 2222 ops@108.132.51.116
+  systemctl is-active bot-staging.service tg-alerter.service grafana-agent.service  # all active
+  systemctl is-active litestream.service                                            # inactive (expected)
+  journalctl -u bot-staging.service --no-pager --since "24 hours ago" | grep -cE "Traceback|Exception|ERROR|CRITICAL"   # = 0
+  redis-cli LLEN polybot:alerts polybot:alerts:dlq                                  # 0 / 0
+  ls -la /home/ops/polymarket-5m-bot/state/halt.sentinel                            # ENOENT
+  chronyc tracking | grep "Last offset"                                              # < 10ms
+  which litestream && litestream version                                            # 0.5.11 already installed
+If any of those are off, STOP and reconcile before writing code.]
+
+================================================================================
+CONTEXT ANCHORS  (read in order; do not skip)
+================================================================================
+
+ 1. /Users/hamad/Desktop/PolyMarket-5m/CLAUDE.md
+    — durable preferences, 10 anti-vibe rules, locked decisions index
+
+ 2. /Users/hamad/Desktop/PolyMarket-5m/RUNBOOK.md §"PHASE 5"
+    — 5.7 has the 8-criterion gate; #1-#7 pass; #8 is litestream. Status
+      block at the end of §5.7 captures the 24h-soak realistic expectations
+      from the prior session.
+
+ 3. /Users/hamad/Desktop/PolyMarket-5m/state/phases/phase-5-vps.md
+    — phase tracker. "What's next" section + the postmortems list (10
+      entries; the last 4 are from 2026-05-08 — Bonereaper investigation
+      chain, replay calibration, scout, framing-pushback) capture the
+      lessons of the prior session.
+
+ 4. /Users/hamad/Desktop/PolyMarket-5m/state/sessions/2026-05-08.md
+    — full daily roll-up of the prior session. 6 codas covering: replay
+      calibration, microstructure, spot-vs-book at 7d/30d, dashboard glue,
+      leaderboard scout, 24h soak status. The "Hardened directive for
+      design/spot_aware_strategy.md" near the end is the spec for the
+      OPTIONAL design-doc work after litestream lands.
+
+ 5. /Users/hamad/Desktop/PolyMarket-5m/runbooks/systemd/README.md
+    — systemd deploy pattern (scp + sudo install + daemon-reload + enable).
+      Same shape applies to the new litestream.service unit.
+
+ 6. ~/.claude/projects/-Users-hamad-Desktop-PolyMarket-5m/memory/checkpoint_phase_5.5.md
+    — single-page hand-off with full state at session close. Live status
+      lines explicitly call out litestream as the only blocker.
+
+ 7. https://litestream.io/getting-started/  (open with WebFetch if needed)
+    — litestream config + systemd integration reference. Binary v0.5.11 is
+      already installed at /usr/bin/litestream on the VPS. Just need a
+      config file + systemd unit + S3-compatible bucket.
+
+================================================================================
+BRANCH + HEAD
+================================================================================
+
+Branch:  main
+HEAD:    7477c22 (or whatever the prior session ended at — verify with
+                  git log --oneline -1)
+Tag:     none (Phase 5 closes when 5.7 #8 lands; tag `phase-5-pass` then)
+Pushed:  yes, github.com/FalconAEZ/polymarket-5m-bot
+
+If a `claude/...` worktree already exists for this session under
+.claude/worktrees/, work there. Otherwise the main repo working tree is fine.
+
+================================================================================
+WHERE THE PROJECT IS RIGHT NOW
+================================================================================
+
+Phases:
+  Phase 0      ✅  tag phase-0-pass @ 3195d2c
+  Phase 1A     ✅  tag phase-1a-pass @ 1537a18
+  Phase 2      ✅  closed
+  Phase 3      ✅  tag phase-3-pass @ 3cd4a70
+  Phase 4      ✅  closed @ 43f64af
+  Phase 4.5    ✅  closed @ c1ff257
+  Phase 5.1    ✅  GREEN @ 13cb807
+  Phase 5.2    ✅  GREEN @ 8ff5920
+  Phase 5.3    ✅  measured + gate revised @ 15d8e48 (Option B)
+  Phase 5.4    ✅  GREEN @ 15d8e48
+  Phase 5.5    ✅  GREEN @ 6713b97 (chunks 1+2; e2e Telegram + /halt smoke)
+  Phase 5.6    ⏸  deferred — operator-action-driven (age + scp Signer key);
+                  ONLY needed for Phase 6 live trading
+  Phase 5.7    ⏳  22h39m clean as of 2026-05-08 18:12 UTC; criteria #1-#7
+                  already pass; #8 (litestream) is THIS prompt's deliverable
+  Phase 1B     ⏸  parked — real-money funding
+  Phase 6      ⏸  parked — live trading
+  Phase 8      ⏸  parked — ensemble revisit (dec #16/#19 may need re-audit
+                  per the spot-Δ findings, but not this session)
+
+bot-staging.service has been collecting paper-mode evidence on the VPS since
+2026-05-07 19:32:54 UTC. By the time you start, it'll be >24h elapsed (gate
+window opened 2026-05-08 19:32:54 UTC). Zero decisions fired (signal-quiet
+validated live). Zero exceptions. Memory + CPU stable. The infrastructure
+works exactly as designed.
+
+================================================================================
+VPS FACTS (verify each on first contact)
+================================================================================
+
+Provider:           AWS Lightsail
+Region/AZ:          eu-west-1 / eu-west-1a (Dublin)
+Instance name:      5m-Polymarket-bot
+Public IPv4:        108.132.51.116
+SSH:                port 2222, key-only, ops user
+                    `ssh -i ~/Downloads/LightsailDefaultKey-eu-west-1.pem -p 2222 ops@108.132.51.116`
+OS:                 Ubuntu 24.04.4 LTS
+Runtime:            uv 0.11.11, Python 3.11.15, litestream 0.5.11
+Active services:    bot-staging, tg-alerter, grafana-agent, redis-server, chrony
+Disabled:           bot.service (Phase 6 stub)
+Time sync:          chrony offset 2.8 microseconds vs <10 ms gate
+
+================================================================================
+PRE-FLIGHT  (do these BEFORE writing any code)
+================================================================================
+
+[ ] cd /Users/hamad/Desktop/PolyMarket-5m
+[ ] git pull origin main                        → must include 7477c22 or later
+[ ] git rev-parse HEAD                          → note this commit
+[ ] export PATH="$HOME/.local/bin:$PATH"
+[ ] make verify                                 → ruff + mypy --strict + pytest pass
+[ ] uv run lint-imports                         → 3 contracts kept
+[ ] SSH to VPS, verify the bracket-quoted commands at the top of this prompt.
+[ ] If any check fails: STOP, diagnose, fix the discrepancy before writing code.
+
+================================================================================
+THE WORK — six steps
+================================================================================
+
+The plan is execution against a simple, well-known pattern. Litestream is
+mature; the only judgment call is the storage backend.
+
+------------------------------------------------------------------------
+STEP 1 — Pick the storage backend (operator action, ~5 min)
+------------------------------------------------------------------------
+
+litestream supports any S3-compatible storage. Realistic options:
+
+  - **Backblaze B2** (default per RUNBOOK §5.7 criterion #8). $0.005/GB/mo
+    + free 10GB. trades.db will be small (<100MB even at scale). Cost
+    ~$0/mo for years. Sign up at backblaze.com → Buckets → Create.
+  - **Cloudflare R2** — $0.015/GB/mo, no egress fees. Better if the
+    operator already has a Cloudflare account.
+  - **AWS S3** — $0.023/GB/mo + egress; only worth it if already using AWS.
+
+Operator action: create a private bucket named `polymarket-5m-litestream-<random>`,
+generate read+write API credentials, paste the bucket URL + key + secret into
+the next message. Bucket region: pick eu-west-1 (Ireland) for sub-5ms write
+latency from the Dublin VPS.
+
+WAIT for operator paste before writing config.
+
+------------------------------------------------------------------------
+STEP 2 — design/litestream.md (the locked spec)
+------------------------------------------------------------------------
+
+Per anti-vibe rule #1: design doc before code, even for ops glue. Short doc:
+
+  /Users/hamad/Desktop/PolyMarket-5m/design/litestream.md
+    - What gets replicated: state/trades.db (Phase 6 will populate this with
+      live order/fill data; for now the file may not exist — litestream
+      handles missing-source gracefully if `if-replica-exists: false`).
+    - Where: chosen S3 bucket from step 1.
+    - Replication interval: 1s (litestream default; no reason to deviate).
+    - Retention: 24h on the source side. Snapshots every 1h.
+    - Recovery: documented `litestream restore` one-liner.
+    - Failure modes: bucket auth fail (CRITICAL log only, doesn't crash bot);
+      network partition (litestream queues locally, drains when reconnected);
+      disk full on source (paper bot doesn't write much; <1GB/year worst case).
+    - NOT a kill-switch: bot keeps running if litestream fails; the kill-switch
+      is the Telegram /halt sentinel from 5.5.
+
+Commit the design doc. Then execute against it.
+
+------------------------------------------------------------------------
+STEP 3 — runbooks/litestream.yml + runbooks/systemd/litestream.service
+------------------------------------------------------------------------
+
+  runbooks/litestream.yml:
+    dbs:
+      - path: /home/ops/polymarket-5m-bot/state/trades.db
+        replicas:
+          - type: s3
+            endpoint: https://s3.<region>.<provider>.com  # backblaze: s3.us-west-001.backblazeb2.com
+            bucket: <bucket-name>
+            access-key-id: ${LITESTREAM_ACCESS_KEY_ID}
+            secret-access-key: ${LITESTREAM_SECRET_ACCESS_KEY}
+            sync-interval: 1s
+            retention: 24h
+            snapshot-interval: 1h
+
+  runbooks/systemd/litestream.service:
+    [Unit]
+    Description=Polymarket bot — trades.db litestream replication (Phase 5.7)
+    After=network-online.target bot-staging.service
+    Wants=network-online.target
+    [Service]
+    Type=simple
+    User=ops
+    Group=ops
+    WorkingDirectory=/home/ops/polymarket-5m-bot
+    EnvironmentFile=/home/ops/polymarket-5m-bot/.envrc.litestream  # creds via this file
+    ExecStart=/usr/bin/litestream replicate -config /home/ops/polymarket-5m-bot/runbooks/litestream.yml
+    Restart=on-failure
+    RestartSec=15
+    StandardOutput=journal
+    StandardError=journal
+    NoNewPrivileges=true
+    PrivateTmp=true
+    ProtectSystem=full
+    [Install]
+    WantedBy=multi-user.target
+
+  runbooks/systemd/README.md:
+    Update the file table with the litestream.service row + hardening notes.
+
+------------------------------------------------------------------------
+STEP 4 — Deploy to VPS
+------------------------------------------------------------------------
+
+Same scp + sudo install + daemon-reload + enable + start pattern as
+tg-alerter:
+
+  scp -i KEY -P 2222 runbooks/systemd/litestream.service \
+                     runbooks/litestream.yml \
+                     ops@108.132.51.116:/tmp/
+
+  ssh ops@... '
+    sudo install -m 644 /tmp/litestream.service /etc/systemd/system/litestream.service
+    install -m 600 /tmp/litestream.yml /home/ops/polymarket-5m-bot/runbooks/litestream.yml
+    rm /tmp/litestream.service /tmp/litestream.yml
+    cat > /home/ops/polymarket-5m-bot/.envrc.litestream <<EOF
+    LITESTREAM_ACCESS_KEY_ID=<from operator>
+    LITESTREAM_SECRET_ACCESS_KEY=<from operator>
+    EOF
+    chmod 0600 /home/ops/polymarket-5m-bot/.envrc.litestream
+    sudo systemctl daemon-reload
+    sudo systemctl enable litestream.service
+    # If state/trades.db doesn't exist yet, create an empty one so litestream
+    # has a source to watch (Phase 6 will populate it; this avoids a
+    # "no source" warning):
+    [ -f state/trades.db ] || sqlite3 state/trades.db "CREATE TABLE IF NOT EXISTS _placeholder (id INTEGER PRIMARY KEY); VACUUM;"
+    sudo systemctl start litestream.service
+    sleep 5
+    systemctl status litestream.service --no-pager -n 20
+  '
+
+Expect: active running, journal shows initial snapshot to S3 within ~30s.
+
+------------------------------------------------------------------------
+STEP 5 — Restore test (THIS is the gate criterion proof)
+------------------------------------------------------------------------
+
+Copy trades.db locally, delete VPS copy, restore via litestream, verify
+the file restores byte-for-byte. Captures gate evidence.
+
+  ssh ops@... '
+    # Snapshot what we have
+    sqlite3 state/trades.db ".dump" > /tmp/trades.before.sql
+    md5sum /tmp/trades.before.sql
+
+    # Delete the VPS copy to simulate disk loss
+    sudo systemctl stop litestream.service
+    rm state/trades.db
+
+    # Restore
+    /usr/bin/litestream restore -config runbooks/litestream.yml state/trades.db
+
+    # Verify
+    sqlite3 state/trades.db ".dump" > /tmp/trades.after.sql
+    md5sum /tmp/trades.after.sql
+    diff /tmp/trades.before.sql /tmp/trades.after.sql && echo "RESTORE OK" || echo "RESTORE FAILED"
+
+    sudo systemctl start litestream.service
+  '
+
+Capture the output to runbooks/gate-evidence/phase-5.7-litestream-restore.txt.
+
+------------------------------------------------------------------------
+STEP 6 — Run the gate audit + tag phase-5-pass
+------------------------------------------------------------------------
+
+  ssh ops@... 'cd /home/ops/polymarket-5m-bot && bash runbooks/gates/phase-5.sh' \
+    | tee runbooks/gate-evidence/phase-5.txt
+
+If all 8 criteria pass:
+
+  git add runbooks/litestream.yml runbooks/systemd/litestream.service \
+          runbooks/systemd/README.md design/litestream.md \
+          runbooks/gate-evidence/phase-5.7-litestream-restore.txt \
+          runbooks/gate-evidence/phase-5.txt
+  git commit -m "feat(phase-5.7): litestream wired + restore-tested; phase-5-pass GREEN"
+  git tag -a phase-5-pass -m "Phase 5 GREEN — VPS, alerts, /halt, litestream all live"
+  git push origin main --tags
+
+Update vault:
+  - state/phases/phase-5-vps.md: mark 5.7 ✅; status block "PHASE 5 CLOSED"
+  - state/sessions/2026-05-08-phase-5-pass.md (new daily for the close)
+  - memory: write checkpoint_phase_5.md (consolidates 5.1-5.7)
+
+------------------------------------------------------------------------
+OPTIONAL STEP 7 — design/spot_aware_strategy.md (if context allows)
+------------------------------------------------------------------------
+
+Per the prior session's hardened directive in `state/sessions/2026-05-08.md`
+("Hardened directive for design/spot_aware_strategy.md"). Don't write code;
+write the design.
+
+Required sections:
+  1. The signal: Δ_bps = 10000*(St - S0)/S0 where S0 = spot at window_ts,
+     St = spot at trade.ts. Aligned: UP+Δ>0 OR DOWN+Δ<0.
+  2. The trigger: fire if |Δ_bps| ≥ X AND aligned. X∈[5,10] candidates.
+  3. The price-tier filter (NEW, learned from scout): refuse trades at
+     >90% implied probability — not enough margin after fees.
+  4. The EV check: refuse if (entry_price + fees) > (estimated_win_prob * $1).
+     Estimated_win_prob comes from a small lookup table calibrated against
+     the 30d Bonereaper data per (Δ_bps bucket, price tier).
+  5. Architecture: SpotAwareStrategy as a *sibling* to DeterministicStrategy
+     in the existing PaperRunner. Both fed same events, both write decisions,
+     dashboard renders side-by-side. Operator picks live strategy after a
+     fresh paper soak.
+  6. Gate criteria: paper-soak win rate ≥ Y for Z days at fee-modeled net PnL
+     ≥ break-even. Specific numbers TBD (need a backtest first).
+  7. Backtest plan: replay over captured ticks + historical klines using
+     the existing replay engine; score per-bucket against the Bonereaper
+     30d benchmark.
+
+This is OPTIONAL because phase-5-pass is the headline deliverable. If
+context burns to 50%, defer the design doc to a fresh session.
+
+================================================================================
+ANTI-VIBE RULES — UNCHANGED
+================================================================================
+
+Same 10 rules in CLAUDE.md. Especially relevant for THIS session:
+
+- **Design doc before code (#1).** litestream.md gets written before any
+  config lands. Same for spot_aware_strategy.md if you do the optional step.
+- **Bug → failing test → fix → green (#2).** N/A here unless the restore
+  test surprises us.
+- **3-fix rule.** Three iterations on the same litestream config bug → stop
+  and write `runbooks/incidents/<date>-litestream-config.md`.
+- **No phase advances** until the gate evidence is captured. Tag by hand
+  only when you've SEEN all 8 criteria pass in `phase-5.txt`.
+- **External calls behind interfaces (#7).** N/A; litestream is its own
+  binary, no Python interfaces affected.
+- **No TODO/FIXME/hack** in committed code. Use icebox issues.
+
+================================================================================
+HARD LIMITS
+================================================================================
+
+- Cumulative Anthropic spend pre-session: $0.405. This session adds $0
+  (deterministic-only).
+- AWS recurring: $24/mo Lightsail + $0/mo Grafana free tier + ~$0/mo
+  litestream-to-S3 (B2 free tier covers).
+- bot.service stays DISABLED.
+- Funder key NEVER goes to the VPS.
+- All 7 .envrc vars present + 1 new .envrc.litestream file. Ops user
+  reads both at start.
+
+================================================================================
+SESSION BOUNDARY — ENDS WHEN ONE OF
+================================================================================
+
+(a) phase-5-pass tagged + pushed; vault updated; memory consolidated.        ✅ full
+(b) Steps 1-5 done (litestream wired + restore-tested); step 6 audit passed
+    but tagging deferred for operator review.                                ✅ partial
+(c) Hard blocker — bucket auth fails three iterations, restore test fails
+    three iterations, etc. → runbooks/incidents/<date>-<slug>.md, abort.    🛑
+(d) Context ≥ 60% before completion → close out what's green, write a
+    partial checkpoint, stop.                                                ⏸
+
+================================================================================
+FOUR REMINDERS
+================================================================================
+
+1. **bot-staging keeps running through this work.** Don't restart it.
+   Litestream is a sibling unit; deploying it doesn't touch bot-staging.
+
+2. **The 24h soak data is already gate-passing on criteria #1-#7.**
+   You don't need MORE soak time. You need litestream + the audit script
+   + the tag.
+
+3. **Telegram bot token + Alchemy URL still need rotation post-tag.**
+   Operator deferred until Phase 5 closes — which is THIS session's
+   deliverable. Mention the rotation in the close note.
+
+4. **The spot-Δ signal findings + scout lessons are research, not strategy
+   commits.** Don't pivot the bot. Don't lower the deterministic threshold.
+   Anti-vibe rule #1 still in force; design/spot_aware_strategy.md (optional
+   step 7) is the next gate, not code.
+
+================================================================================
+HAND-OFF SIGNATURE
+================================================================================
+
+Previous session closed at HEAD <commit-from-the-final-vault-update> on
+`main`. Pushed to github.com/FalconAEZ/polymarket-5m-bot.
+
+bot-staging.service active 22h39m clean as of 2026-05-08 18:12 UTC.
+0 unhandled exceptions. 0 alerts. 0 decisions fired (predicted).
+chrony 2.8μs offset. Memory 40MB stable. 4 feeds healthy.
+
+Phase 5.5 GREEN. Phase 5.7 criteria #1-#7 PASSING. #8 = THIS session's
+deliverable.
+
+Big-picture context (not strictly needed for this session but useful):
+the prior session's three Bonereaper investigations (microstructure 7d
++ 30d, spot-vs-book 7d + 30d) confirmed a +30.9pp aligned-vs-contrarian
+spot-Δ signal at 306,966 trades. The leaderboard scout's top 2 small-equity
+candidates BOTH proved net-losing (96-97% win rate but at 95-99¢ entries
+that don't clear cost basis). Lesson: high WR is a trap; price-tier
+discipline is what makes Bonereaper profitable. All recorded in
+`runbooks/research/`.
+
+This session: ship litestream. Tag phase-5-pass. Optionally start the
+design doc. The bot continues paper soaking through the work.

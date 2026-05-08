@@ -1,6 +1,6 @@
 ---
 title: Phase 5 — VPS provisioning + 24h staging
-status: in-progress (5.1/5.2/5.3/5.4/5.5 GREEN; 5.6 deferred to Phase 6 prep; 5.7 24h soak ticking, gate-eligible 2026-05-08 19:32:54 UTC)
+status: in-progress (5.1/5.2/5.3/5.4/5.5 GREEN; 5.6 deferred to Phase 6 prep; 5.7 22h39m clean as of 2026-05-08 18:12 UTC, criterion #8 litestream NOT WIRED is the only blocker; gate-eligible 2026-05-08 19:32:54 UTC)
 tags: [phase, vps, ops, lockdown, staging]
 ---
 
