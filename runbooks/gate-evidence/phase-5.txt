@@ -1,0 +1,57 @@
+=== Phase 5 gate ===
+started: 2026-05-08T19:20:18Z
+branch:  main
+head:    881595f371a3f7d909680c993bb0ab941159ffd1
+vps:     ops@108.132.51.116 (port 2222)
+
+--- #1. bot-staging.service active ---
+    ActiveEnterTimestamp=Thu 2026-05-07 19:32:54 UTC
+  [#1 PASS] bot-staging.service active
+
+--- #2. bot.service disabled ---
+    is-enabled=disabled
+  [#2 PASS] bot.service disabled (Phase 6 stub)
+
+--- #3. WS subscribe->first-msg p50<20ms p99<30ms (cached from phase-5.3-latency.txt) ---
+    p50=15.68ms (gate <20ms)  p99=16.9ms (gate <30ms)
+  [#3 PASS] WS subscribe->first-msg latency within revised gate
+
+--- #4. chrony |Last offset| < 10ms ---
+    Last offset = 3.124e-06 s (0.003124 ms)  gate |x|<10ms
+  [#4 PASS] chrony offset within 10ms
+
+--- #5. Telegram smoke alert (operator-attested) ---
+    ATTESTED — see state/phases/phase-5-vps.md (5.5 row + 'What's next' table)
+  [#5 PASS] Telegram smoke alert (attested)
+
+--- #6. /halt smoke (operator-attested) ---
+    ATTESTED — see state/phases/phase-5-vps.md (5.5 row + 'What's next' table)
+  [#6 PASS] /halt smoke (attested)
+
+--- #7. 24h bot-staging journal: zero unhandled exceptions ---
+    exception count (24h) = 0
+  [#7 PASS] 24h staging logs zero exceptions
+
+--- #8. litestream replicating trades.db (active + S3 upload evidence + restore-tested) ---
+    litestream.service is-active = active
+    journal entries with 'ltx file uploaded' or 'snapshot complete' = 4
+    restore drill = OK (runbooks/gate-evidence/phase-5.7-litestream-restore.txt)
+  [#8 PASS] litestream active + S3 upload journal evidence + restore drill green
+
+================================================================
+  Verdict
+================================================================
+  PASS  #1  bot-staging.service active
+  PASS  #2  bot.service disabled (Phase 6 stub)
+  PASS  #3  WS subscribe->first-msg latency within revised gate
+  PASS  #4  chrony offset within 10ms
+  PASS  #5  Telegram smoke alert (attested)
+  PASS  #6  /halt smoke (attested)
+  PASS  #7  24h staging logs zero exceptions
+  PASS  #8  litestream active + S3 upload journal evidence + restore drill green
+
+  PASS: 8 / 8
+  FAIL: 0 / 8
+
+  PHASE 5 GATE: GREEN
+  Tag with: git tag -a phase-5-pass -m 'Phase 5 GREEN' && git push --tags

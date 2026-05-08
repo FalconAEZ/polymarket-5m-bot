@@ -1,0 +1,26 @@
+# Litestream replication config — Phase 5.7
+#
+# Replicates /home/ops/polymarket-5m-bot/state/trades.db to S3 (eu-west-1).
+# Locked in design/litestream.md. Edit the design doc first if changing
+# anything semantic (retention, intervals, source path).
+#
+# AWS credentials come from /home/ops/polymarket-5m-bot/.envrc.litestream
+# (mode 0600), loaded by litestream.service via EnvironmentFile=. Bare
+# KEY=VALUE lines, no shell expansion.
+
+dbs:
+  - path: /home/ops/polymarket-5m-bot/state/trades.db
+    replicas:
+      - name: s3-eu-west-1
+        type: s3
+        bucket: polymarket-5m-litestream-falcon
+        path: trades.db
+        region: eu-west-1
+        # AWS access keys come from EnvironmentFile in the systemd unit.
+        # Litestream picks up AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY
+        # automatically when these env vars are set.
+        sync-interval: 1s
+        snapshot-interval: 1h
+        retention: 24h
+        retention-check-interval: 1h
+        validation-interval: 12h

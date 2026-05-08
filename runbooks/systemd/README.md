@@ -8,6 +8,7 @@ Canonical sources for the units installed at `/etc/systemd/system/` on the VPS. 
 |---|---|---|---|
 | `bot-staging.service` | Paper-mode runtime (`scripts/run_paper.py`) running against live data | 5 | enabled (active once `.envrc` is populated) |
 | `tg-alerter.service` | Telegram alerter daemon (`scripts/run_alerter.py`) — drains `polybot:alerts` from Redis, writes `state/halt.sentinel` on `/halt` | 5.5 | enabled (active once `.envrc` has Redis + Telegram vars) |
+| `litestream.service` | litestream sidecar — ships `state/trades.db` to AWS S3 every 1 s. Locked in `design/litestream.md`. Reads `.envrc.litestream` (mode 0600) for AWS keys; config at `runbooks/litestream.yml`. | 5.7 | enabled (active once `.envrc.litestream` is populated) |
 | `bot.service` | Live-mode runtime — runs `scripts/run_live.py` (does not exist until Phase 6) | 6 | **disabled** until Phase 6 gate passes |
 
 `bot.service` declares `ConditionPathExists=/home/ops/polymarket-5m-bot/scripts/run_live.py` so even an accidental `systemctl start bot.service` is a no-op until that file lands in Phase 6.
@@ -19,18 +20,20 @@ From the operator's local repo, with the linted file committed:
 ```bash
 scp -i ~/Downloads/LightsailDefaultKey-eu-west-1.pem -P 2222 \
     runbooks/systemd/bot-staging.service runbooks/systemd/bot.service \
-    runbooks/systemd/tg-alerter.service \
+    runbooks/systemd/tg-alerter.service runbooks/systemd/litestream.service \
     ops@108.132.51.116:/tmp/
 
 ssh -i ~/Downloads/LightsailDefaultKey-eu-west-1.pem -p 2222 ops@108.132.51.116 \
   'sudo install -m 644 /tmp/bot-staging.service /etc/systemd/system/bot-staging.service \
    && sudo install -m 644 /tmp/bot.service          /etc/systemd/system/bot.service \
    && sudo install -m 644 /tmp/tg-alerter.service   /etc/systemd/system/tg-alerter.service \
+   && sudo install -m 644 /tmp/litestream.service   /etc/systemd/system/litestream.service \
    && sudo systemctl daemon-reload \
    && sudo systemctl enable  bot-staging.service \
    && sudo systemctl enable  tg-alerter.service \
+   && sudo systemctl enable  litestream.service \
    && sudo systemctl disable bot.service \
-   && rm /tmp/bot-staging.service /tmp/bot.service /tmp/tg-alerter.service'
+   && rm /tmp/bot-staging.service /tmp/bot.service /tmp/tg-alerter.service /tmp/litestream.service'
 ```
 
 Then start staging once `.envrc` has all required vars:
@@ -52,21 +55,33 @@ ssh -i ~/Downloads/LightsailDefaultKey-eu-west-1.pem -p 2222 ops@108.132.51.116 
 
 Phase 5.6 will add `POLY_PRIVATE_KEY` (Signer EOA) via age-encrypted SCP per locked decision #11. Phase 6 will add `POLY_API_KEY` / `POLY_API_SECRET` / `POLY_API_PASSPHRASE`. **Funder key NEVER goes to the VPS.**
 
+`litestream.service` reads its own separate file `/home/ops/polymarket-5m-bot/.envrc.litestream` (mode `0600`, format: bare `KEY=VALUE` lines, NOT shell-sourceable):
+
+| Var | Used by | Notes |
+|---|---|---|
+| `AWS_ACCESS_KEY_ID` | `litestream.service` | IAM user `litestream-vps`; least-privilege policy on `s3://polymarket-5m-litestream-falcon` only. |
+| `AWS_SECRET_ACCESS_KEY` | `litestream.service` | Pair of the above. Rotate by issuing a new IAM access key, updating this file, `systemctl restart litestream`, deleting the old key. |
+
 ## Why `ExecStart` wraps `bash -c '…source .envrc…'`
 
 systemd's `EnvironmentFile=` directive expects bare `KEY=VALUE` lines. The project's `.envrc` uses `export KEY=VALUE` so it is shell-sourceable (direnv compatible) on the operator's local machine. Wrapping the bot launch in `bash -c 'source … && exec …'` lets the same file work for both surfaces without maintaining two copies.
 
 ## Hardening notes
 
-Both units set `NoNewPrivileges=true`, `PrivateTmp=true`, `ProtectSystem=full` (so `/usr`, `/boot`, `/efi`, `/etc` are read-only) and run as the unprivileged `ops` user. The bot writes `state/decisions/<UTC-date>.jsonl`, `state/token_side_index.json`, `state/halt.sentinel`, and Phase 5.5 will add `trades.db` (litestream-replicated) — all under `/home/ops/polymarket-5m-bot/`. `ProtectHome=read-only` was tried initially but blocked `uv`'s cache writes at `~/.cache/uv` and `~/.local/share/uv`; user-level isolation via the `ops` account is the real boundary here.
+All units set `NoNewPrivileges=true`, `PrivateTmp=true`, `ProtectSystem=full` (so `/usr`, `/boot`, `/efi`, `/etc` are read-only) and run as the unprivileged `ops` user. The bot writes `state/decisions/<UTC-date>.jsonl`, `state/token_side_index.json`, `state/halt.sentinel`, and `state/trades.db` (litestream-replicated) — all under `/home/ops/polymarket-5m-bot/`. `ProtectHome=read-only` was tried initially but blocked `uv`'s cache writes at `~/.cache/uv` and `~/.local/share/uv`; user-level isolation via the `ops` account is the real boundary here.
+
+`litestream.service` runs the prebuilt litestream binary at `/usr/bin/litestream` (Phase 5.2, v0.5.11). It opens `state/trades.db` read-only and writes its own internal state under `state/.litestream/` — both inside the project root, no write needed outside `/home/ops`.
 
 ## Verification commands
 
 ```bash
 systemctl status bot-staging.service
 systemctl status bot.service
-systemctl is-enabled bot-staging.service   # → enabled
-systemctl is-enabled bot.service            # → disabled
-systemctl is-active  bot.service            # → inactive
+systemctl status litestream.service
+systemctl is-enabled bot-staging.service     # → enabled
+systemctl is-enabled litestream.service      # → enabled
+systemctl is-enabled bot.service              # → disabled
+systemctl is-active  bot.service              # → inactive
 journalctl -u bot-staging -f
+journalctl -u litestream -f                   # steady state silent; logs `snapshot completed` every 1h
 ```

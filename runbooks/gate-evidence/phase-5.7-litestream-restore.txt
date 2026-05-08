@@ -1,0 +1,64 @@
+================================================================
+  Phase 5.7 — litestream restore drill
+  2026-05-08T19:15:40Z
+================================================================
+
+Run from operator's laptop, executed via SSH on the VPS:
+  ssh -i ~/Downloads/LightsailDefaultKey-eu-west-1.pem -p 2222 ops@108.132.51.116
+
+S3 backend: AWS S3 / eu-west-1 / s3://polymarket-5m-litestream-falcon/
+IAM user:   arn:aws:iam::366811872914:user/litestream-vps (least-privilege)
+litestream: 0.5.11
+DB:         /home/ops/polymarket-5m-bot/state/trades.db (placeholder schema; Phase 6 populates with real fills)
+
+=== STEP 1: dump pre-restore state ===
+-rw-rw-r-- 1 ops ops 234 May  8 19:15 /tmp/trades.before.sql
+a4e156636e92877188009852fc4e436f  /tmp/trades.before.sql
+
+=== STEP 2: stop litestream.service (release file handle) ===
+inactive
+(inactive — expected)
+
+=== STEP 3: simulate disk loss — delete trades.db + WAL + SHM ===
+-rw-r--r-- 1 ops ops 16384 May  8 19:15 state/trades.db
+-rw-r--r-- 1 ops ops 32768 May  8 19:15 state/trades.db-shm
+-rw-r--r-- 1 ops ops 16512 May  8 19:15 state/trades.db-wal
+ls: cannot access 'state/trades.db': No such file or directory
+(gone — expected)
+
+=== STEP 4: litestream restore from S3 ===
+--- restored file ---
+-rw-rw-r-- 1 ops ops 16384 May  8 19:15 state/trades.db
+
+=== STEP 5: dump post-restore state ===
+-rw-rw-r-- 1 ops ops 234 May  8 19:15 /tmp/trades.after.sql
+a4e156636e92877188009852fc4e436f  /tmp/trades.after.sql
+
+=== STEP 6: diff ===
+RESTORE OK — byte-for-byte identical
+
+=== STEP 7: restart litestream ===
+--- status ---
+active
+May 08 19:15:42 ip-172-26-6-176 litestream[28554]: replica sync           system=store db=trades.db replica=s3 txid.replica=0000000000000002 txid.db=0000000000000003
+May 08 19:15:42 ip-172-26-6-176 litestream[28554]: ltx file uploaded      system=store db=trades.db replica=s3 level=0 minTXID=0000000000000003 maxTXID=0000000000000003 size=647
+May 08 19:15:42 ip-172-26-6-176 litestream[28554]: compaction complete   system=store db=trades.db level=3 txid.min=0000000000000001 txid.max=0000000000000001 size=646
+May 08 19:15:42 ip-172-26-6-176 litestream[28554]: compaction complete   system=store db=trades.db level=1 txid.min=0000000000000002 txid.max=0000000000000003 size=647
+May 08 19:15:43 ip-172-26-6-176 litestream[28554]: replica sync           system=store db=trades.db replica=s3 txid.replica=0000000000000003 txid.db=0000000000000003
+May 08 19:15:44 ip-172-26-6-176 litestream[28554]: replica sync           system=store db=trades.db replica=s3 txid.replica=0000000000000003 txid.db=0000000000000003
+May 08 19:15:45 ip-172-26-6-176 litestream[28554]: replica sync           system=store db=trades.db replica=s3 txid.replica=0000000000000003 txid.db=0000000000000003
+May 08 19:15:46 ip-172-26-6-176 litestream[28554]: replica sync           system=store db=trades.db replica=s3 txid.replica=0000000000000003 txid.db=0000000000000003
+
+=== STEP 8: cleanup tmp ===
+(removed /tmp/trades.before.sql /tmp/trades.after.sql /tmp/trades.diff)
+
+================================================================
+  RESTORE DRILL COMPLETE — pre/post md5 IDENTICAL
+================================================================
+
+Conclusion: design/litestream.md §8 gate criterion #8 sub-condition (3)
+"restored DB matches pre-restore .dump byte-for-byte" — SATISFIED.
+Combined with sub-conditions (1) systemctl is-active litestream.service ==
+active and (2) at least one S3 generation present (4 LTX files confirmed
+under s3://polymarket-5m-litestream-falcon/trades.db/), Phase 5.7
+gate criterion #8 is GREEN.

@@ -1,0 +1,30 @@
+[Unit]
+Description=Polymarket bot — litestream replication of trades.db (Phase 5.7)
+Documentation=file:///home/ops/polymarket-5m-bot/design/litestream.md
+After=network-online.target bot-staging.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ops
+Group=ops
+WorkingDirectory=/home/ops/polymarket-5m-bot
+# AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY live in this file (mode 0600).
+# Bare KEY=VALUE lines — systemd does not invoke a shell for EnvironmentFile.
+EnvironmentFile=/home/ops/polymarket-5m-bot/.envrc.litestream
+ExecStart=/usr/bin/litestream replicate -config /home/ops/polymarket-5m-bot/runbooks/litestream.yml
+Restart=on-failure
+RestartSec=15
+TimeoutStopSec=15
+KillSignal=SIGTERM
+StandardOutput=journal
+StandardError=journal
+# Hardening parity with bot-staging.service. Litestream only reads
+# state/trades.db (and its WAL) and writes its own internal state under
+# /home/ops/polymarket-5m-bot/.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target
