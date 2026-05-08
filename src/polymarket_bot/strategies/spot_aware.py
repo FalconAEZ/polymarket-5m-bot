@@ -41,6 +41,13 @@ DEFAULT_FEE_PCT = 0.005
 DEFAULT_EV_MIN_DOLLARS = 0.005
 DEFAULT_TTL_LOW_S = 10
 DEFAULT_TTL_HIGH_S = 30
+# Slippage buffer added to price_limit so the FillSimulator's self-impact
+# model doesn't reject trades on $0.001 - $0.01 of estimated impact when the
+# real fill would have hit at the quoted ask. Set to 1¢ — covers default-
+# depth impact (~0.1¢) with a 10x margin, but won't cover thin-book extremes
+# (>1¢ impact) which we accept as legitimate non-fills. Operator can widen
+# via SPOT_AWARE_LIMIT_BUFFER_USD env var if fill rate stays low.
+DEFAULT_LIMIT_BUFFER_USD = 0.01
 
 # Aggressive-mode fallback: when priors lookup returns None (Δ outside the
 # 5-50bps buckets OR tier outside the table), use this p_win as a fallback
@@ -76,6 +83,7 @@ class SpotAwareStrategy:
         ttl_low_s: int = DEFAULT_TTL_LOW_S,
         ttl_high_s: int = DEFAULT_TTL_HIGH_S,
         aggressive_mode: bool = False,
+        limit_buffer_usd: float = DEFAULT_LIMIT_BUFFER_USD,
     ) -> None:
         if delta_min_bps <= 0:
             raise ValueError(f"delta_min_bps must be > 0, got {delta_min_bps}")
@@ -101,6 +109,7 @@ class SpotAwareStrategy:
         self._ttl_low_s = ttl_low_s
         self._ttl_high_s = ttl_high_s
         self._aggressive_mode = aggressive_mode
+        self._limit_buffer = max(0.0, limit_buffer_usd)
 
         self._spot_now: float | None = None
         self._window_ts: int | None = None
@@ -189,7 +198,13 @@ class SpotAwareStrategy:
                 return None
             p_win = AGGRESSIVE_FALLBACK_P_WIN
 
-        ev = p_win - (ask + self._fee_pct)
+        # Set price_limit = ask + buffer so the FillSimulator's self-impact
+        # estimate doesn't reject trades on micro-slippage that wouldn't
+        # actually occur at our $5 size. EV is computed against the *padded*
+        # limit so we don't over-fire on trades whose true cost-of-fill
+        # eats the edge.
+        price_limit = min(0.99, ask + self._limit_buffer)
+        ev = p_win - (price_limit + self._fee_pct)
         # Aggressive mode bypasses the EV gate — that's the discipline knob
         # whose absence makes this an "every window test." Tier filter +
         # alignment + Δ-direction-defined still apply. EV is recorded in
@@ -213,7 +228,7 @@ class SpotAwareStrategy:
             asset_id=asset_id,
             side="BUY",
             size_usd=self._size_usd,
-            price_limit=ask,
+            price_limit=price_limit,
             ttl_s=ttl_s,
             rationale=_rationale(d_bps, p_win, ev, ttl_s, side, aggressive=self._aggressive_mode),
         )

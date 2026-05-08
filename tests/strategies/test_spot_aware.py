@@ -343,7 +343,9 @@ async def test_decision_carries_size_and_ttl() -> None:
     assert decision.size_usd == DEFAULT_SIZE_USD
     assert decision.side == "BUY"
     assert 10 <= decision.ttl_s <= 30
-    assert decision.price_limit == pytest.approx(0.55)
+    # price_limit = best_ask + DEFAULT_LIMIT_BUFFER_USD (1¢) so the fill
+    # simulator's self-impact estimate doesn't reject the trade.
+    assert decision.price_limit == pytest.approx(0.55 + 0.01)
 
 
 async def test_decision_rationale_carries_metrics() -> None:
@@ -460,6 +462,37 @@ async def test_aggressive_mode_uses_real_prior_when_available() -> None:
     assert decision is not None
     # The 0.50-0.70:10-20 prior is 0.81, NOT the 0.54 fallback
     assert "p_win=0.810" in decision.rationale
+
+
+async def test_price_limit_pads_ask_for_simulator_slippage() -> None:
+    """Strategy adds limit_buffer to ask so sim's self-impact doesn't reject."""
+    s = SpotAwareStrategy(priors=_priors(), delta_min_bps=5.0, limit_buffer_usd=0.02)
+    await s.on_event(_open())
+    await s.on_event(_book("UP", TOKEN_UP, ask=0.55))
+    await s.on_event(_book("DOWN", TOKEN_DOWN, ask=0.45))
+    await s.on_event(_spot(60_000.0, ts_offset_s=0))
+    d = await s.on_event(_spot(60_060.0, ts_offset_s=30))
+    assert d is not None
+    assert d.price_limit == pytest.approx(0.57)  # 0.55 + 0.02 buffer
+
+
+async def test_price_limit_caps_at_99c() -> None:
+    """Limit + buffer would push past 0.99 — clamp to 0.99 to prevent
+    pathological fills above 1.00."""
+    s = SpotAwareStrategy(priors=_priors(), delta_min_bps=5.0, limit_buffer_usd=0.10)
+    await s.on_event(_open())
+    # Aggressive mode + tier 0.70-0.85 — pick a high but not-rejected ask.
+    s2 = SpotAwareStrategy(
+        priors=_priors(), delta_min_bps=5.0, limit_buffer_usd=0.20, aggressive_mode=True
+    )
+    await s2.on_event(_open())
+    await s2.on_event(_book("UP", TOKEN_UP, ask=0.84))
+    await s2.on_event(_book("DOWN", TOKEN_DOWN, ask=0.16))
+    await s2.on_event(_spot(60_000.0, ts_offset_s=0))
+    d = await s2.on_event(_spot(60_060.0, ts_offset_s=30))
+    assert d is not None
+    # 0.84 + 0.20 = 1.04, clamped to 0.99
+    assert d.price_limit == pytest.approx(0.99)
 
 
 def test_defaults_match_design_doc() -> None:

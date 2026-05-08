@@ -176,6 +176,9 @@ def _build_strategy(name: str) -> Strategy:
         ev_min = _env_float("SPOT_AWARE_EV_MIN_DOLLARS", None)
         if ev_min is not None:
             kwargs["ev_min_dollars_per_share"] = ev_min
+        limit_buf = _env_float("SPOT_AWARE_LIMIT_BUFFER_USD", None)
+        if limit_buf is not None:
+            kwargs["limit_buffer_usd"] = limit_buf
         aggressive = _env_bool("SPOT_AWARE_AGGRESSIVE_MODE", False)
         # Mypy needs the bool kwarg typed separately from the float dict.
         if kwargs or aggressive:
