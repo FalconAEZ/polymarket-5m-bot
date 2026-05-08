@@ -715,20 +715,50 @@ def _maybe_auto_sync(state_dir: Path) -> float | None:
     ).total_seconds()
 
 
+SYNC_MIN_INTERVAL_S = 30.0
+
+
 def _run_sync(state_dir: Path) -> bool:
+    """Run sync_staging.sh in the background, throttled to one per 30s.
+
+    Streamlit autorefreshes every few seconds; sync_staging.sh takes
+    ~5-15s. Without throttling, sync processes stack up faster than they
+    complete and eat CPU. We use the on-disk feeds_health.json mtime as
+    the "last sync time" — anything newer than 30s skips. Subprocess is
+    fire-and-forget (Popen, no wait) so the Streamlit render is never
+    blocked on the rsync.
+    """
     if not SYNC_SCRIPT.exists():
         return False
+    sentinel = state_dir / "feeds_health.json"
+    if sentinel.exists():
+        age = (
+            datetime.now(tz=UTC) - datetime.fromtimestamp(sentinel.stat().st_mtime, tz=UTC)
+        ).total_seconds()
+        if age < SYNC_MIN_INTERVAL_S:
+            return False
+    # Race: multiple concurrent Streamlit autorefreshes can all see the
+    # same stale mtime and each spawn a sync. Touch the sentinel first
+    # so subsequent renders within the same throttle window see fresh
+    # mtime before the rsync writes its real content.
+    if sentinel.exists():
+        try:
+            sentinel.touch()
+        except OSError:
+            pass
     try:
         import subprocess
 
-        # `bash` and SYNC_SCRIPT are both controlled paths inside this repo;
-        # there's no untrusted input. Streamlit-side; never runs in prod bot.
-        subprocess.run(  # noqa: S603
+        # bash + SYNC_SCRIPT are controlled paths in this repo. Popen
+        # (not run) — non-blocking; render proceeds while sync streams
+        # data in the background.
+        subprocess.Popen(  # noqa: S603
             ["/bin/bash", str(SYNC_SCRIPT)],
-            check=False,
             cwd=str(ROOT),
-            timeout=20,
-            capture_output=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
         )
         return True
     except Exception:
