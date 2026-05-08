@@ -151,6 +151,14 @@ def _env_float(name: str, default: float | None) -> float | None:
         raise ValueError(f"env var {name}={raw!r} is not a float") from e
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    """Read an optional bool env var. '1', 'true', 'yes' (case-insensitive) → True."""
+    raw = os.environ.get(name, "").strip().lower()
+    if not raw:
+        return default
+    return raw in ("1", "true", "yes", "on")
+
+
 def _build_strategy(name: str) -> Strategy:
     if name == "deterministic":
         return DeterministicStrategy(threshold_pct=DEFAULT_THRESHOLD_PCT)
@@ -168,14 +176,17 @@ def _build_strategy(name: str) -> Strategy:
         ev_min = _env_float("SPOT_AWARE_EV_MIN_DOLLARS", None)
         if ev_min is not None:
             kwargs["ev_min_dollars_per_share"] = ev_min
-        if kwargs:
-            LOG.info(
-                "spot_aware overrides: delta_min=%s delta_max=%s ev_min=%s",
+        aggressive = _env_bool("SPOT_AWARE_AGGRESSIVE_MODE", False)
+        # Mypy needs the bool kwarg typed separately from the float dict.
+        if kwargs or aggressive:
+            LOG.warning(
+                "spot_aware overrides: delta_min=%s delta_max=%s ev_min=%s aggressive=%s",
                 kwargs.get("delta_min_bps"),
                 kwargs.get("delta_max_bps"),
                 kwargs.get("ev_min_dollars_per_share"),
+                aggressive,
             )
-        return SpotAwareStrategy(priors=load_priors(), **kwargs)
+        return SpotAwareStrategy(priors=load_priors(), aggressive_mode=aggressive, **kwargs)
     raise ValueError(f"unknown STRATEGY env value {name!r}; pick deterministic or spot_aware")
 
 

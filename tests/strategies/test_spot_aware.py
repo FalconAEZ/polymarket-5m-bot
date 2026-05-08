@@ -382,6 +382,86 @@ async def test_reset_clears_state() -> None:
 # ---------- defaults ----------
 
 
+# ---------- aggressive mode ----------
+
+
+async def test_aggressive_mode_fires_on_sub_5bps_move() -> None:
+    """Aggressive mode bypasses Δ_min and uses fallback p_win for sub-5bps."""
+    s = SpotAwareStrategy(priors=_priors(), aggressive_mode=True)
+    await s.on_event(_open())
+    await s.on_event(_book("UP", TOKEN_UP, ask=0.55))
+    await s.on_event(_book("DOWN", TOKEN_DOWN, ask=0.45))
+    await s.on_event(_spot(60_000.0, ts_offset_s=0))
+    # +18 USD on $60k = +3 bps, well below the 5bps prior bucket lower bound
+    decision = await s.on_event(_spot(60_018.0, ts_offset_s=30))
+    assert decision is not None
+    assert decision.asset_id == TOKEN_UP
+    # Fallback p_win is 0.54
+    assert "p_win=0.540" in decision.rationale
+    assert "mode=aggressive" in decision.rationale
+
+
+async def test_aggressive_mode_fires_above_50bps() -> None:
+    """Aggressive mode bypasses Δ_max too — fallback used for >50bps."""
+    s = SpotAwareStrategy(priors=_priors(), aggressive_mode=True)
+    await s.on_event(_open())
+    await s.on_event(_book("UP", TOKEN_UP, ask=0.55))
+    await s.on_event(_book("DOWN", TOKEN_DOWN, ask=0.45))
+    await s.on_event(_spot(60_000.0, ts_offset_s=0))
+    # +600 USD on $60k = +100 bps, way above design Δ_max of 50bps
+    decision = await s.on_event(_spot(60_600.0, ts_offset_s=30))
+    assert decision is not None
+    assert "p_win=0.540" in decision.rationale
+
+
+async def test_aggressive_mode_still_rejects_85_100_tier() -> None:
+    """The scout-validated tier discipline survives aggressive mode."""
+    s = SpotAwareStrategy(priors=_priors(), aggressive_mode=True)
+    await s.on_event(_open())
+    # UP side at 0.92 — squarely in the rejected 85-100% tier
+    await s.on_event(_book("UP", TOKEN_UP, ask=0.92))
+    await s.on_event(_book("DOWN", TOKEN_DOWN, ask=0.05))
+    await s.on_event(_spot(60_000.0, ts_offset_s=0))
+    decision = await s.on_event(_spot(60_018.0, ts_offset_s=30))  # +3bps
+    # Aligned UP+up but tier 85-100 still rejected even in aggressive mode
+    assert decision is None
+
+
+async def test_aggressive_mode_still_rejects_below_15pct_tier() -> None:
+    """The conservative-by-default <15% tier skip survives aggressive mode."""
+    s = SpotAwareStrategy(priors=_priors(), aggressive_mode=True)
+    await s.on_event(_open())
+    await s.on_event(_book("UP", TOKEN_UP, ask=0.10))
+    await s.on_event(_book("DOWN", TOKEN_DOWN, ask=0.85))
+    await s.on_event(_spot(60_000.0, ts_offset_s=0))
+    decision = await s.on_event(_spot(60_018.0, ts_offset_s=30))
+    assert decision is None
+
+
+async def test_aggressive_mode_does_not_fire_on_pure_flat() -> None:
+    """Δ=0 exactly is undefined alignment — refuse to fire even in aggressive mode."""
+    s = SpotAwareStrategy(priors=_priors(), aggressive_mode=True)
+    await s.on_event(_open())
+    await s.on_event(_book("UP", TOKEN_UP, ask=0.55))
+    await s.on_event(_book("DOWN", TOKEN_DOWN, ask=0.45))
+    await s.on_event(_spot(60_000.0, ts_offset_s=0))
+    decision = await s.on_event(_spot(60_000.0, ts_offset_s=30))  # Δ=0 exactly
+    assert decision is None
+
+
+async def test_aggressive_mode_uses_real_prior_when_available() -> None:
+    """When (Δ, tier) DOES match a real prior, aggressive mode uses it."""
+    s = SpotAwareStrategy(priors=_priors(), aggressive_mode=True)
+    await s.on_event(_open())
+    await s.on_event(_book("UP", TOKEN_UP, ask=0.55))
+    await s.on_event(_book("DOWN", TOKEN_DOWN, ask=0.45))
+    await s.on_event(_spot(60_000.0, ts_offset_s=0))
+    decision = await s.on_event(_spot(60_060.0, ts_offset_s=30))  # +10bps
+    assert decision is not None
+    # The 0.50-0.70:10-20 prior is 0.81, NOT the 0.54 fallback
+    assert "p_win=0.810" in decision.rationale
+
+
 def test_defaults_match_design_doc() -> None:
     """Sanity-check the locked defaults against design/spot_aware_strategy.md §3-§5."""
     assert DEFAULT_DELTA_MIN_BPS == 8.0

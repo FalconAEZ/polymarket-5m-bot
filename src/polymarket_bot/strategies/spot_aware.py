@@ -42,6 +42,15 @@ DEFAULT_EV_MIN_DOLLARS = 0.005
 DEFAULT_TTL_LOW_S = 10
 DEFAULT_TTL_HIGH_S = 30
 
+# Aggressive-mode fallback: when priors lookup returns None (Δ outside the
+# 5-50bps buckets OR tier outside the table), use this p_win as a fallback
+# in aggressive mode only. Sourced from Bonereaper 30d data |Δ|<5bps cell:
+# 53.9% WR, $+0.96/trade across 87,964 trades. Rounded DOWN to 0.54 for
+# conservative honesty (we don't get full Bonereaper edge, only the bit
+# that survives our $5 sizing). Aligned-direction-only — never used for
+# contrarian or unaligned trades.
+AGGRESSIVE_FALLBACK_P_WIN = 0.54
+
 
 def delta_bps(*, spot_now: float, window_open_spot: float) -> float:
     """Δ_bps = 10000 * (St - S0) / S0. Returns 0 on zero-open-spot guard."""
@@ -66,6 +75,7 @@ class SpotAwareStrategy:
         ev_min_dollars_per_share: float | None = None,
         ttl_low_s: int = DEFAULT_TTL_LOW_S,
         ttl_high_s: int = DEFAULT_TTL_HIGH_S,
+        aggressive_mode: bool = False,
     ) -> None:
         if delta_min_bps <= 0:
             raise ValueError(f"delta_min_bps must be > 0, got {delta_min_bps}")
@@ -90,6 +100,7 @@ class SpotAwareStrategy:
         )
         self._ttl_low_s = ttl_low_s
         self._ttl_high_s = ttl_high_s
+        self._aggressive_mode = aggressive_mode
 
         self._spot_now: float | None = None
         self._window_ts: int | None = None
@@ -142,7 +153,18 @@ class SpotAwareStrategy:
 
         d_bps = delta_bps(spot_now=self._spot_now, window_open_spot=self._window_open_spot)
         abs_d = abs(d_bps)
-        if abs_d < self._delta_min or abs_d > self._delta_max:
+
+        # In aggressive mode the Δ_min/Δ_max gates are bypassed so the bot
+        # fires on (almost) every window. Tier filter + aligned-side-only
+        # discipline still apply — see runbooks/decisions/aggressive-mode-
+        # 2026-05-09.md for the exit criteria of this experiment.
+        if not self._aggressive_mode:
+            if abs_d < self._delta_min or abs_d > self._delta_max:
+                return None
+
+        # Aggressive mode needs ANY directional information — pure-flat
+        # spot (Δ=0 exactly) means alignment is undefined; refuse to fire.
+        if d_bps == 0.0:
             return None
 
         side: Side = "UP" if d_bps > 0 else "DOWN"
@@ -155,10 +177,24 @@ class SpotAwareStrategy:
 
         p_win = self._priors.lookup(price=ask, abs_delta_bps=abs_d)
         if p_win is None:
-            return None
+            if not self._aggressive_mode:
+                return None
+            # Aggressive mode fallback: use the Bonereaper 30d "flat"
+            # bucket WR (rounded down for honesty) when our priors don't
+            # cover this (Δ, tier) combination. The tier filter still
+            # skips 85-100% and <15% via SpotAwarePriors.is_tier_admitted
+            # — preserves the scout-validated tier discipline even when
+            # everything else is loosened.
+            if not self._priors.is_tier_admitted(ask):
+                return None
+            p_win = AGGRESSIVE_FALLBACK_P_WIN
 
         ev = p_win - (ask + self._fee_pct)
-        if ev <= self._ev_min:
+        # Aggressive mode bypasses the EV gate — that's the discipline knob
+        # whose absence makes this an "every window test." Tier filter +
+        # alignment + Δ-direction-defined still apply. EV is recorded in
+        # the rationale so the postmortem can split fires by sign(EV).
+        if not self._aggressive_mode and ev <= self._ev_min:
             return None
 
         # spot_aware fires whenever signal+EV align within a window — not
@@ -179,7 +215,7 @@ class SpotAwareStrategy:
             size_usd=self._size_usd,
             price_limit=ask,
             ttl_s=ttl_s,
-            rationale=_rationale(d_bps, p_win, ev, ttl_s, side),
+            rationale=_rationale(d_bps, p_win, ev, ttl_s, side, aggressive=self._aggressive_mode),
         )
 
     def _compute_time_to_close_s(self, now_ts_utc_ns: int) -> int:
@@ -196,8 +232,11 @@ def _rationale(
     ev: float,
     ttl_s: int,
     side: Literal["UP", "DOWN"],
+    *,
+    aggressive: bool = False,
 ) -> str:
+    mode = "aggressive" if aggressive else "spot_aware"
     return (
-        f"strategy=spot_aware delta_bps={d_bps:+.2f} p_win={p_win:.3f} "
-        f"ev={ev:+.4f} ttl={ttl_s}s side={side}"
+        f"strategy=spot_aware mode={mode} delta_bps={d_bps:+.2f} "
+        f"p_win={p_win:.3f} ev={ev:+.4f} ttl={ttl_s}s side={side}"
     )

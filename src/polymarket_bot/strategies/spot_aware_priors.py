@@ -60,6 +60,17 @@ class SpotAwarePriors:
         key = f"{tier.lo:.2f}-{tier.hi:.2f}:{int(bucket.lo)}-{int(bucket.hi)}"
         return self._table.get(key)
 
+    def is_tier_admitted(self, price: float) -> bool:
+        """True iff `price` falls into a tier bucket present in the priors.
+
+        Used by aggressive-mode fallback to enforce the scout-validated
+        tier discipline (reject 85-100% and <15%) without requiring a
+        full prior lookup. The 85-100% rejection is the documented
+        Slow-Minute money-loser; the <15% skip is conservative-by-default
+        per design doc §13 (sample too small to trust).
+        """
+        return self._tier_for(price) is not None
+
     def _tier_for(self, price: float) -> _Bucket | None:
         for b in self._tier_buckets:
             if b.contains(price):
