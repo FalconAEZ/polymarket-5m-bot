@@ -278,13 +278,22 @@ async def main() -> int:
     instant_settle_enabled = _env_bool("INSTANT_SETTLE_ENABLED", False)
     instant_settle_timeout_s = _env_float("INSTANT_SETTLE_GAMMA_TIMEOUT_S", 30.0) or 30.0
     instant_settle_interval_s = _env_float("INSTANT_SETTLE_GAMMA_POLL_INTERVAL_S", 1.0) or 1.0
-    gamma_client_for_settle = _httpx.Client() if instant_settle_enabled else None
+    # Orphan-fire recovery — at startup, scan recent decision-log files
+    # for fired records that were never settled (e.g., bot was restarted
+    # mid-window before its close-side settle ran) and post-hoc resolve
+    # them via Polymarket Gamma. Default ON (kill-switch via env). Shares
+    # the same httpx.Client as instant-settle.
+    orphan_recovery_enabled = _env_bool("ORPHAN_RECOVERY_ENABLED", True)
+    needs_gamma_client = instant_settle_enabled or orphan_recovery_enabled
+    gamma_client_for_settle = _httpx.Client() if needs_gamma_client else None
     if instant_settle_enabled:
         LOG.info(
             "instant-settle ENABLED: gamma poll timeout=%ss interval=%ss",
             instant_settle_timeout_s,
             instant_settle_interval_s,
         )
+    if orphan_recovery_enabled:
+        LOG.info("orphan-fire recovery ENABLED at startup")
 
     runner = PaperRunner(
         feeds=feeds,
@@ -297,6 +306,7 @@ async def main() -> int:
         gamma_client=gamma_client_for_settle,
         instant_settle_timeout_s=instant_settle_timeout_s,
         instant_settle_interval_s=instant_settle_interval_s,
+        orphan_recovery_enabled=orphan_recovery_enabled,
     )
 
     stop_event = asyncio.Event()

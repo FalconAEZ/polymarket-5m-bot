@@ -21,10 +21,11 @@ import logging
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from typing import Any
 
 import httpx
 
-from polymarket_bot._paper.decision_log import DecisionLog
+from polymarket_bot._paper.decision_log import DecisionLog, read_jsonl
 from polymarket_bot._paper.shadow_book import ShadowBook
 from polymarket_bot.alerts import Alert, AlertSink, Level, NullAlertSink
 from polymarket_bot.backtest.replay import SideResolver, decode_record
@@ -39,7 +40,7 @@ from polymarket_bot.backtest.types import (
     WindowBoundary,
 )
 from polymarket_bot.feeds.protocols import Feed, Record
-from polymarket_bot.gamma_resolver import poll_gamma_for_resolution
+from polymarket_bot.gamma_resolver import gamma_resolution, poll_gamma_for_resolution
 from polymarket_bot.resolver import (
     WINDOW_SECONDS,
     active_window_ts,
@@ -85,6 +86,16 @@ class PaperRunner:
         gamma_client: httpx.Client | None = None,
         instant_settle_timeout_s: float = DEFAULT_INSTANT_SETTLE_TIMEOUT_S,
         instant_settle_interval_s: float = DEFAULT_INSTANT_SETTLE_INTERVAL_S,
+        # Orphan-fire recovery — at startup, scan recent decision-log
+        # files for `fired` records that have no matching `settled`
+        # record (e.g., from a deploy-time restart that occurred mid-
+        # window) and post-hoc resolve them via Polymarket Gamma. Off
+        # by default to preserve legacy behavior; production wires the
+        # ORPHAN_RECOVERY_ENABLED env var (default true) in run_paper.py.
+        # Idempotent: a re-run skips already-settled decisions, so two
+        # consecutive startups don't double-write.
+        orphan_recovery_enabled: bool = False,
+        orphan_recovery_lookback_days: int = 1,
     ) -> None:
         if not feeds:
             raise ValueError("PaperRunner requires at least one Feed")
@@ -110,6 +121,8 @@ class PaperRunner:
         # the main loop can keep pulling from the queue while gamma polls.
         # Shutdown awaits this set so settled records aren't lost on stop.
         self._pending_settles: set[asyncio.Task[None]] = set()
+        self._orphan_recovery_enabled = orphan_recovery_enabled
+        self._orphan_recovery_lookback_days = orphan_recovery_lookback_days
 
     def _alert(self, level: Level, message: str, **fields: str | int | float) -> None:
         try:
@@ -137,6 +150,21 @@ class PaperRunner:
             feed.stop()
 
     async def run(self, *, stop: asyncio.Event | None = None) -> None:
+        # Orphan-fire recovery — runs once at startup, BEFORE the main
+        # event loop. Fires that lost their close-side settle (e.g.,
+        # because the bot was restarted between fire and window-close)
+        # are post-hoc resolved against Polymarket Gamma. A failure here
+        # never blocks the runner: log + alert and proceed.
+        if self._orphan_recovery_enabled:
+            try:
+                await self._recover_orphan_fires()
+            except Exception as exc:
+                LOG.exception("orphan recovery raised; continuing startup")
+                self._alert(
+                    Level.WARN,
+                    f"orphan recovery raised: {exc}",
+                )
+
         external_stop = stop
         queue: asyncio.Queue[Record | None] = asyncio.Queue(self._queue_size)
 
@@ -338,6 +366,118 @@ class PaperRunner:
             return
         self._state.settled_fill = fill
         self._state.pending_decision = None
+
+    async def _recover_orphan_fires(self) -> None:
+        # Scan today's + the previous N UTC-day decision-log files for
+        # `fired` records that have no matching `settled` record. For
+        # each orphan whose closing window is in the past, look up the
+        # truth via Polymarket Gamma and write a synthetic settled
+        # record (resolution_source="polymarket-recovery"). Idempotent
+        # because already-settled fires are filtered out by decision_id.
+        if self._gamma_client is None:
+            LOG.info("orphan recovery skipped: no gamma_client configured")
+            return
+
+        from datetime import UTC, datetime, timedelta
+
+        log_root = self._log.root
+        now_s = self._clock_ns() // 1_000_000_000
+        current_window = active_window_ts(now_s)
+        today = datetime.fromtimestamp(now_s, tz=UTC).date()
+        dates = [today - timedelta(days=i) for i in range(self._orphan_recovery_lookback_days + 1)]
+
+        fired_by_id: dict[str, dict[str, Any]] = {}
+        settled_ids: set[str] = set()
+        for d in dates:
+            path = log_root / f"{d.strftime('%Y-%m-%d')}.jsonl"
+            if not path.exists():
+                continue
+            for rec in read_jsonl(path):
+                kind = rec.get("kind")
+                did = rec.get("decision_id")
+                if not isinstance(did, str):
+                    continue
+                if kind == "fired":
+                    fired_by_id[did] = rec
+                elif kind == "settled":
+                    settled_ids.add(did)
+
+        orphans = [
+            (did, rec)
+            for did, rec in fired_by_id.items()
+            if did not in settled_ids
+            and isinstance(rec.get("window_ts"), int)
+            and rec["window_ts"] < current_window
+        ]
+        if not orphans:
+            LOG.info("orphan recovery: 0 orphans found")
+            return
+
+        LOG.info("orphan recovery: %d orphans to resolve", len(orphans))
+        recovered = 0
+        unresolved = 0
+        for decision_id, fired in orphans:
+            window_ts = int(fired["window_ts"])
+            try:
+                truth = await asyncio.to_thread(
+                    gamma_resolution, window_ts, client=self._gamma_client
+                )
+            except Exception as exc:
+                LOG.warning(
+                    "orphan recovery gamma fetch raised for window %s: %s",
+                    window_ts,
+                    exc,
+                )
+                unresolved += 1
+                continue
+            if truth not in ("UP", "DOWN"):
+                # Gamma hasn't resolved yet (or never will). Leave the
+                # orphan — a later startup will retry.
+                unresolved += 1
+                continue
+            fill = _fill_from_dict(fired.get("fill"))
+            side = fired.get("side")
+            if side not in ("UP", "DOWN"):
+                # Defensive: a fired record without a parseable side can't
+                # be settled. Skip + count as unresolved.
+                unresolved += 1
+                continue
+            won = truth == side
+            pnl = _realised_pnl(fill, won) if fill is not None else 0.0
+            try:
+                self._log.record_settled(
+                    decision_id=decision_id,
+                    window_ts=window_ts,
+                    settled_ts_ns=self._clock_ns(),
+                    open_oracle=None,
+                    close_oracle=None,
+                    resolution=truth,
+                    fill_at_settle=fill,
+                    pnl_usd=pnl,
+                    resolution_source="polymarket-recovery",
+                )
+            except OSError as exc:
+                LOG.critical("orphan recovery record_settled OSError: %s", exc)
+                self._alert(
+                    Level.CRITICAL,
+                    f"orphan recovery record_settled OSError: {exc}",
+                    decision_id=decision_id,
+                    window_ts=window_ts,
+                )
+                continue
+            recovered += 1
+        LOG.info(
+            "orphan recovery complete: recovered=%d unresolved=%d",
+            recovered,
+            unresolved,
+        )
+        if recovered > 0:
+            self._alert(
+                Level.INFO,
+                f"orphan recovery: recovered={recovered} unresolved={unresolved}",
+                recovered=recovered,
+                unresolved=unresolved,
+            )
 
     def _snapshot_for_settle(self) -> _SettleSnapshot | None:
         # Capture everything the settle path needs for the closing window
@@ -562,6 +702,29 @@ def _composite_from_rationale(rationale: str) -> float | None:
     try:
         return float(tail[:end])
     except ValueError:
+        return None
+
+
+def _fill_from_dict(d: object) -> Fill | None:
+    """Reconstruct a `Fill` from a JSON-decoded fired-record `fill` dict.
+
+    Used by orphan-fire recovery, which reads the historical fired record
+    off disk; the fired schema persists fills as plain dicts via
+    `_fill_to_dict`. Returns None if the dict is None or malformed (a
+    malformed fill in a fired record means we can't compute pnl, so the
+    recovered settle records pnl=0 with fill_at_settle=None).
+    """
+    if not isinstance(d, dict):
+        return None
+    try:
+        return Fill(
+            ts_utc_ns=int(d["ts_utc_ns"]),
+            asset_id=str(d["asset_id"]),
+            size_filled=float(d["size_filled"]),
+            price_filled=float(d["price_filled"]),
+            fee_usd=float(d["fee_usd"]),
+        )
+    except (KeyError, TypeError, ValueError):
         return None
 
 

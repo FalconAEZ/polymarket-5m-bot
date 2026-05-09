@@ -75,6 +75,13 @@ class DecisionLog:
         self._handles: dict[str, Any] = {}
         self._closed = False
 
+    @property
+    def root(self) -> Path:
+        """Filesystem root of the decision-log JSONL files. Read-only
+        accessor for callers that need to scan the historical files
+        (e.g., orphan-fire recovery at runner startup)."""
+        return self._root
+
     def record_fired(
         self,
         *,
