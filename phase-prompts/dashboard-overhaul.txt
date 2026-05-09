@@ -1,0 +1,314 @@
+Subject: Full UX/UI redesign + tooling-recommendation session for the
+operations dashboard. Operator-driven design pass. NOT a bot-logic
+change — paper-soak runs untouched throughout this session.
+
+Frame: the current Streamlit dashboard works correctly but looks
+clunky and dated. Operator wants a redesigned look + feel using
+modern UI patterns, with smooth animations and clear information
+hierarchy. Operator will bring demo screenshots of dashboards they
+admire as references for the redesign direction.
+
+This is THREE-PART work:
+  1. Critique the current dashboard against design first principles
+  2. RECOMMEND skills, MCPs, and GitHub repos for Streamlit /
+     Python-dashboard UI/animation work
+  3. Design + implement the redesign with operator approval gates
+
+If context allows, do all three in one session. If not, treat this
+prompt as the recommendations + critique session and queue
+implementation as a follow-up.
+
+================================================================================
+CONTEXT ANCHORS (read in this order)
+================================================================================
+
+ 1. /Users/hamad/Desktop/PolyMarket-5m/CLAUDE.md
+    — durable preferences, anti-vibe rules. **Rule #1 still applies:
+      design doc before code.** A redesigned dashboard needs a
+      design/dashboard-v2.md update committed BEFORE refactor lands.
+
+ 2. /Users/hamad/Desktop/PolyMarket-5m/design/dashboard.md
+    — the original dashboard design (Phase 4.5). v1 of the layout
+      that the current implementation follows. Read to understand
+      what we set out to do, then we'll critique against that.
+
+ 3. /Users/hamad/Desktop/PolyMarket-5m/scripts/dashboard.py (~750 LOC)
+    — the current Streamlit single-page implementation.
+
+ 4. /Users/hamad/Desktop/PolyMarket-5m/src/polymarket_bot/dashboard/
+    — supporting modules:
+      - loaders.py (DecisionRow / ProcessStatus / HealthSnapshot +
+        per_tier_stats / fire_rate_per_hour / latest_active_mode)
+      - theme.py (~680 LOC: CSS injection, kpi_card, badge,
+        incident_banner, color tokens)
+      - agents_loader.py (Phase 3 historical agent transcripts)
+
+ 5. /Users/hamad/Desktop/PolyMarket-5m/state/sessions/
+    2026-05-09-spot-aware-aggressive-launch.md
+    — context: dashboard's most recent overhaul shipped MODE banner,
+      Fire Rate card, trip-wire panel, per-tier panel, auto-sync,
+      Market column. Operator says it's still "outdated and clunky"
+      — redesign goes deeper than what we shipped today.
+
+ 6. /Users/hamad/Desktop/PolyMarket-5m/state/phases/phase-11-spot-aware.md
+    — the active phase context. The redesign should anticipate that
+      Phase 11.B-F (per design/spot_aware_strategy.md §11) will add
+      multi-market data, ETH alongside BTC, etc. Don't bake in BTC-
+      only assumptions.
+
+================================================================================
+BRANCH + HEAD
+================================================================================
+
+Branch: main
+HEAD:   wherever the prior session ended (verify with git log -1).
+Tag:    phase-5-pass at e43b77c. spot-aware-paper-pass MAY have been
+        applied by the gate-review session that runs before this one
+        (phase-prompts/phase-11.a-gate-2026-05-10.txt) — verify with
+        `git tag -l 'spot-aware*'`.
+
+If Phase 11.A.2 reverted, the live strategy state is back to spot_aware
+(non-aggressive) per the loose-start knobs, OR fully back to design
+defaults — verify SSH + .envrc to know which.
+
+================================================================================
+WHAT THE OPERATOR WANTS
+================================================================================
+
+A dashboard that:
+- Looks modern, not "Streamlit-default"
+- Uses smooth animations / transitions where they aid comprehension
+  (not gratuitously)
+- Has clear information hierarchy: at-a-glance cards, drill-down panels
+- Renders large numerical data (PnL, fire rate, WR) prominently and
+  legibly
+- Communicates *state* clearly: "is the bot firing? is it making money?
+  is anything broken?" should each be answerable in <2 seconds at
+  a glance
+- Handles future scaling: multi-market panels (BTC + ETH + ...),
+  multi-strategy panels (spot_aware + spot_aware_v2 + ...), without
+  layout collapse
+
+The operator will bring demo screenshots to seed the redesign direction.
+Look for: typography, color palette, spacing rhythm, card patterns,
+animation cadence.
+
+================================================================================
+PRE-FLIGHT
+================================================================================
+
+[ ] cd /Users/hamad/Desktop/PolyMarket-5m
+[ ] git pull origin main
+[ ] git status                                   → working tree clean
+[ ] export PATH="$HOME/.local/bin:$PATH"
+[ ] Open the live dashboard at http://127.0.0.1:8503/ (start with
+    `make dash-staging` if not running). Look at it. Take notes.
+[ ] If bot-staging or sync_staging is mid-flight, DO NOT restart
+    anything; the redesign is offline / preview-mode work.
+
+================================================================================
+THE WORK — three phases
+================================================================================
+
+------------------------------------------------------------------------
+PHASE A — Critique (15-30 min)
+------------------------------------------------------------------------
+
+Audit the current dashboard against:
+
+1. **Information hierarchy.** Are the most-important numbers (PnL,
+   fire rate, mode banner) actually the most prominent? Are they
+   visually weighted vs secondary detail (per-decision rows, log lines)?
+
+2. **At-a-glance state communication.** Open the URL, time yourself:
+   how long does it take to know
+     a) is the bot firing?
+     b) are we making money?
+     c) is anything broken?
+   If any answer takes >2 seconds the design failed that question.
+
+3. **Density vs whitespace.** Streamlit's default tries to fill every
+   pixel. Where do we currently feel cramped? Where could whitespace
+   create breathing room?
+
+4. **Color usage.** Is red/yellow/green used consistently for
+   bad/warn/good? Are gradients adding value or noise? Is the dark
+   theme legible (contrast ratios)?
+
+5. **Animation.** Right now: zero. Where would tasteful motion help
+   (e.g., counter rolls when PnL updates, gentle fade on auto-refresh,
+   trip-wire bar fills approaching breach)?
+
+6. **Empty states.** When the bot first starts (no decisions yet),
+   does the dashboard look broken, or does it explain itself?
+
+7. **Mobile / narrow viewport.** Does it degrade gracefully? Operator
+   may want to glance at it from phone.
+
+8. **Future-scaling.** What breaks when we add a second market? A
+   second strategy? More than 4 services?
+
+Capture findings in `runbooks/research/dashboard-critique-<date>.md`.
+
+------------------------------------------------------------------------
+PHASE B — Recommendations: skills, MCPs, repos (10-15 min)
+------------------------------------------------------------------------
+
+The operator wants concrete pointers for the implementation phase.
+Recommend at least:
+
+**Skills** (from the available-skills list — invoked via the Skill
+tool with Skill / `<name>`):
+
+For UX critique + writing:
+  - `design:design-critique` — structured feedback on a design
+  - `design:design-system` — auditing for consistency, naming
+  - `design:ux-copy` — wording for buttons, empty states, error
+    messages
+  - `design:design-handoff` — design-to-dev spec translation
+
+For accessibility:
+  - `design:accessibility-review` — WCAG 2.1 AA audit (contrast,
+    keyboard, touch targets)
+
+Recommend WHEN to use each in the redesign workflow, with concrete
+examples from the current dashboard.
+
+**MCPs** that might be relevant:
+
+  - **Claude in Chrome** — already wired in this project. Use it to:
+    drive the live dashboard at :8503, take annotated screenshots,
+    iterate on CSS in DevTools, copy reference screenshots.
+  - **Claude Preview MCP** — already used for Phase 4.5 testing. Use
+    it for: previewing dashboard changes locally without browser
+    open, capturing screenshots for design-handoff.
+
+**GitHub repos / libraries** for Streamlit / Python dashboards.
+Suggested categories (recommend specific repos for each, ideally
+ones the operator could `pip install` into the project):
+
+  - **Streamlit-native components** with better default styling.
+    Look at: `streamlit-extras`, `streamlit-shadcn-ui`,
+    `streamlit-elements`, `streamlit-aggrid` (for the decisions
+    table specifically).
+  - **Animation libraries** that work in Streamlit's render model
+    (note: Streamlit re-renders entire components on each
+    interaction — animation libraries that expect persistent DOM
+    state don't always cooperate). Look at: `streamlit-lottie`
+    for Lottie animations, raw `motion`/`framer-motion`-flavor
+    via custom HTML in `st.components.v1.html`.
+  - **Charting libraries with smoother motion than Altair**:
+    `plotly` (built-in transitions), `echarts-pyecharts`, `vega-lite`
+    custom-spec via `st.vega_lite_chart`.
+  - **Dashboard examples** to look at, not necessarily copy:
+    public Streamlit-gallery dashboards, `streamlit/llm-examples`,
+    finance-domain dashboards (e.g., `vizro` from McKinsey,
+    `dash-finance` examples).
+
+For each repo recommend, give: 1-line "what it does", a "use case in
+our redesign," and an "install + how-to-integrate" pointer.
+
+Format Phase B output as `runbooks/research/dashboard-tooling-options-<date>.md`
+so the operator has a written reference to choose from.
+
+------------------------------------------------------------------------
+PHASE C — Redesign (operator-gated; bulk of session)
+------------------------------------------------------------------------
+
+This phase only runs after the operator brings demo screenshots and
+agrees on a direction. Hard requirements before code lands:
+
+1. **Update `design/dashboard-v2.md`** (NEW FILE). Anti-vibe rule #1
+   in force. Section structure (mirror `design/dashboard.md` v1):
+     - Why v2 (operator critique + Phase 11+ scaling needs)
+     - Information hierarchy (which questions are answered first)
+     - Color + typography tokens (committed in `theme.py` or a JSON
+       config)
+     - Layout grid (above-the-fold + below)
+     - Animation principles (when, how long, with what easing)
+     - Multi-market / multi-strategy expansion plan
+     - Out-of-scope: anything that requires bot-logic changes
+
+2. **Implement against the design doc.** Likely changes:
+     - `src/polymarket_bot/dashboard/theme.py` — color tokens, kpi_card
+       restyle, new Flowable components if needed
+     - `scripts/dashboard.py` — layout updates, possibly new
+       components, removal of Phase 3 expander
+     - Maybe `pyproject.toml` for new deps (declare them, run
+       `uv sync`)
+
+3. **Tests.** `tests/dashboard/` covers loaders. Restyle is mostly
+   visual; add tests for any new logic (e.g., new aggregation helpers).
+   `make verify` must stay green.
+
+4. **Live screenshot for the diff.** Take before/after screenshots
+   via Claude in Chrome MCP and save them in
+   `runbooks/research/dashboard-v2-screenshots/`. These go in the
+   commit so future agents can see what changed.
+
+------------------------------------------------------------------------
+SHIP CRITERIA
+------------------------------------------------------------------------
+
+The redesign session ships when:
+  ✅ design/dashboard-v2.md exists and is reviewed
+  ✅ scripts/dashboard.py + theme.py implement v2
+  ✅ make verify green (no test regressions)
+  ✅ before/after screenshots committed
+  ✅ operator approves the visual diff (this is a hard gate; the
+     design is for them, so they sign off before merge)
+  ✅ commit pushed; CHANGELOG-style note in the commit message
+
+================================================================================
+WHAT THIS SESSION DOES NOT DO
+================================================================================
+
+- Does NOT touch any bot logic (`src/polymarket_bot/strategies/`,
+  `src/polymarket_bot/_paper/`, `src/polymarket_bot/_live/`,
+  `src/polymarket_bot/backtest/`).
+- Does NOT modify the running `bot-staging.service` or its env.
+- Does NOT change the sync_staging.sh pipeline (already corrected).
+- Does NOT start a new strategy soak (that's Phase 11.B planning).
+- Does NOT remove the historical agent panel without operator approval
+  (it's collapsed by default; some operators value it as an audit
+  trail).
+
+================================================================================
+ANTI-VIBE RULES
+================================================================================
+
+Same 10 rules in CLAUDE.md. Especially relevant:
+
+- **Rule #1 — design doc before code.** v2 redesign needs a fresh
+  `design/dashboard-v2.md` before any visual change lands.
+- **Rule #5 — module docstrings.** Any new src/ file gets one.
+- **Rule #6 — type hints.** mypy --strict still enforced on src/.
+- **Rule #8 — no TODO/FIXME/hack** in committed code.
+- **3-fix rule.** Three failed iterations on a redesign element →
+  stop and write `runbooks/incidents/<date>-dashboard-redesign-stuck.md`.
+
+================================================================================
+SESSION BOUNDARY
+================================================================================
+
+(a) All three phases done; v2 shipped + reviewed + committed.    ✅ full
+(b) Phase A + B done; redesign deferred to a follow-up session.  ✅ partial
+(c) Hard blocker (e.g., Streamlit-extras incompatibility, design
+    direction can't be agreed) → write incident note, abort.    🛑
+(d) Context ≥ 60% before completion → ship Phases A+B, queue C
+    for next time.                                                ⏸
+
+================================================================================
+HAND-OFF NOTE
+================================================================================
+
+This session is design-led, not crisis-driven. The current dashboard
+correctly displays all the right data — you're optimizing for clarity,
+elegance, and scalability. The bot keeps running through this; nothing
+about Phase 11.A.2's gate review depends on the dashboard look.
+
+If the operator brings reference screenshots, anchor the redesign to
+those. If they bring stylistic preferences ("more like a trading
+terminal" / "more like a SaaS metrics dashboard" / "darker / more
+typography-driven"), document the direction as the first thing in
+design/dashboard-v2.md before anything else lands.

@@ -1,0 +1,344 @@
+Subject: Run the Phase 11.A.2 aggressive-mode gate review and decide
+promote / revert / postmortem. Branch main @ 7199845 (or wherever the
+session before this lands; check `git rev-parse main`). bot-staging
+running aggressive_mode on 4 live feeds since 2026-05-08 22:26:15 UTC.
+Pickup any time after 24h elapsed (2026-05-09 22:26:15 UTC); ideally
+at-or-after 48h elapsed (2026-05-10 22:26:15 UTC) which is the
+committed gate review point.
+
+[Phase 5.7 closed GREEN at e43b77c → phase-5-pass tag. Phase 11.A
+(spot_aware paper-soak) is the post-tag work. Phase 11.A.2 is the
+"fire on every window" experiment; gate criteria locked in
+runbooks/decisions/aggressive-mode-2026-05-09.md. This session is
+pure execution against those criteria + the decision + the cleanup.
+Verify state before driving:
+
+  ssh -i ~/Downloads/LightsailDefaultKey-eu-west-1.pem -p 2222 ops@108.132.51.116
+  systemctl is-active bot-staging.service tg-alerter.service grafana-agent.service litestream.service  # all active
+  journalctl -u bot-staging.service --no-pager --since "24 hours ago" | grep -cE "Traceback|Exception|ERROR|CRITICAL"  # = 0
+  redis-cli LLEN polybot:alerts polybot:alerts:dlq                                  # 0 / 0
+  ls /home/ops/polymarket-5m-bot/state/halt.sentinel                                # ENOENT
+  grep "^export SPOT_AWARE_" .envrc                                                  # confirms aggressive=1, delta_min=5, ev_min=0.003
+  systemctl show bot-staging.service -p ActiveEnterTimestamp                         # since 2026-05-08 22:26:15 UTC
+
+If any of those are off, STOP and reconcile before running the gate.]
+
+================================================================================
+CONTEXT ANCHORS  (read in order; do not skip)
+================================================================================
+
+ 1. /Users/hamad/Desktop/PolyMarket-5m/CLAUDE.md
+    — durable preferences, 10 anti-vibe rules, locked decisions index.
+
+ 2. /Users/hamad/Desktop/PolyMarket-5m/state/phases/phase-11-spot-aware.md
+    — phase tracker. Sub-phase 11.A.2 is active; "Path to 11.A.2 close"
+      section at bottom is your TODO list.
+
+ 3. /Users/hamad/Desktop/PolyMarket-5m/runbooks/decisions/aggressive-mode-2026-05-09.md
+    — THE source of truth for this session's gate criteria.
+      All five hard exit triggers + tightening plan + telemetry split.
+
+ 4. /Users/hamad/Desktop/PolyMarket-5m/runbooks/decisions/loose-start-2026-05-09.md
+    — context (subsumed by 11.A.2 but explains the relaxed knobs).
+
+ 5. /Users/hamad/Desktop/PolyMarket-5m/runbooks/incidents/2026-05-09-oracle-resolver-mismatch.md
+    — Chainlink vs Polymarket resolution-truth bug. Live VPS data still
+      has the wrong resolution; sync_staging.sh runs resolve_decisions.py
+      to correct on read. NEVER trust raw VPS resolution numbers.
+
+ 6. /Users/hamad/Desktop/PolyMarket-5m/design/spot_aware_strategy.md
+    — locked spec for the strategy + scaling roadmap §11. Read sections
+      §3 (trigger), §4 (tier filter), §5 (EV check), §9 (gate criteria).
+
+ 7. /Users/hamad/Desktop/PolyMarket-5m/state/sessions/2026-05-09-spot-aware-aggressive-launch.md
+    — full launch-session roll-up. Six commits, four bugs caught + fixed
+      mid-session. Strategy state at handoff.
+
+ 8. ~/.claude/projects/-Users-hamad-Desktop-PolyMarket-5m/memory/checkpoint_phase_11_a.md
+    — single-page hand-off with full state at session close.
+
+================================================================================
+BRANCH + HEAD
+================================================================================
+
+Branch:  main
+HEAD:    7199845 (or whatever the prior session ended at — verify with
+                  git log --oneline -1)
+Tag:     phase-5-pass at e43b77c (Phase 5 closed GREEN; do not change)
+                  Phase 11.A.2 will tag spot-aware-paper-pass on green
+Pushed:  yes, github.com/FalconAEZ/polymarket-5m-bot
+
+If a `claude/...` worktree already exists for this session under
+.claude/worktrees/, work there. Otherwise the main repo working tree is fine.
+
+================================================================================
+BOT STATE AT HANDOFF
+================================================================================
+
+bot-staging.service running spot_aware in aggressive_mode since
+2026-05-08 22:26:15 UTC. The committed env knobs (in VPS .envrc):
+
+  STRATEGY=spot_aware
+  SPOT_AWARE_DELTA_MIN_BPS=5
+  SPOT_AWARE_EV_MIN_DOLLARS=0.003
+  SPOT_AWARE_AGGRESSIVE_MODE=1
+  # Default SPOT_AWARE_LIMIT_BUFFER_USD=0.02
+
+Aggressive mode bypasses Δ_min, Δ_max, and EV gate. STILL ENFORCED:
+tier 85-100% rejected, tier <15% rejected, Δ≠0 alignment, fire-once-
+per-window. Fallback p_win=0.54 for sub-bucket Δ values.
+
+At launch+3.8h (vault closeout time): 52 fires / 43 filled / 23 won
+(47.9% WR) / +$39.51 / bankroll $1039.51. Per-tier 30-50% was running
+hot at 87.5% WR on n=10 — promising but statistically inconclusive.
+
+================================================================================
+PRE-FLIGHT  (do these BEFORE anything else)
+================================================================================
+
+[ ] cd /Users/hamad/Desktop/PolyMarket-5m
+[ ] git pull origin main                        → must include 7199845 or later
+[ ] git rev-parse HEAD                          → note this commit
+[ ] export PATH="$HOME/.local/bin:$PATH"
+[ ] make verify                                 → ruff + mypy --strict + pytest pass
+[ ] uv run lint-imports                         → 3 contracts kept
+[ ] SSH to VPS, verify bracketed commands at top of this prompt.
+[ ] If any check fails: STOP, diagnose, fix the discrepancy before running
+    the gate.
+
+================================================================================
+THE WORK — six steps
+================================================================================
+
+The plan: pull live data, run the gate, decide, execute the decision,
+clean up. The bot continues running through the audit; only the
+*aggressive* config gets touched if we revert.
+
+------------------------------------------------------------------------
+STEP 1 — Sync staging + verify clean
+------------------------------------------------------------------------
+
+  cd /Users/hamad/Desktop/PolyMarket-5m
+  bash runbooks/scripts/sync_staging.sh
+  # Pulls VPS state/decisions/, runs resolve_decisions.py against
+  # Polymarket Gamma, writes to state/staging/decisions/ atomically.
+  # Verify no errors. Last line should be the "open the dashboard with"
+  # message.
+
+  python3 -c "
+import json, datetime
+from pathlib import Path
+agg_start = datetime.datetime(2026, 5, 8, 22, 26, 15, tzinfo=datetime.timezone.utc)
+fired, settled = [], {}
+for p in sorted(Path('state/staging/decisions').glob('*.jsonl')):
+    if p.suffix == '.bak': continue
+    for line in p.read_text().splitlines():
+        if not line.strip(): continue
+        r = json.loads(line)
+        if r.get('kind') == 'fired': fired.append(r)
+        elif r.get('kind') == 'settled': settled[r['decision_id']] = r
+agg = [f for f in fired if f['decision_ts_ns'] >= int(agg_start.timestamp()*1e9)]
+filled = sum(1 for f in agg if (settled.get(f['decision_id']) or {}).get('fill_at_settle'))
+sett = sum(1 for f in agg if (settled.get(f['decision_id']) or {}).get('resolution'))
+won = sum(1 for f in agg if (settled.get(f['decision_id']) or {}).get('pnl_usd', 0) > 0)
+total = sum((settled.get(f['decision_id']) or {}).get('pnl_usd') or 0.0 for f in agg)
+elapsed = (datetime.datetime.now(datetime.timezone.utc) - agg_start).total_seconds() / 3600
+print(f'elapsed: {elapsed:.1f}h')
+print(f'fires: {len(agg)} filled: {filled} settled: {sett} won: {won}')
+print(f'WR: {100*won/max(sett,1):.1f}% PnL: \${total:+.2f}')
+print(f'fire-rate proj: {len(agg)*24/max(elapsed,0.01):.0f}/d')
+"
+
+This is your live-data baseline. Save the output for the gate-evidence file.
+
+------------------------------------------------------------------------
+STEP 2 — Author runbooks/gates/spot-aware-paper.sh
+------------------------------------------------------------------------
+
+This script does NOT exist yet. The handoff session deferred it to keep
+the bot soaking. Write it now.
+
+Pattern: parallel to runbooks/gates/phase-5.sh. Five criteria mapped to
+the runbooks/decisions/aggressive-mode-2026-05-09.md hard exit triggers:
+
+  1. Cumulative PnL (any rolling 24h) ≥ -$50      → from staged decisions
+  2. Fire rate (24h projected)        ≤ 350/day   → from staged decisions
+  3. Net WR (only if n≥100 settled)   ≥ 47%       → from staged decisions
+  4. Elapsed since aggressive launch  reportable  → vs 2026-05-08 22:26:15 UTC
+  5. (operational) services healthy   active     → SSH to VPS
+
+Each criterion: print the actual metric, the threshold, OK / BREACH /
+GATE-INACTIVE. Final verdict: PROMOTE (all OK) / REVERT (any breach) /
+REVIEW-DUE (48h elapsed regardless of breaches).
+
+Output goes to runbooks/gate-evidence/phase-11.a.2.txt via tee.
+
+Anti-vibe rule #2 says failing test → fix → green; for shell scripts
+the equivalent is: run it once, see what it reports, sanity-check
+against your manual python script in step 1.
+
+------------------------------------------------------------------------
+STEP 3 — Run the gate
+------------------------------------------------------------------------
+
+  bash runbooks/gates/spot-aware-paper.sh | tee runbooks/gate-evidence/phase-11.a.2.txt
+
+Read the output carefully. Log all five verdicts.
+
+------------------------------------------------------------------------
+STEP 4 — DECIDE
+------------------------------------------------------------------------
+
+Three branches, depending on gate output:
+
+A) ALL CRITERIA OK + ELAPSED ≥ 48h → PROMOTE
+   - Tag spot-aware-paper-pass at the audit commit.
+   - Update runbooks/decisions/aggressive-mode-2026-05-09.md with the
+     "promoted" status block.
+   - Lock the loose values as new baseline: keep .envrc as-is on VPS.
+   - Move to Phase 11.B planning (single-market real-money go/no-go,
+     gated on Phase 1B funding). Out of scope for this session.
+
+B) ANY HARD CRITERION BREACHED → REVERT
+   - SSH to VPS, edit .envrc to drop or set SPOT_AWARE_AGGRESSIVE_MODE=0.
+   - Optionally also drop the loose-start knobs (Δ_min, EV_min) to
+     return to design-doc defaults.
+   - Restart bot-staging.service; verify journal shows the new config.
+   - Write postmortem at
+     runbooks/postmortems/aggressive-mode-bust-<date>.md covering:
+     which trip wire fired, observed vs predicted PnL, whether the
+     edge looked partial-but-not-strong-enough, what next experiment
+     we should design.
+   - Decide: 11.A.1 (loose-start) baseline OR full revert to design-
+     doc defaults. Document in the postmortem.
+
+C) MIXED / NUANCED — e.g., aggregate PnL is bad but tier 30-50%
+   continued running hot, OR fire rate fine but WR <47% on big sample
+   → CONDITIONAL REVERT
+   - Document the nuance in
+     runbooks/decisions/aggressive-mode-postmortem-<date>.md.
+   - Propose a design follow-up: tier-restricted v2 (fire only in
+     30-50% and 50-70%) OR re-tighten Δ_min only.
+   - Revert aggressive flag; keep loose-start knobs running until the
+     follow-up design lands.
+   - Tag NOTHING. The strategy isn't promoted yet.
+
+------------------------------------------------------------------------
+STEP 5 — Vault closeout + memory checkpoint
+------------------------------------------------------------------------
+
+  - state/sessions/<today>-<slug>.md: full session note. Mirror the
+    structure of state/sessions/2026-05-09-spot-aware-aggressive-launch.md.
+    Capture the gate verdict, the decision branch taken, what shipped,
+    what's deferred.
+  - state/phases/phase-11-spot-aware.md: update the active sub-phase
+    table at top. If promoted: 11.A.2 → ✅. If reverted: 11.A.2 → 🛑
+    + link to postmortem.
+  - ~/.claude/projects/-Users-hamad-Desktop-PolyMarket-5m/memory/
+    checkpoint_phase_11_a.md: rewrite for the new live state (or add
+    a new checkpoint for whatever 11.B looks like).
+  - Update MEMORY.md index to point at the new checkpoint as "latest
+    live hand-off".
+
+------------------------------------------------------------------------
+STEP 6 — Commit + push
+------------------------------------------------------------------------
+
+  git add runbooks/gates/spot-aware-paper.sh \
+          runbooks/gate-evidence/phase-11.a.2.txt \
+          runbooks/decisions/<follow-up-doc>.md \
+          state/sessions/<new>.md \
+          state/phases/phase-11-spot-aware.md \
+          # plus any postmortem if revert
+  git commit -m "<phase-tag>(phase-11.a.2): aggressive-mode gate <PROMOTE|REVERT|MIXED>"
+  # On promote ONLY:
+  # git tag -a spot-aware-paper-pass -m "Phase 11.A.2 GREEN ..."
+  git push origin main --follow-tags
+
+Update the operator with a clear summary: what fired, what reverted (if
+any), what comes next.
+
+================================================================================
+ANTI-VIBE RULES — UNCHANGED
+================================================================================
+
+Same 10 rules in CLAUDE.md. Especially relevant for THIS session:
+
+- **Design doc before code (#1).** No new strategy code in this session.
+  If you decide on a tier-restricted v2, that's a future design doc, not
+  a knob flip.
+- **Bug → failing test → fix → green (#2).** N/A unless the gate audit
+  surfaces a sim-side bug you didn't expect.
+- **3-fix rule.** Three failed gate-script-fix iterations → stop and
+  write runbooks/incidents/<date>-gate-script-broken.md. Get sign-off
+  before continuing.
+- **Phase advances (#4) — DO NOT skip the evidence capture.** Even
+  on PROMOTE, the runbooks/gate-evidence/phase-11.a.2.txt file MUST
+  be committed. Tag by hand only when you've SEEN all five verdicts.
+- **External calls behind interfaces (#7).** N/A.
+- **No TODO/FIXME/hack** in committed code. Use icebox issues.
+
+================================================================================
+HARD LIMITS
+================================================================================
+
+- Cumulative Anthropic spend so far: $0.405 (Phase 3 only).
+  This session adds $0 (no LLM calls).
+- Bankroll: $1,000 paper (locked decision #10). Don't promote anything
+  whose cumulative PnL crossed -$150 during the soak.
+- bot.service stays DISABLED (Phase 6 stub).
+- Funder key NEVER goes to the VPS.
+- The 30-50% tier looking hot at 87.5% WR on n=10 is NOT a license to
+  pivot the strategy. n must be ≥40 in that tier for any conclusion.
+
+================================================================================
+SESSION BOUNDARY — ENDS WHEN ONE OF
+================================================================================
+
+(a) Gate executed; decision taken (promote / revert / mixed); vault
+    updated; commit pushed; tag applied (if PROMOTE).            ✅ full
+(b) Gate executed; decision deferred to operator (e.g., MIXED case
+    where the right follow-up needs a fresh design doc you don't
+    want to author solo).                                         ✅ partial
+(c) Hard blocker — gate script three-fix-failed, can't compute
+    reliable verdict, etc. → runbooks/incidents/<date>-<slug>.md, abort.  🛑
+(d) Context ≥ 60% before completion → close out what's green, write
+    a partial checkpoint, stop.                                   ⏸
+
+================================================================================
+FOUR REMINDERS
+================================================================================
+
+1. **The bot keeps running through this audit.** Don't restart
+   bot-staging.service unless you're executing a REVERT. The aggregate
+   metrics keep accumulating during the audit too, which is fine.
+
+2. **The 30-50% tier was looking hot at handoff but n=10 is too small
+   to claim edge.** Don't let a continuing strong run there override
+   the 5 hard exit criteria. They're the gate; tier-level performance
+   is informational.
+
+3. **Polymarket-truth resolution is correct in
+   state/staging/decisions/, but VPS-side
+   /home/ops/polymarket-5m-bot/state/decisions/ is still oracle-truth.**
+   Don't compute aggregate stats from raw VPS data; always go through
+   sync_staging + the resolved staging dir.
+
+4. **A separate session is queued at phase-prompts/dashboard-overhaul.txt
+   for full UI/UX redesign of the dashboard.** Operator brings demo
+   screenshots in that session. NOT THIS SESSION'S SCOPE.
+
+================================================================================
+HAND-OFF SIGNATURE
+================================================================================
+
+Previous session closed at HEAD 7199845 on `main`. Pushed to
+github.com/FalconAEZ/polymarket-5m-bot.
+
+bot-staging.service active and firing aggressive-mode spot_aware since
+2026-05-08 22:26:15 UTC. 47.9% blended WR / +$39.51 PnL / 96% fill
+rate at handoff (3.8h elapsed). 30-50% tier running hot but small-n.
+
+Phase 5 GREEN (tagged). Phase 11.A.2 ⏳ active; gate at this session.
+This session: run the gate. Decide. Execute. Tag if promote. Vault.
+Push.
