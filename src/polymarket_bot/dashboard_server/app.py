@@ -21,6 +21,12 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from polymarket_bot.dashboard.loaders import load_decisions
+from polymarket_bot.dashboard_server.resolver_loop import (
+    ResolverConfig,
+    ResolverState,
+    cancel_resolver_task,
+    spawn_resolver_task,
+)
 from polymarket_bot.dashboard_server.state import (
     DECISIONS_SUBDIR,
     UpstreamCache,
@@ -65,13 +71,18 @@ async def lifespan(app: FastAPI) -> Any:
         state_dir_resolver=_resolve_current_window_side,
         on_update=on_update,
     )
+    resolver_state = ResolverState()
+    resolver_task = spawn_resolver_task(_state_dir(), resolver_state, config=ResolverConfig())
     app.state.upstream_cache = cache
     app.state.on_update = on_update
     app.state.upstream_tasks = tasks
+    app.state.resolver_state = resolver_state
+    app.state.resolver_task = resolver_task
     try:
         yield
     finally:
         await cancel_upstream_tasks(tasks)
+        await cancel_resolver_task(resolver_task)
 
 
 app = FastAPI(title="Polymarket bot dashboard v3", lifespan=lifespan)

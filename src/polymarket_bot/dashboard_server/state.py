@@ -35,6 +35,7 @@ from polymarket_bot.dashboard.rtt_loader import load_provider_rtt
 from polymarket_bot.dashboard.streaks import compute_streak
 
 DECISIONS_SUBDIR = "decisions"
+RESOLVED_DECISIONS_SUBDIR = "decisions-resolved"
 WINDOW_DURATION_S: int = 300
 # Surface "decisions stale" as an incident when the most recent fired
 # decision is older than this AND the bot process is still alive — that
@@ -264,7 +265,19 @@ def snapshot(
     capture, paper = load_process_status(state_dir)
     snap: HealthSnapshot | None = load_feeds_health(state_dir)
     since = (now - timedelta(days=decisions_lookback_days)).strftime("%Y-%m-%d")
-    rows = load_decisions(state_dir / DECISIONS_SUBDIR, since_utc_date=since)
+    # Prefer the Polymarket-truth resolved dir (written by the dashboard
+    # server's resolver_loop) over the bot's raw oracle-truth decisions.
+    # Fallback to raw if the resolved dir is missing or empty so the
+    # dashboard renders SOMETHING during the brief warm-up after restart
+    # or if the resolver loop is disabled. truth_source is surfaced on
+    # the snapshot so the operator-facing panel can label the PnL.
+    resolved_dir = state_dir / RESOLVED_DECISIONS_SUBDIR
+    rows = load_decisions(resolved_dir, since_utc_date=since)
+    if rows:
+        truth_source = "polymarket"
+    else:
+        rows = load_decisions(state_dir / DECISIONS_SUBDIR, since_utc_date=since)
+        truth_source = "oracle" if rows else "unknown"
 
     bankroll = load_bankroll(rows)
     agg = aggregate_pnl(rows)
@@ -349,6 +362,7 @@ def snapshot(
         "schema_version": 1,
         "now_utc_iso": now.isoformat(),
         "now_utc_ns": int(now.timestamp() * 1_000_000_000),
+        "decisions_truth_source": truth_source,
         "mode": {
             "label": mode_label,
             "tone": mode_tone,
