@@ -1,0 +1,48 @@
+============================================================================
+Phase 11.A.2 gate — SpotAwareStrategy aggressive-mode
+  started:           2026-05-09T21:12:15Z
+  branch:            claude/jovial-hermann-7e103f
+  head:              ad26a7c67d22be5da950a144d76398613aa800b8
+  vps:               ops@108.132.51.116 (port 2222)
+  aggressive launch: 2026-05-08T22:26:15Z
+============================================================================
+
+--- audit data load ---
+  raw audit: {"elapsed_h": 22.766765691944443, "agg_window_h": 24.01283402527778, "n_fires": 292, "n_filled": 281, "n_won": 142, "n_lost": 139, "wr_denom": 281, "wr_pct": 50.5338078291815, "total_pnl": 26.170591916988037, "fire_rate_per_day": 291.84393614776303, "worst_24h_pnl": -14.914695493700172}
+
+--- #1. Cumulative PnL (worst rolling 24h) ≥ -$50 ---
+    worst rolling 24h PnL = $-14.914695493700172
+    cumulative PnL (full window) = $26.170591916988037
+  [#1 OK] rolling 24h PnL within -$50 floor
+
+--- #2. Fire rate ≤ 350/day ---
+    fire rate = 291.84393614776303/day  (n=292 over 22.766765691944443h aggressive window)
+  [#2 OK] fire rate within 350/day cap
+
+--- #3. Net WR ≥ 47% (only if n_settled ≥ 100) ---
+    net WR = 50.5338078291815%  (n=281 filled+settled)
+  [#3 OK] net WR within 47% floor
+
+--- #4. Elapsed since aggressive launch ---
+    elapsed = 22.766765691944443h
+  [#4 INFO] < 24h elapsed (pre-pickup; verdict is informational)
+
+--- #5. Services healthy (SSH probe) ---
+    services (bot-staging tg-alerter grafana-agent litestream): active active active active 
+    bot-staging exception count (24h): 0
+  [#5 OK] services active + zero unhandled exceptions in 24h
+
+============================================================
+  Verdict
+============================================================
+  OK  #1  rolling 24h PnL within -$50 floor
+  OK  #2  fire rate within 350/day cap
+  OK  #3  net WR within 47% floor
+  INFO  #4  < 24h elapsed (pre-pickup; verdict is informational)
+  OK  #5  services active + zero unhandled exceptions in 24h
+
+  OK:     4
+  BREACH: 0
+
+  PHASE 11.A.2 GATE: DEFER (< 24h elapsed; verdicts are informational)
+  No binding promote/revert in this run.
