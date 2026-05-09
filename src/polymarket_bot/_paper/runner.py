@@ -105,6 +105,11 @@ class PaperRunner:
         self._instant_settle_timeout_s = instant_settle_timeout_s
         self._instant_settle_interval_s = instant_settle_interval_s
         self._gamma_timeout_count = 0
+        # Background-settle bookkeeping. Per the 2026-05-09 instant-settle
+        # incident postmortem: settle is fire-and-forget, snapshot-driven, so
+        # the main loop can keep pulling from the queue while gamma polls.
+        # Shutdown awaits this set so settled records aren't lost on stop.
+        self._pending_settles: set[asyncio.Task[None]] = set()
 
     def _alert(self, level: Level, message: str, **fields: str | int | float) -> None:
         try:
@@ -178,6 +183,15 @@ class PaperRunner:
             for t in tasks:
                 t.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
+            # Wait for in-flight background settle tasks before closing the
+            # log. Snapshot the set first because each task's done_callback
+            # discards itself from the live set, which would mutate during
+            # iteration. asyncio.gather returns_exceptions so a single bad
+            # settle doesn't abort the wait.
+            if self._pending_settles:
+                pending = list(self._pending_settles)
+                LOG.info("awaiting %d in-flight settle tasks", len(pending))
+                await asyncio.gather(*pending, return_exceptions=True)
             self._log.close()
 
     async def _on_record(self, record: Record) -> None:
@@ -229,7 +243,18 @@ class PaperRunner:
                 kind="close",
             )
         )
-        await self._settle_current_window()
+        # Snapshot state for the closing window BEFORE start_window resets
+        # it for the next window, then fire-and-forget the settle. The main
+        # loop returns to processing records immediately while gamma polls.
+        # Per runbooks/incidents/2026-05-09-instant-settle-queue-overflow.md.
+        snap = self._snapshot_for_settle()
+        if snap is not None:
+            task = asyncio.create_task(
+                self._settle_window_background(snap),
+                name=f"settle-{snap.window_ts}",
+            )
+            self._pending_settles.add(task)
+            task.add_done_callback(self._pending_settles.discard)
         self._state.start_window(new_window_ts)
         await self._strategy.on_event(
             WindowBoundary(
@@ -314,22 +339,42 @@ class PaperRunner:
         self._state.settled_fill = fill
         self._state.pending_decision = None
 
-    async def _settle_current_window(self) -> None:
-        # State-mutation invariant (per audit 2026-05-10): this method
-        # awaits via asyncio.to_thread for the gamma poll, so other
-        # coroutines CAN run during the await. However, the runner's
-        # event-pump is SINGLE-TASKED through `await self._on_record(record)`
-        # in `run()` -- no other coroutine on this runner mutates `self._state`.
-        # The ONLY mutator paths (`_on_event`, `_maybe_emit_boundaries`,
-        # `_on_decision`, `_state.start_window`) all run sequentially under
-        # the same `_on_record` await chain. Therefore reading state here
-        # while awaiting is safe by construction. If this invariant is
-        # ever violated by adding a parallel mutator (e.g., a separate
-        # task that touches _state), this method will need explicit
-        # synchronization.
+    def _snapshot_for_settle(self) -> _SettleSnapshot | None:
+        # Capture everything the settle path needs for the closing window
+        # BEFORE start_window resets self._state for the next window. The
+        # snapshot is the only state the background task reads, so settle
+        # is decoupled from any future mutation.
         s = self._state
         if s.window_ts is None or s.decision_id is None:
-            return
+            return None
+        return _SettleSnapshot(
+            window_ts=s.window_ts,
+            decision_id=s.decision_id,
+            open_oracle=s.open_oracle,
+            close_oracle=s.close_oracle,
+            side=s.side,
+            settled_fill=s.settled_fill,
+        )
+
+    async def _settle_window_background(self, snap: _SettleSnapshot) -> None:
+        # Top-level guard: a settle failure (gamma raise, log raise, etc.)
+        # must NEVER propagate to the main event loop. Log + alert and
+        # return; the runner stays alive for the next window.
+        try:
+            await self._do_settle(snap)
+        except Exception as exc:
+            LOG.exception("settle background task failed for window %s", snap.window_ts)
+            try:
+                self._alert(
+                    Level.CRITICAL,
+                    f"settle task failed: {exc}",
+                    decision_id=snap.decision_id,
+                    window_ts=snap.window_ts,
+                )
+            except Exception:
+                LOG.exception("alert publish raised inside settle exception handler")
+
+    async def _do_settle(self, snap: _SettleSnapshot) -> None:
         resolution: Side | None = None
         resolution_source: str | None = None
 
@@ -338,15 +383,15 @@ class PaperRunner:
         # local fallback (60s -> 1-3s typical). Falls through to Chainlink
         # if Gamma times out or instant-settle is disabled.
         #
-        # CRITICAL: poll_gamma_for_resolution is synchronous (sleep+http).
-        # It MUST be wrapped in asyncio.to_thread so the runner's event
-        # loop keeps processing incoming market events for the NEXT window
-        # while we wait for Gamma. Without this, the bot freezes for up to
-        # ``timeout_s`` seconds at every window boundary.
+        # poll_gamma_for_resolution is synchronous (sleep+http) so we
+        # asyncio.to_thread it. Because this whole method runs as a
+        # fire-and-forget background task created by _maybe_emit_boundaries,
+        # the main runner loop is NOT blocked on this await — it returned
+        # to queue.get() the instant the task was scheduled.
         if self._instant_settle_enabled and self._gamma_client is not None:
             truth = await asyncio.to_thread(
                 poll_gamma_for_resolution,
-                s.window_ts,
+                snap.window_ts,
                 client=self._gamma_client,
                 timeout_s=self._instant_settle_timeout_s,
                 interval_s=self._instant_settle_interval_s,
@@ -364,42 +409,34 @@ class PaperRunner:
                         "instant-settle gamma timeout #%d for window %s; "
                         "falling back to chainlink-local",
                         self._gamma_timeout_count,
-                        s.window_ts,
+                        snap.window_ts,
                     )
                     self._alert(
                         Level.WARN,
                         f"instant-settle gamma timeout x{self._gamma_timeout_count}; "
                         "falling back to chainlink-local",
                         gamma_timeout_total=self._gamma_timeout_count,
-                        window_ts=s.window_ts,
+                        window_ts=snap.window_ts,
                     )
 
         # Chainlink-local fallback — also the legacy behavior when
         # instant-settle is disabled.
-        if resolution is None and s.open_oracle is not None and s.close_oracle is not None:
-            resolution = actual_resolution(s.window_ts, s.open_oracle, s.close_oracle)
-            # Mark the source so dashboards / postmortems know this was
-            # the fallback, not the primary truth path. Only set when the
-            # instant-settle path was actually attempted -- otherwise leave
-            # source=None for backward compat with legacy callers.
+        if resolution is None and snap.open_oracle is not None and snap.close_oracle is not None:
+            resolution = actual_resolution(snap.window_ts, snap.open_oracle, snap.close_oracle)
             if self._instant_settle_enabled:
                 resolution_source = "chainlink-local-fallback"
 
-        fill = s.settled_fill
+        fill = snap.settled_fill
         pnl = 0.0
-        if fill is not None and resolution is not None and s.side is not None:
-            pnl = _realised_pnl(fill, resolution == s.side)
-        # OSError guard: same rationale as _on_decision (audit 2026-05-10).
-        # The settled record can be regenerated post-hoc from the fired
-        # record's data via gamma_resolver, so dropping a settle write on
-        # OSError loses less than dropping a fired write. Still alerted.
+        if fill is not None and resolution is not None and snap.side is not None:
+            pnl = _realised_pnl(fill, resolution == snap.side)
         try:
             self._log.record_settled(
-                decision_id=s.decision_id,
-                window_ts=s.window_ts,
+                decision_id=snap.decision_id,
+                window_ts=snap.window_ts,
                 settled_ts_ns=self._clock_ns(),
-                open_oracle=s.open_oracle,
-                close_oracle=s.close_oracle,
+                open_oracle=snap.open_oracle,
+                close_oracle=snap.close_oracle,
                 resolution=resolution,
                 fill_at_settle=fill,
                 pnl_usd=pnl,
@@ -410,8 +447,8 @@ class PaperRunner:
             self._alert(
                 Level.CRITICAL,
                 f"decision_log.record_settled raised OSError; settle dropped: {exc}",
-                decision_id=s.decision_id,
-                window_ts=s.window_ts,
+                decision_id=snap.decision_id,
+                window_ts=snap.window_ts,
             )
 
     def _snapshot_for_log(self, decision: Decision) -> dict[str, float | None]:
@@ -426,6 +463,21 @@ class PaperRunner:
             "best_ask": book.best_ask if book is not None else None,
             "ask_size_top": book.ask_size_top if book is not None else None,
         }
+
+
+@dataclass
+class _SettleSnapshot:
+    """Frozen view of the closing window's state, captured at boundary
+    crossing and read by the fire-and-forget background settle task. The
+    snapshot is the only state the settle path touches, so settle is
+    decoupled from any future mutation of the live `_RunState`."""
+
+    window_ts: int
+    decision_id: str
+    open_oracle: float | None
+    close_oracle: float | None
+    side: Side | None
+    settled_fill: Fill | None
 
 
 @dataclass
