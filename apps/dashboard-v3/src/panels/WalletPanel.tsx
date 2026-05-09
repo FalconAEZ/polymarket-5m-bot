@@ -1,7 +1,7 @@
 import { motion } from "framer-motion"
 import { useDashboard } from "../store/dashboardStore"
 import { DigitRoll } from "../motion/DigitRoll"
-import { fmtUsd, fmtUsdPlain, fmtPct, fmtInt, fmtAge, fmtPctRaw } from "../lib/format"
+import { fmtUsd, fmtUsdPlain, fmtPct, fmtInt, fmtAge, fmtDeltaPct } from "../lib/format"
 import { cn } from "../lib/cn"
 import { Panel } from "./_Panel"
 
@@ -60,7 +60,7 @@ export function WalletPanel() {
                 : "text-bad bg-[rgba(255,92,92,0.10)]",
             )}
           >
-            {delta >= 0 ? "▲" : "▼"} {fmtPctRaw(s.bankroll.delta_pct, 2).replace("+", "")}
+            {delta >= 0 ? "▲" : "▼"} {fmtDeltaPct(s.bankroll.delta_pct).replace("+", "").replace("-", "")}
           </motion.span>
           <span className="text-text-muted">· {elapsedLabel}</span>
         </div>
