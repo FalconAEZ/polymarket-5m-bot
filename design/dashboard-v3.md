@@ -593,9 +593,9 @@ Wants=network-online.target
 Type=simple
 User=ops
 Group=ops
-WorkingDirectory=/home/ops/polymarket-bot
+WorkingDirectory=/home/ops/polymarket-5m-bot
 Environment=PATH=/home/ops/.local/bin:/usr/local/bin:/usr/bin:/bin
-Environment=PMB_DASH_STATE_DIR=/home/ops/polymarket-bot/state
+Environment=PMB_DASH_STATE_DIR=/home/ops/polymarket-5m-bot/state
 Environment=PMB_DASHBOARD_HOST=127.0.0.1
 Environment=PMB_DASHBOARD_PORT=8505
 
@@ -603,7 +603,7 @@ ExecStart=/home/ops/.local/bin/uv run --quiet python -m polymarket_bot.dashboard
 
 Restart=on-failure
 RestartSec=10s
-StandardOutput=append:/home/ops/polymarket-bot/state/dashboard-server.log
+StandardOutput=append:/home/ops/polymarket-5m-bot/state/dashboard-server.log
 StandardError=inherit
 
 MemoryMax=512M
@@ -611,7 +611,7 @@ CPUQuota=50%
 
 NoNewPrivileges=true
 ProtectSystem=strict
-ReadWritePaths=/home/ops/polymarket-bot/state
+ReadWritePaths=/home/ops/polymarket-5m-bot/state
 ProtectHome=read-only
 
 [Install]

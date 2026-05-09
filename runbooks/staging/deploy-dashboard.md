@@ -20,7 +20,7 @@ ssh -p 2222 ops@108.132.51.116
 ## Step 2 — Pull the latest code + new deps
 
 ```bash
-cd /home/ops/polymarket-bot
+cd /home/ops/polymarket-5m-bot
 git pull origin main           # or whichever branch the v2 work landed on
 uv sync                        # installs streamlit-shadcn-ui, streamlit-aggrid, plotly
 ```
@@ -32,7 +32,7 @@ uv sync                        # installs streamlit-shadcn-ui, streamlit-aggrid,
 
 ```bash
 PMB_DASH_V2=1 \
-PMB_DASH_STATE_DIR=/home/ops/polymarket-bot/state \
+PMB_DASH_STATE_DIR=/home/ops/polymarket-5m-bot/state \
 uv run streamlit run scripts/dashboard.py \
     --server.port=8503 \
     --server.address=127.0.0.1 \
@@ -56,8 +56,8 @@ pkill -f "streamlit run scripts/dashboard.py"
 ## Step 4 — Install the systemd units
 
 ```bash
-sudo cp /home/ops/polymarket-bot/runbooks/staging/streamlit-dashboard.service /etc/systemd/system/
-sudo cp /home/ops/polymarket-bot/runbooks/staging/rtt-collector.service /etc/systemd/system/
+sudo cp /home/ops/polymarket-5m-bot/runbooks/staging/streamlit-dashboard.service /etc/systemd/system/
+sudo cp /home/ops/polymarket-5m-bot/runbooks/staging/rtt-collector.service /etc/systemd/system/
 sudo systemctl daemon-reload
 ```
 
@@ -67,7 +67,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now rtt-collector.service
 sleep 30           # let it write a few samples
 sudo systemctl status rtt-collector.service --no-pager
-tail -n 5 /home/ops/polymarket-bot/state/provider_rtt.jsonl
+tail -n 5 /home/ops/polymarket-5m-bot/state/provider_rtt.jsonl
 ```
 
 Expect: 5 lines per tick (one per provider), `ok: true` for at least

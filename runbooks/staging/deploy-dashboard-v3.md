@@ -17,7 +17,7 @@
 
 ```bash
 ssh -p 2222 ops@108.132.51.116          # or your usual command
-cd /home/ops/polymarket-bot
+cd /home/ops/polymarket-5m-bot
 git fetch origin
 git checkout claude/trusting-spence-03c165
 git pull
@@ -30,7 +30,7 @@ uv sync                                  # installs fastapi, uvicorn, aiofiles
 cd apps/dashboard-v3
 npm ci                                   # install deps from package-lock
 npm run build                            # produces apps/dashboard-v3/dist/
-cd /home/ops/polymarket-bot
+cd /home/ops/polymarket-5m-bot
 ls -la apps/dashboard-v3/dist/index.html # expect: file present
 ```
 
@@ -43,7 +43,7 @@ sudo apt update && sudo apt install -y nodejs npm
 ## Step 3 — Smoke-test locally on the VPS
 
 ```bash
-PMB_DASH_STATE_DIR=/home/ops/polymarket-bot/state \
+PMB_DASH_STATE_DIR=/home/ops/polymarket-5m-bot/state \
   uv run python -m polymarket_bot.dashboard_server &
 
 sleep 4
@@ -55,7 +55,7 @@ pkill -f "polymarket_bot.dashboard_server"
 ## Step 4 — Install the systemd unit
 
 ```bash
-sudo cp /home/ops/polymarket-bot/runbooks/staging/dashboard-server.service \
+sudo cp /home/ops/polymarket-5m-bot/runbooks/staging/dashboard-server.service \
         /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now dashboard-server.service

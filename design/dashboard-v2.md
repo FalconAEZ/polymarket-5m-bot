@@ -656,7 +656,7 @@ in the operator's browser, no laptop-side measurement.
 
 - **No laptop-side state rsync.** When the dashboard runs on the VPS,
   the bot's state IS the local state. `PMB_DASH_STATE_DIR` points at
-  `/home/ops/polymarket-bot/state`. The two-stage decisions.raw/ →
+  `/home/ops/polymarket-5m-bot/state`. The two-stage decisions.raw/ →
   resolve → decisions/ pipeline still runs (it lives in the bot, not
   the dashboard) — no rsync hop.
 - **No browser-side JS provider pinger.** `provider_rtt.rtt_widget_html()`

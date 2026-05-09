@@ -8,12 +8,12 @@ Wants=network-online.target
 Type=simple
 User=ops
 Group=ops
-WorkingDirectory=/home/ops/polymarket-bot
+WorkingDirectory=/home/ops/polymarket-5m-bot
 
 # uv lives under the ops user's local bin (per Phase 5.2 install).
 Environment=PATH=/home/ops/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=PMB_DASH_V2=1
-Environment=PMB_DASH_STATE_DIR=/home/ops/polymarket-bot/state
+Environment=PMB_DASH_STATE_DIR=/home/ops/polymarket-5m-bot/state
 
 ExecStart=/home/ops/.local/bin/uv run --quiet streamlit run scripts/dashboard.py \
     --server.port=8503 \
@@ -29,7 +29,7 @@ Restart=on-failure
 RestartSec=10s
 
 # Capture output for post-mortem; rotate via existing logrotate.
-StandardOutput=append:/home/ops/polymarket-bot/state/streamlit-dashboard.log
+StandardOutput=append:/home/ops/polymarket-5m-bot/state/streamlit-dashboard.log
 StandardError=inherit
 
 # Resource limits — small footprint, plenty for a single-page dashboard.
@@ -40,7 +40,7 @@ CPUQuota=50%
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
-ReadWritePaths=/home/ops/polymarket-bot/state
+ReadWritePaths=/home/ops/polymarket-5m-bot/state
 ProtectHome=read-only
 ProtectKernelTunables=true
 ProtectKernelModules=true

@@ -8,10 +8,10 @@ Wants=network-online.target
 Type=simple
 User=ops
 Group=ops
-WorkingDirectory=/home/ops/polymarket-bot
+WorkingDirectory=/home/ops/polymarket-5m-bot
 
 Environment=PATH=/home/ops/.local/bin:/usr/local/bin:/usr/bin:/bin
-Environment=PMB_DASH_STATE_DIR=/home/ops/polymarket-bot/state
+Environment=PMB_DASH_STATE_DIR=/home/ops/polymarket-5m-bot/state
 
 # Pings 5 providers every 10s, appends to state/provider_rtt.jsonl. The
 # dashboard reads from that file via load_provider_rtt(). Independent of
@@ -22,7 +22,7 @@ ExecStart=/home/ops/.local/bin/uv run --quiet python -m polymarket_bot.dashboard
 Restart=always
 RestartSec=15s
 
-StandardOutput=append:/home/ops/polymarket-bot/state/rtt-collector.log
+StandardOutput=append:/home/ops/polymarket-5m-bot/state/rtt-collector.log
 StandardError=inherit
 
 # Tiny footprint — 5 HTTP pings every 10s.
@@ -33,7 +33,7 @@ CPUQuota=20%
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
-ReadWritePaths=/home/ops/polymarket-bot/state
+ReadWritePaths=/home/ops/polymarket-5m-bot/state
 ProtectHome=read-only
 ProtectKernelTunables=true
 ProtectKernelModules=true
