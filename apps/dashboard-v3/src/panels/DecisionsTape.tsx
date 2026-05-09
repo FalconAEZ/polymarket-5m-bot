@@ -1,6 +1,6 @@
 import { motion, AnimatePresence } from "framer-motion"
 import { useDashboard } from "../store/dashboardStore"
-import { fmtUsd, fmtPctRaw } from "../lib/format"
+import { fmtUsd } from "../lib/format"
 import { cn } from "../lib/cn"
 import { Panel } from "./_Panel"
 import type { DecisionTapeRow } from "../store/types"
@@ -120,7 +120,7 @@ function DecisionRow({ d }: { d: DecisionTapeRow }) {
       </td>
       <td
         className={cn(
-          "px-2 py-0.5 text-right",
+          "px-2 py-0.5 text-right tabular-nums",
           d.delta_bps === null
             ? "text-text-muted"
             : d.delta_bps >= 0
@@ -128,7 +128,10 @@ function DecisionRow({ d }: { d: DecisionTapeRow }) {
               : "text-bad",
         )}
       >
-        {d.delta_bps !== null ? fmtPctRaw(d.delta_bps / 10000, 2).replace("%", "") : "—"}
+        {/* Display raw basis points (typical [-50..+50] bps range). */}
+        {d.delta_bps !== null
+          ? (d.delta_bps >= 0 ? "+" : "") + d.delta_bps.toFixed(1)
+          : "—"}
       </td>
       <td className="px-2 py-0.5 text-right text-text-secondary">
         {d.p_win !== null ? d.p_win.toFixed(3) : "—"}
