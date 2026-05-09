@@ -13,18 +13,28 @@ tags: [moc, index, vault-root]
 | Item | State |
 |---|---|
 | Bootstrap | ✅ done |
-| [[phases/phase-A-bonereaper\|Phase A — Bonereaper study]] | ✅ closed, **ABORT** |
-| [[phases/phase-0-foundations\|Phase 0 — Foundations]] | ✅ closed, gate green |
-| [[phases/phase-1-wallet-auth\|Phase 1A — Wallet & Auth (no-money)]] | ✅ closed, gate green at `1537a18`, tag `phase-1a-pass` |
+| [[phases/phase-A-bonereaper\|Phase A — Bonereaper study]] | ✅ closed, **ABORT** (52.65% WR vs 60% gate) |
+| [[phases/phase-0-foundations\|Phase 0 — Foundations]] | ✅ closed, tag `phase-0-pass` |
+| [[phases/phase-1-wallet-auth\|Phase 1A — Wallet & Auth (no-money)]] | ✅ closed, tag `phase-1a-pass` at `1537a18` |
 | Phase 1B — Wallet funding + first $5 order | ⏸ deferred to head of Phase 6 per [[decisions/README#decision-20\|decision #20]] |
-| [[phases/phase-2-data-plane\|Phase 2 — Read-only data plane]] | 🟡 in design (prompt staged at `~/Desktop/phase-2-prompt.txt`) |
-| Phase 3-8 | ⏳ not started |
+| [[phases/phase-2-data-plane\|Phase 2 — Read-only data plane]] | ✅ closed |
+| Phase 3 — Backtest + LLM A/B | ✅ closed, tag `phase-3-pass`, LLM A/B verdict CUT (latency/cost gates) |
+| Phase 4 — Paper trading on live venue | ✅ closed |
+| Phase 4.5 — Streamlit ops dashboard | ✅ closed at `c1ff257` |
+| Phase 5 — VPS production deploy + alerter + litestream | ✅ closed, tag `phase-5-pass` at `e43b77c` |
+| [[phases/phase-11-spot-aware\|Phase 11.A.2 — spot_aware aggressive-mode soak]] | 🟡 **48h gate at 2026-05-10 22:26:15 UTC** (~32h remaining at 2026-05-09 14:30 UTC) |
+| Phase 11.A.X.B — Dashboard v3 (FastAPI + React) | ✅ closed 2026-05-09; orphan-FD incident contained + 3-tier defense in depth |
+| Phase 11.B+ | ⏳ depends on 11.A.2 gate outcome |
 
-Latest commit: `1537a18`. Tags: `phase-0-pass`, `phase-1a-pass`, `study-A-final`, `study-A-abort`.
+Latest commit (branch `claude/trusting-spence-03c165`): `d32d1d5` — CumulativePnlPanel ships. Six commits ahead of `76e104b` (the prior session tip), pushed to origin.
+
+Bot status: `bot-staging.service` active on VPS (Lightsail eu-west-1, `108.132.51.116:2222`), running `spot_aware` in aggressive mode since 2026-05-08 22:26:15 UTC. Dashboard at `127.0.0.1:8505` via SSH tunnel (`make dash-tunnel`); React bundle `index-D6WMsd2r.js`. **Soak data preserved** through the 8.5h orphan-FD incident on 2026-05-09 — see [[postmortems/2026-05-09-orphan-fd-decisions]].
 
 Funder address: `0x512DA3825E69A8c19d2e0D00b66dd23d3ec95d22`. Signer address: `0x8d9759A73D65aD32cd858eb3AdE46ce56F5F2B4A`. Both public; keys live in age-encrypted backups + (Signer only) gitignored `.envrc`.
 
 Open operator-side cleanup: [[postmortems/2026-05-07-env-req-rtf-key-on-disk|env req.rtf still has the Signer privkey on disk]]; pending `rm`.
+
+**Next session:** `phase-prompts/phase-11.a-gate-2026-05-10.txt` — aggressive-mode 48h gate review. Decide promote / revert / postmortem against the criteria in `runbooks/decisions/aggressive-mode-2026-05-09.md`. Recommended: PR-merge `claude/trusting-spence-03c165` → `main` first so the gate tag lands on main.
 
 ## Quick links
 

@@ -141,16 +141,91 @@ and the full session note. Five bugs caught + fixed mid-session:
 - **No new locked decisions added this phase.** All knob adjustments
   are exploratory; revert to design-doc defaults if 11.A.2 fails.
 
+## Sub-phase 11.A.X.B — Dashboard v3 (FastAPI + React) shipped 2026-05-09
+
+Operator's observability layer for the live aggressive-mode soak. Built
+from scratch as `apps/dashboard-v3/` (React + Tailwind + lightweight-charts)
++ `src/polymarket_bot/dashboard_server/` (FastAPI; serves static dist + REST
+snapshot at `/api/state` + WS push at `/api/live`). Bound to `127.0.0.1:8505`
+on the VPS; SSH tunnel is the only access path. Unit:
+`runbooks/staging/dashboard-server.service`. Architecture locked in
+`design/dashboard-v3.md`.
+
+Branch: `claude/trusting-spence-03c165`. Six commits past `76e104b`:
+
+| commit | what |
+|---|---|
+| `ac80f9b` | **Incident response** — DecisionLog inode-detection self-heal, `resolve_decisions.py` refuses in-place mode, dashboard staleness wire, postmortem |
+| `8838545` | Phase A polish — chart bleed, decisions tape spillover, RTT thresholds 200/600 → 300/800, Chainlink endpoint cloudflare-eth.com (was llamarpc 403) |
+| `8254340` | Session note + launch.json `vps-tunnel-8505` entry |
+| `7657377` | AnimatedBook overflow clip + WalletPanel hero label "CUMULATIVE PNL · SINCE BOT START" |
+| `0885ea3` | DecisionsTape: Market column (window_ts) + open-window countdown (`M:SS left` / `settling…`) |
+| `d32d1d5` | **CumulativePnlPanel** — lightweight-charts BaselineSeries (green ≥ $0, red < $0), backend ships `cumulative_pnl_series` per snapshot |
+
+### The 2026-05-09 orphan-FD-decisions incident
+
+8.5 hours of dashboard blindness (04:14 → 12:48 UTC). The bot's append
+FDs on `state/decisions/{2026-05-08,2026-05-09}.jsonl` were orphaned by
+an atomic-rename writer (most likely `scripts/resolve_decisions.py` legacy
+single-arg in-place mode being run against the bot's live dir during the
+prior dashboard-v3 deploy session). The bot kept firing into the unlinked
+inodes; the dashboard read the frozen visible files. Real numbers were
+~3× what the dashboard reported.
+
+Recovery: `cat /proc/<bot-pid>/fd/{11,12}` → `state/decisions-recovered/`,
+stop bot, replace visible files, start bot. Zero decisions lost; ~3 min
+soak interruption across two restarts; gate clock preserved.
+
+Defense in depth, all landed in `ac80f9b`:
+- DecisionLog inode-stability check + best-effort orphan salvage to
+  `<path>.<utc-ts>.recovered`. 3 new regression tests.
+- `resolve_decisions.py` refuses in-place mode; rejects `src == dst`.
+- Dashboard `snapshot()` emits incident "decisions JSONL stale: last
+  fire <X> ago while bot alive" when the bot's most-recent decision is
+  older than `DECISIONS_STALE_THRESHOLD_S = 30 min` AND paper is alive.
+
+Full postmortem: `runbooks/incidents/2026-05-09-orphan-fd-decisions.md`
+(also mirrored at `state/postmortems/2026-05-09-orphan-fd-decisions.md`).
+
+### Deferred for the gate session or later
+
+- **Pipeline 0/0 FEEDS** (Phase A.5) — needs operator decision: (a) tiny
+  VPS-side `feeds_health.json` writer service, or (b) wire the existing
+  `_live.health.HealthAggregator` into `scripts/run_paper.py`. The 30-min
+  staleness wire covers the worst failure mode either option targets, so
+  this is comfort UX not safety-critical.
+- **Pre-existing flaky test** `tests/dashboard/test_rtt_loader.py::test_basic_round_trip`
+  — hardcoded NOW timestamp drifts past `lookback_s`. Spawned as a separate
+  task; unrelated to this work.
+- **iOS Safari visual confirmation** for chart-bleed + tape-spillover —
+  Chromium can't reproduce the original bugs; only operator's iPad can confirm.
+
+### Hand-off to phase-11.a-gate-2026-05-10
+
+Gate session can run from `claude/trusting-spence-03c165` directly — the
+gate is data-driven (reads decisions JSONL via `sync_staging.sh`, runs
+gate criteria in `runbooks/decisions/aggressive-mode-2026-05-09.md`); the
+dashboard + incident-response code do not affect strategy behaviour. The
+gate prompt's expected `main @ 7199845` is stale relative to the live VPS
+(VPS is on `d32d1d5` per `git log`). Recommended: PR-merge trusting-spence
+to main before the gate session so the tag (`spot-aware-paper-pass` /
+`spot-aware-paper-bust`) lands on main.
+
 ## See also
 
 - `design/spot_aware_strategy.md` + `pdfs/SPOT_AWARE_STRATEGY.pdf` —
   locked spec
+- `design/dashboard-v3.md` — v3 architecture (FastAPI + React + WS + 16 sections)
 - `runbooks/decisions/loose-start-2026-05-09.md` — first relax (subsumed)
 - `runbooks/decisions/aggressive-mode-2026-05-09.md` — current experiment
 - `runbooks/incidents/2026-05-09-oracle-resolver-mismatch.md` — Chainlink
   vs Polymarket bug
+- `runbooks/incidents/2026-05-09-orphan-fd-decisions.md` — the dashboard
+  blindness incident + 3-tier defense in depth
 - `runbooks/research/bonereaper-spot-vs-book-30d-2026-05-08.md` — prior
   table source
 - `state/phases/phase-5-vps.md` — predecessor phase (closed)
-- `state/sessions/2026-05-09-spot-aware-aggressive-launch.md` — launch
-  session full roll-up
+- `state/sessions/2026-05-09-spot-aware-aggressive-launch.md` — 11.A.2
+  launch session full roll-up
+- `state/sessions/2026-05-09-orphan-fd-incident-and-dashboard-polish.md`
+  — this session's full roll-up
