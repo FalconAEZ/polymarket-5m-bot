@@ -143,3 +143,25 @@ def test_snapshot_truth_source_unknown_when_both_dirs_empty(tmp_path: Path) -> N
     snap = snapshot(tmp_path)
     assert snap["decisions_truth_source"] == "unknown"
     assert snap["bankroll"]["delta_usd"] == 0.0
+
+
+def test_snapshot_pnl_by_day_returns_seven_buckets(state_dir: Path) -> None:
+    """pnl_by_day returns 7 days, newest first, including zero-settled days."""
+    snap = snapshot(state_dir)
+    assert "pnl_by_day" in snap
+    by_day = snap["pnl_by_day"]
+    assert len(by_day) == 7
+    # Newest first
+    dates = [d["date"] for d in by_day]
+    assert dates == sorted(dates, reverse=True)
+    # Each bucket has the expected shape
+    for bucket in by_day:
+        assert set(bucket.keys()) == {"date", "pnl_usd", "n_settled"}
+        assert isinstance(bucket["date"], str)
+        assert isinstance(bucket["pnl_usd"], int | float)
+        assert isinstance(bucket["n_settled"], int)
+    # The non-zero bucket matches the fixture (yesterday's -$5 trade)
+    nonzero = [b for b in by_day if b["n_settled"] > 0]
+    assert len(nonzero) == 1
+    assert nonzero[0]["pnl_usd"] == pytest.approx(-5.0)
+    assert nonzero[0]["n_settled"] == 1

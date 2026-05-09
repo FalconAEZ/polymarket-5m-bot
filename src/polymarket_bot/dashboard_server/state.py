@@ -217,6 +217,39 @@ def _today_pnl(rows: list[DecisionRow]) -> tuple[float | None, int]:
     return (sum(r.pnl_usd or 0.0 for r in settled_today), len(settled_today))
 
 
+def _pnl_by_day(rows: list[DecisionRow], *, n_days: int = 7) -> list[dict[str, Any]]:
+    """Per-UTC-day PnL bucket — supports the operator-asked "yesterday vs
+    today" view, which the LivePnlPanel "TODAY" deliberately doesn't show
+    (resets at 00:00 UTC). Returns the most recent ``n_days`` buckets,
+    newest first. Each bucket: date string ("YYYY-MM-DD"), pnl_usd,
+    n_settled. Days with zero settled decisions are still included so the
+    operator sees explicit zeros rather than missing rows."""
+    from collections import defaultdict
+
+    today = datetime.now(tz=UTC).date()
+    buckets_pnl: dict[str, float] = defaultdict(float)
+    buckets_n: dict[str, int] = defaultdict(int)
+    for r in rows:
+        if r.resolution is None or r.pnl_usd is None:
+            continue
+        key = r.decision_dt_utc.date().isoformat()
+        buckets_pnl[key] += r.pnl_usd
+        buckets_n[key] += 1
+
+    out: list[dict[str, Any]] = []
+    for offset in range(n_days):
+        d = today - timedelta(days=offset)
+        key = d.isoformat()
+        out.append(
+            {
+                "date": key,
+                "pnl_usd": buckets_pnl.get(key, 0.0),
+                "n_settled": buckets_n.get(key, 0),
+            }
+        )
+    return out
+
+
 def _best_tier_pnl(rows: list[DecisionRow]) -> tuple[str | None, float | None]:
     stats = per_tier_stats(rows)
     if not stats:
@@ -397,6 +430,7 @@ def snapshot(
             "pnl_usd": today_pnl_val,
             "n_settled": today_n,
         },
+        "pnl_by_day": _pnl_by_day(rows),
         "fire_rate": {
             "per_hour": rate_per_hour,
             "fires_24h": fires_24h,
