@@ -60,9 +60,20 @@ DEFAULT_LIMIT_BUFFER_USD = 0.02
 AGGRESSIVE_FALLBACK_P_WIN = 0.54
 
 
+_MIN_SANE_SPOT_USD = 1.0  # any BTC/ETH/SOL spot below this is bogus data
+
+
 def delta_bps(*, spot_now: float, window_open_spot: float) -> float:
-    """Δ_bps = 10000 * (St - S0) / S0. Returns 0 on zero-open-spot guard."""
-    if window_open_spot == 0.0:
+    """Δ_bps = 10000 * (St - S0) / S0. Returns 0 on bogus-open-spot guard.
+
+    Defensive guard: rejects any window_open_spot below $1.00 USD. Audit
+    2026-05-10 found that ``== 0.0`` only catches the exact-zero case;
+    a feed glitch producing 1e-8 would slip through and the resulting
+    delta_bps (in the millions) would bypass downstream gates. For BTC/
+    ETH/SOL/etc. nothing trades below $1 — anything below is corrupt
+    data and we refuse to fire.
+    """
+    if window_open_spot < _MIN_SANE_SPOT_USD:
         return 0.0
     return 10_000.0 * (spot_now - window_open_spot) / window_open_spot
 

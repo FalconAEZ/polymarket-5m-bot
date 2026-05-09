@@ -310,11 +310,18 @@ async def main() -> int:
     halt_task = asyncio.create_task(_halt_watcher(stop_event), name="halt-watcher")
 
     LOG.info("paper-mode runtime up; waiting for SIGTERM/SIGINT or halt sentinel")
-    await stop_event.wait()
-    LOG.info("shutdown signal received")
-    runner.stop()
-    await asyncio.gather(runner_task, warmer_task, halt_task, return_exceptions=True)
-    alert_sink.close()
+    try:
+        await stop_event.wait()
+        LOG.info("shutdown signal received")
+        runner.stop()
+        await asyncio.gather(runner_task, warmer_task, halt_task, return_exceptions=True)
+    finally:
+        # Always close the gamma httpx.Client to avoid FD leaks across
+        # restarts -- audit 2026-05-10 found this as a CRITICAL deploy-blocker.
+        if gamma_client_for_settle is not None:
+            with contextlib.suppress(Exception):
+                gamma_client_for_settle.close()
+        alert_sink.close()
     LOG.info("shutdown complete; dropped_records=%d", runner.dropped_records_total)
     return 0
 
