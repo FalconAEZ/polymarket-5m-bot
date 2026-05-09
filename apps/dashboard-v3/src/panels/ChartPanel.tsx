@@ -24,8 +24,12 @@ export function ChartPanel() {
 
   // Setup chart once on mount.
   useEffect(() => {
-    if (!containerRef.current) return
-    const chart = createChart(containerRef.current, {
+    const container = containerRef.current
+    if (!container) return
+    const initialRect = container.getBoundingClientRect()
+    const chart = createChart(container, {
+      width: Math.max(1, Math.floor(initialRect.width)),
+      height: Math.max(1, Math.floor(initialRect.height)),
       layout: {
         background: { color: "transparent" },
         textColor: "#a08f6a",
@@ -49,7 +53,12 @@ export function ChartPanel() {
         vertLine: { color: "#6b4d18", width: 1, style: 2 },
         horzLine: { color: "#6b4d18", width: 1, style: 2 },
       },
-      autoSize: true,
+      // autoSize:true measures the container *after* layout settles and
+      // can over-extend the canvas past the overflow boundary on iOS
+      // Safari (operator screenshot 2). Driving size manually via the
+      // observer below keeps the canvas strictly inside the container's
+      // measured box on every browser.
+      autoSize: false,
     })
     const candleSeries = chart.addSeries(CandlestickSeries, {
       upColor: "#6effa1",
@@ -61,7 +70,23 @@ export function ChartPanel() {
     })
     chartRef.current = chart
     candleSeriesRef.current = candleSeries
+
+    // Resize the chart to match the container box exactly. Floor to
+    // integer pixels so the canvas never gets a sub-pixel size that
+    // Safari rounds up.
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0]
+      if (!entry) return
+      const { width, height } = entry.contentRect
+      chart.applyOptions({
+        width: Math.max(1, Math.floor(width)),
+        height: Math.max(1, Math.floor(height)),
+      })
+    })
+    observer.observe(container)
+
     return () => {
+      observer.disconnect()
       chart.remove()
       chartRef.current = null
       candleSeriesRef.current = null

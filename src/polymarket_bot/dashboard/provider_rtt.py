@@ -27,7 +27,11 @@ class ProviderConfig:
 PROVIDERS: tuple[ProviderConfig, ...] = (
     ProviderConfig("Binance", "https://api.binance.com/api/v3/time", expects_json=True),
     ProviderConfig("Coinbase", "https://api.exchange.coinbase.com/time", expects_json=True),
-    ProviderConfig("Chainlink", "https://eth.llamarpc.com", expects_json=True),
+    # eth.llamarpc.com expects POST for JSON-RPC and 403s on GET. The
+    # rtt_collector only ships GETs; cloudflare-eth.com responds 200 to
+    # a bare GET with a small JSON banner — same Ethereum-RPC neighbourhood
+    # for latency purposes, without the 403 noise.
+    ProviderConfig("Chainlink", "https://cloudflare-eth.com/", expects_json=False),
     ProviderConfig(
         "PM-Gamma", "https://gamma-api.polymarket.com/markets?limit=1", expects_json=True
     ),

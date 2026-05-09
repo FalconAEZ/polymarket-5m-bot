@@ -39,26 +39,30 @@ export default function App() {
       <div className="flex-1 grid grid-rows-[auto_auto_1fr_auto] gap-2 p-2 min-h-0 overflow-y-auto">
         {/* ROW A — wallet | chart | spot book | live pnl */}
         <div className="grid grid-cols-12 gap-2 min-h-[260px]">
-          <div className="col-span-3"><WalletPanel /></div>
-          <div className="col-span-5"><ChartPanel /></div>
-          <div className="col-span-2"><SpotBookPanel /></div>
-          <div className="col-span-2"><LivePnlPanel /></div>
+          <div className="col-span-3 min-h-0"><WalletPanel /></div>
+          <div className="col-span-5 min-h-0"><ChartPanel /></div>
+          <div className="col-span-2 min-h-0"><SpotBookPanel /></div>
+          <div className="col-span-2 min-h-0"><LivePnlPanel /></div>
         </div>
 
         {/* ROW B — pipeline */}
         <div><PipelineStrip /></div>
 
-        {/* ROW C — decisions tape | CTF book */}
+        {/* ROW C — decisions tape | CTF book.
+            min-h-0 on each cell is required so the inner Panel + table
+            can shrink under flex/grid; without it the table's intrinsic
+            height pushes the row past min-h-[280px] and bleeds past the
+            panel boundary on Safari. */}
         <div className="grid grid-cols-12 gap-2 min-h-[280px]">
-          <div className="col-span-9"><DecisionsTape /></div>
-          <div className="col-span-3"><CTFBookPanel /></div>
+          <div className="col-span-9 min-h-0"><DecisionsTape /></div>
+          <div className="col-span-3 min-h-0"><CTFBookPanel /></div>
         </div>
 
         {/* ROW D — RTT | trip-wires | tier breakdown */}
         <div className="grid grid-cols-12 gap-2 min-h-[160px]">
-          <div className="col-span-4"><RTTPanel /></div>
-          <div className="col-span-4"><TripWiresPanel /></div>
-          <div className="col-span-4"><TierBreakdownPanel /></div>
+          <div className="col-span-4 min-h-0"><RTTPanel /></div>
+          <div className="col-span-4 min-h-0"><TripWiresPanel /></div>
+          <div className="col-span-4 min-h-0"><TierBreakdownPanel /></div>
         </div>
       </div>
 

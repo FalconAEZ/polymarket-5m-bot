@@ -55,9 +55,14 @@ export function RTTPanel() {
 }
 
 function classify(ms: number | null): "good" | "warn" | "bad" {
+  // Cross-region HTTP RTT thresholds. AWS Lightsail eu-west-1 → Binance
+  // edge can sit at 250-350ms in the steady state without indicating a
+  // problem; the previous 200/600 buckets painted normal latency amber
+  // for no reason. New buckets give "fine" 0-300, "watch" 300-800,
+  // "alarm" 800+ which matches what an operator actually wants to see.
   if (ms === null) return "bad"
-  if (ms < 200) return "good"
-  if (ms < 600) return "warn"
+  if (ms < 300) return "good"
+  if (ms < 800) return "warn"
   return "bad"
 }
 

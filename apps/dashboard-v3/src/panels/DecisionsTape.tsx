@@ -20,7 +20,13 @@ export function DecisionsTape() {
 
   return (
     <Panel title="DECISIONS TAPE" subtitle={`${s.n_decisions_total} total · newest first`}>
-      <div className="flex-1 overflow-y-auto">
+      {/*
+        flex-1 + min-h-0 is the canonical "let me shrink under flex"
+        idiom — without min-h-0 the table's intrinsic size forces the
+        scroll container to grow past its parent on Safari (operator
+        screenshot — 89 rows × 22px overflowed the panel boundary).
+      */}
+      <div className="flex-1 min-h-0 overflow-y-auto">
         <table className="w-full text-[10.5px] tabular-nums">
           <thead className="sticky top-0 bg-bg-panel z-10">
             <tr className="text-text-muted text-[9px] uppercase tracking-[0.08em]">
