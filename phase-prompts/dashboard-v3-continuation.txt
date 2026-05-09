@@ -1,0 +1,367 @@
+Subject: Dashboard v3 polish — close out the bug list, harden the
+deploy, evaluate merge to main. Phase 11.A.X.B continuation.
+
+Frame: previous session (2026-05-09) shipped a custom React + FastAPI
+v3 dashboard from scratch + deployed it to the VPS. Operator confirmed
+visually with screenshots — looks Bloomberg-terminal-grade — but
+five visual bugs surfaced in the first VPS render. Four were fixed
++ shipped; one (chart bleed on iOS Safari) is committed but the
+deploy was paused at 81% context. Plus a few medium-priority gaps
+(feeds_health.json missing on VPS; RTT thresholds too aggressive).
+This session closes the bug list, considers the merge to main, and
+optionally adds the next layer of polish (decision-fire chart markers,
+bot-side per-WS-message RTT).
+
+Bot-staging.service runs untouched throughout this session. Aggressive-
+mode soak still active.
+
+⚠️ TIME-SENSITIVE: the **48h aggressive-mode gate is at
+2026-05-10 22:26:15 UTC**. If you start this session AFTER that gate,
+RUN `phase-prompts/phase-11.a-gate-2026-05-10.txt` FIRST, then come
+back to this. The gate review takes priority over dashboard polish.
+
+================================================================================
+CONTEXT ANCHORS (read in this order)
+================================================================================
+
+ 1. /Users/hamad/Desktop/PolyMarket-5m/CLAUDE.md
+    — Rule #1 (design doc before code) + the 25 operating rules.
+      v3 already has design/dashboard-v3.md locked; this session
+      makes additive changes within that lock without revising it.
+
+ 2. /Users/hamad/Desktop/PolyMarket-5m/state/sessions/
+    2026-05-09-dashboard-v2-v3-vps-deploy.md
+    — full roll-up of last session: v2 + v3 design + deploy story +
+      operator screenshots + bug list. READ THIS FIRST. Has the
+      "What's queued for next session" list that drives this work.
+
+ 3. /Users/hamad/Desktop/PolyMarket-5m/design/dashboard-v3.md
+    — locked architecture (16 sections). Don't revise — extend.
+
+ 4. /Users/hamad/Desktop/PolyMarket-5m/design/dashboard-v2.md
+    — kept as the `/audit` deep-dive plan (Streamlit at port 8503).
+      v2.1 systemd unit ready but NOT YET DEPLOYED. Optional this
+      session.
+
+ 5. /Users/hamad/Desktop/PolyMarket-5m/state/phases/phase-11-spot-aware.md
+    — phase doc with the new sub-phase 11.A.X.B section.
+
+ 6. /Users/hamad/Desktop/PolyMarket-5m/runbooks/staging/
+    deploy-dashboard-v3.md
+    — operator deploy runbook. Already executed once last session.
+
+ 7. ~/.claude/projects/-Users-hamad-Desktop-PolyMarket-5m/memory/
+    reference_vps_ssh.md + checkpoint_phase_11_a_x_b_dashboard_v3.md
+    — VPS access details + last-known live state.
+
+================================================================================
+BRANCH + HEAD
+================================================================================
+
+Working branch: claude/trusting-spence-03c165
+Last commit:    e44dde8 fix(dashboard-v3): wallet panel %, swap fmtPctRaw -> fmtDeltaPct
+Commits ahead:  8 commits ahead of origin/main
+Status on VPS:  commit 6befa2e deployed; e44dde8 NOT YET DEPLOYED.
+
+Verify with: `git log --oneline origin/main..HEAD`
+
+If `claude/trusting-spence-03c165` doesn't exist locally:
+  git fetch origin
+  git checkout claude/trusting-spence-03c165
+
+================================================================================
+LIVE STATE (as of 2026-05-09 04:30 UTC — refresh before starting)
+================================================================================
+
+Pre-session check from your laptop:
+  ssh -i ~/Downloads/LightsailDefaultKey-eu-west-1.pem -p 2222 \
+      ops@108.132.51.116 "
+        echo '=== bot ==='
+        sudo systemctl is-active bot-staging.service
+        echo '=== dashboard ==='
+        sudo systemctl is-active dashboard-server.service
+        echo '=== rtt collector ==='
+        sudo systemctl is-active rtt-collector.service
+        echo '=== aggressive elapsed ==='
+        date -u
+        echo '=== fired so far today ==='
+        wc -l /home/ops/polymarket-5m-bot/state/decisions/2026-05-*.jsonl 2>/dev/null
+      "
+
+Then open the tunnel from worktree dir:
+  cd /Users/hamad/Desktop/PolyMarket-5m/.claude/worktrees/trusting-spence-03c165
+  make dash-tunnel
+  # browse http://127.0.0.1:8505/
+
+If the tunnel shows "connection refused" on 8505, the dashboard service
+may have stopped. Restart with:
+  ssh ... "sudo systemctl restart dashboard-server.service"
+
+================================================================================
+WHAT THE OPERATOR WANTS
+================================================================================
+
+Close the v3 dashboard bug list (operator paused last session at 81%
+context). Honest filter still applies — no fake data, no fake panels,
+no decoration that doesn't reflect a real telemetry source. The
+references set the visual bar (Bloomberg terminal); v3 needs to
+feel polished, not "almost shipped".
+
+Specifically:
+  1. Wallet panel still shows wrong % until the e44dde8 commit lands
+     on the VPS (one git-pull away).
+  2. The chart canvas BLEEDS through into the pipeline strip + decisions
+     tape on iOS Safari (operator's actual viewing device). The
+     max-h:260px + overflow:hidden didn't fully clamp lightweight-charts.
+  3. The decisions tape spills past its panel boundary on Safari
+     (89 rows × ~22px = 1900+px); internal `overflow-y-auto` isn't
+     respected because the parent flex/grid doesn't constrain it.
+  4. The RTT panel labels its bars as warning/alarm at thresholds
+     that are too aggressive for cross-region HTTP RTT (Binance 288ms
+     shows amber when in fact that's normal for AWS Lightsail
+     eu-west-1 → some non-eu Binance edge).
+  5. Pipeline `01 CAPTURE 0/0 FEEDS` because feeds_health.json
+     doesn't exist on the VPS. Bot's feeds ARE alive — we need a
+     way to detect them without that file.
+
+================================================================================
+PRE-FLIGHT
+================================================================================
+
+[ ] cd /Users/hamad/Desktop/PolyMarket-5m
+[ ] git pull origin main                  → working tree clean
+[ ] git checkout claude/trusting-spence-03c165
+[ ] git pull
+[ ] export PATH="$HOME/.local/bin:$PATH"
+[ ] uv sync                                → no diff (deps unchanged)
+[ ] make verify                            → 408 tests pass
+[ ] cd apps/dashboard-v3 && npm install    → no diff (deps unchanged)
+[ ] cd ../.. && make dash-tunnel           → tunnel up (other terminal)
+[ ] open http://127.0.0.1:8505/            → see v3 dashboard live
+[ ] confirm operator screenshots from last session match what you see
+
+================================================================================
+THE WORK — three phases
+================================================================================
+
+------------------------------------------------------------------------
+PHASE A — Ship the queued bugs (30-45 min)
+------------------------------------------------------------------------
+
+A.1 Deploy commit e44dde8 (wallet % fix). One ssh:
+
+      ssh -i ~/Downloads/LightsailDefaultKey-eu-west-1.pem -p 2222 \
+          ops@108.132.51.116 << 'REMOTE'
+      set -euo pipefail
+      cd /home/ops/polymarket-5m-bot
+      git pull
+      cd apps/dashboard-v3
+      npm run build
+      sudo systemctl restart dashboard-server.service
+      sleep 4
+      sudo systemctl is-active dashboard-server.service
+      curl -s -o /dev/null -w "v3 health: %{http_code}\n" http://127.0.0.1:8505/api/health
+      REMOTE
+
+    Expected: active + HTTP 200. Operator refreshes browser → wallet
+    panel now shows "▲ 5.78%" (matches top-strip).
+
+A.2 Chart bleed on iOS Safari. Root cause: lightweight-charts uses
+    position:absolute for canvas layers. The current
+    `relative + overflow-hidden + max-h` doesn't fully clamp on
+    Safari because the chart's `autoSize: true` measures the
+    container after layout settles AND the canvas can paint outside
+    the overflow boundary on Safari.
+
+    Fix approach:
+      apps/dashboard-v3/src/panels/ChartPanel.tsx:
+        - Wrap chart in a parent with **explicit pixel height** (e.g.
+          h-[240px], not min-h/max-h)
+        - Inner container: position:absolute; inset:0; overflow:hidden
+        - Pass `autoSize: false` AND explicitly call chart.applyOptions
+          on a ResizeObserver
+      Test on iPad Safari to confirm the canvas stays within bounds.
+
+A.3 Decisions tape spillover. Root cause: the table inside
+    `<div className="flex-1 overflow-y-auto">` doesn't get a bounded
+    height because the parent grid uses `min-h-[280px]` not a max.
+
+    Fix approach:
+      apps/dashboard-v3/src/panels/DecisionsTape.tsx:
+        - Replace `flex-1 overflow-y-auto` with explicit max-h
+          (e.g. `max-h-[400px] overflow-y-auto`)
+        - OR add `h-0 min-h-full` trick to force the table to fit
+      apps/dashboard-v3/src/App.tsx:
+        - Row C grid cell: add `min-h-0` to allow flex child shrinking
+
+A.4 RTT thresholds too aggressive (UI-only).
+      apps/dashboard-v3/src/panels/RTTPanel.tsx (or backend
+      provider_rtt.py constants):
+        good:   < 300ms  (was 200ms)
+        warn:   < 800ms  (was 600ms)
+        bad:    >= 800ms
+
+    Plus: fix Chainlink endpoint. `eth.llamarpc.com` returns 403 on
+    GET (it's JSON-RPC; expects POST). Either:
+      (a) swap URL to a known free public RPC that responds to GET
+          (e.g. Cloudflare's eth.cloudflare-eth.com), or
+      (b) change rtt_collector.py to use POST for that one URL
+          with a noop JSON-RPC body
+
+A.5 Pipeline 0/0 FEEDS fix.
+    The bot's `_live.health` aggregator doesn't write feeds_health.json
+    on the VPS. Two options:
+      (a) Add a tiny VPS-side feeds_health writer service that parses
+          bot-staging journal for feed events (~50 LOC). New systemd
+          unit `feeds-health-writer.service`.
+      (b) Detect feeds via `psutil` — find the bot's process tree,
+          look for WS connections, infer health.
+
+    (a) is more robust; (b) is more invasive. Recommend (a).
+    DECISION POINT — get operator approval before implementing.
+
+After each fix in A.1-A.5: `make verify` green, `cd apps/dashboard-v3
+&& npm run build` green, screenshot via Preview MCP if useful, commit
++ push, then run the deploy snippet to ship to VPS.
+
+------------------------------------------------------------------------
+PHASE B — Polish layer (1-2 hours, optional)
+------------------------------------------------------------------------
+
+B.1 Decision-fire markers on chart. lightweight-charts v5 moved
+    markers out of the series API into a separate `createSeriesMarkers`
+    plugin. Add ▲ (UP) / ▼ (DOWN) markers at each fired-decision
+    window_ts on the BTC 5m chart, colored green/red by win/loss.
+
+B.2 Bot-side per-WS-message RTT. The current RTT shows server-to-
+    provider HTTP RTT. The bot's actual WS message RTT (from upstream
+    timestamp to local recv_ts) is different — typically lower.
+    One-line hook in each `src/polymarket_bot/_live/feeds/*.py`:
+
+      self.health.last_rtt_ms = (time.monotonic_ns() - msg.send_ts_ns) / 1e6
+
+    Plus a new field `last_rtt_ms` on the Health dataclass + JSONL
+    write in the aggregator. Dashboard renders alongside the
+    server-side RTT for comparison.
+
+    DESIGN DOC required: `design/feeds-latency-instrument.md`. Anti-
+    vibe rule #1.
+
+B.3 JSON Patch over WS. Currently the WS pump sends full snapshot
+    every 1s (~10KB). For multi-operator scale, switch to JSON Patch
+    diffs (~80 bytes per tick). Out of scope for v3.0; queue for
+    v3.1.
+
+B.4 Code-split the React bundle. Current 561KB (gzip 177KB) is fine
+    but warning-level. Dynamic-import the chart + book panels to
+    drop initial bundle to ~200KB.
+
+------------------------------------------------------------------------
+PHASE C — Merge to main (10 min, requires operator decision)
+------------------------------------------------------------------------
+
+C.1 Rebase decision. The branch claude/trusting-spence-03c165 is 8
+    commits ahead of main. Two paths:
+      (a) Merge as-is (preserves the feature branch history).
+      (b) Squash to a single "feat(dashboard): v2 + v3 + deploy" commit.
+
+C.2 Merge.
+      git checkout main
+      git pull
+      git merge --no-ff claude/trusting-spence-03c165
+      git push
+    OR open a PR and merge via GitHub.
+
+C.3 Deploy from main on VPS:
+      ssh ... "cd /home/ops/polymarket-5m-bot && git checkout main && git pull"
+
+C.4 Tag the milestone:
+      git tag dashboard-v3-pass
+      git push --tags
+
+================================================================================
+SHIP CRITERIA (Phase 11.A.X.B closes)
+================================================================================
+
+Phase 11.A.X.B closes when ALL true:
+  ✅ All five Phase A bugs deployed to VPS + operator-confirmed via
+     fresh screenshot
+  ✅ make verify green (>= 408 tests pass)
+  ✅ apps/dashboard-v3 production build green
+  ✅ 4 importlinter contracts kept
+  ✅ Branch merged to main (or operator explicitly defers)
+  ✅ Tag dashboard-v3-pass pushed (or deferred)
+  ✅ state/sessions/2026-05-XX-dashboard-v3-polish.md (this session's
+     roll-up) lands
+
+================================================================================
+WHAT THIS SESSION DOES NOT DO
+================================================================================
+
+- Does NOT touch bot logic (`src/polymarket_bot/_live/*`,
+  `src/polymarket_bot/_paper/*`, `src/polymarket_bot/strategies/*`,
+  `src/polymarket_bot/agents/*`, `src/polymarket_bot/backtest/*` —
+  excepting B.2's one-line hook which IS a bot-logic change and
+  needs its own design doc).
+- Does NOT modify bot-staging.service or its env.
+- Does NOT change sync_staging.sh.
+- Does NOT do the 48h aggressive-mode gate review (separate prompt).
+- Does NOT remove the v2 Streamlit dashboard (it stays as `/audit`).
+- Does NOT do public exposure / Tailscale / Cloudflare. SSH tunnel
+  remains the access path.
+- Does NOT add new Python deps without operator approval.
+
+================================================================================
+ANTI-VIBE RULES
+================================================================================
+
+The 10 rules in CLAUDE.md still apply. Especially relevant for this
+session:
+
+- Rule #1 — design doc before code. v3 already has
+  design/dashboard-v3.md locked; Phase A is additive within that
+  lock. Phase B.2 (bot-side RTT) needs its own
+  design/feeds-latency-instrument.md.
+- Rule #4 — no phase advances without gate evidence. Phase 11.A.X.B
+  closes only with operator-confirmed visual diff.
+- Rule #5 — module docstrings on every src/*.py.
+- Rule #6 — type hints + mypy --strict.
+- Rule #8 — no TODO/FIXME/hack in src/.
+- 3-fix rule — three failed iterations on a single bug → stop and
+  write `runbooks/incidents/<date>-<slug>.md`. The chart-bleed bug
+  has had ONE fix attempt; if a second + third fail on iPad, escalate
+  to incident.
+
+================================================================================
+SESSION BOUNDARY
+================================================================================
+
+(a) All Phase A bugs deployed + Phase C merge done.    ✅ full
+(b) All Phase A bugs deployed; merge deferred to next.  ✅ partial
+(c) Hard blocker (Safari chart-bleed defies fix; some
+    other deploy disaster) → write incident note,
+    abort, leave bot running.                          🛑
+(d) Context ≥ 60% before completion → ship Phase A,
+    queue Phase B + C for next session.                ⏸
+
+================================================================================
+HAND-OFF NOTE
+================================================================================
+
+This session is polish + lock-down on a successful previous session.
+Don't over-scope. The dashboard already works; the visible bugs are
+small + well-understood; the deploy path is exercised. If the operator
+brings a new request mid-session ("can we also add X panel?"), defer
+to a v3.1 session and STAY ON THE BUG LIST.
+
+If the chart-bleed proves harder than expected (Safari-specific
+canvas positioning is genuinely tricky), an acceptable fallback is
+to give the chart its own dedicated route at `/chart` so it gets the
+full viewport and we don't fight grid layout. Document the decision
+in this session's note.
+
+When in doubt, refer to operator screenshot from previous session
+(in conversation history) — that's the bar. The dashboard should
+look as polished as the operator's three reference dashboards
+(MiroFish + BTC + ETH Polymarket terminals) without faking any data
+the bot doesn't actually produce.
