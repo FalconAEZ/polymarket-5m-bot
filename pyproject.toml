@@ -5,9 +5,11 @@ description = "Polymarket BTC 5-Min Up/Down Trading Bot"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "aiofiles>=25.1.0",
     "altair>=5.5.0",
     "anthropic>=0.98.1",
     "eth-account>=0.13.7",
+    "fastapi>=0.136.1",
     "httpx>=0.28.1",
     "pandas>=2.3.4",
     "plotly>=6.7.0",
@@ -21,6 +23,7 @@ dependencies = [
     "streamlit-aggrid>=1.2.1.post2",
     "streamlit-autorefresh>=1.0.1",
     "streamlit-shadcn-ui>=0.1.19",
+    "uvicorn[standard]>=0.46.0",
     "websockets>=16.0",
 ]
 

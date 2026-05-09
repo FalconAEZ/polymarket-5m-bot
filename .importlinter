@@ -43,3 +43,29 @@ forbidden_modules =
     polymarket_bot.backtest.side_index
     polymarket_bot.strategies
     polymarket_bot.agents
+
+[importlinter:contract:layered4]
+# Phase 11.A.X.B (v3 dashboard): dashboard_server is the FastAPI/WS
+# backend powering the React frontend. It's a sibling of dashboard,
+# not a child — same boundary rules apply. It can use the dashboard
+# loaders (composing the snapshot is exactly what they're for) and the
+# pure backtest.types Side enum. It never imports bot runtime: no
+# _live, no paper runner, no backtest runner, no strategies, no agents.
+# Upstream WS subscriptions are duplicated rather than shared with
+# the bot's _live.feeds — bot WS state must never touch the dashboard
+# event loop.
+# Per design/dashboard-v3.md §4.1.
+name = dashboard_server never imports bot runtime
+type = forbidden
+source_modules = polymarket_bot.dashboard_server
+forbidden_modules =
+    polymarket_bot._live
+    polymarket_bot._paper.runner
+    polymarket_bot._paper.shadow_book
+    polymarket_bot.backtest.replay
+    polymarket_bot.backtest.runner
+    polymarket_bot.backtest.fills
+    polymarket_bot.backtest.walk_forward
+    polymarket_bot.backtest.side_index
+    polymarket_bot.strategies
+    polymarket_bot.agents

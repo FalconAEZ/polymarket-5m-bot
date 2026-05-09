@@ -1,4 +1,4 @@
-.PHONY: verify lint format type test gate-0 gate-1a gate-1 gate-2 gate-3 gate-4 gate-4.5 gate-5 gate-6 dashboard dashboard-v2 sync-staging dash-staging dash-staging-v2 dash-tunnel study-A study-B study-C study-D study-E study-F study-G clean
+.PHONY: verify verify-v3 lint format type test gate-0 gate-1a gate-1 gate-2 gate-3 gate-4 gate-4.5 gate-5 gate-6 dashboard dashboard-v2 dashboard-v3 dashboard-v3-build sync-staging dash-staging dash-staging-v2 dash-staging-v3 dash-tunnel study-A study-B study-C study-D study-E study-F study-G clean
 
 # Default target — full local verification (mirrors CI)
 verify: lint type test
@@ -34,11 +34,30 @@ dash-staging-v2: sync-staging
 	@PMB_DASH_V2=1 PMB_DASH_STATE_DIR=state/staging uv run streamlit run scripts/dashboard.py
 
 # === Phase 11.A.X — open SSH tunnel from laptop to VPS dashboard ===
-# After deploying streamlit-dashboard.service on the VPS (per
-# runbooks/staging/deploy-dashboard.md), run `make dash-tunnel` from
-# your laptop. Browse to http://127.0.0.1:8503/.
+# After deploying dashboard-server.service on the VPS (per
+# runbooks/staging/deploy-dashboard-v3.md), run `make dash-tunnel`
+# from your laptop. Forwards both ports — v3 (8505) + v2.1 audit (8503).
+# Browse to http://127.0.0.1:8505/.
 dash-tunnel:
 	@bash runbooks/operations/dashboard-tunnel.sh
+
+# === Phase 11.A.X.B — v3 dashboard (FastAPI + React) ===
+# Build the React frontend then run the FastAPI server locally against
+# state/staging data. Open at http://127.0.0.1:8505/.
+dashboard-v3-build:
+	@cd apps/dashboard-v3 && npm ci && npm run build
+
+dashboard-v3: dashboard-v3-build
+	@PMB_DASH_STATE_DIR=state PMB_DASHBOARD_PORT=8505 \
+		uv run python -m polymarket_bot.dashboard_server
+
+dash-staging-v3: sync-staging dashboard-v3-build
+	@PMB_DASH_STATE_DIR=state/staging PMB_DASHBOARD_PORT=8505 \
+		uv run python -m polymarket_bot.dashboard_server
+
+# === Combined verify for v3 (Python + TypeScript build) ===
+verify-v3: verify
+	@cd apps/dashboard-v3 && npm ci && npx tsc -b && npm run build
 
 # === Phase gates (each runs the matching gate script) ===
 gate-0:

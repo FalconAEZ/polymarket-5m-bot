@@ -41,6 +41,15 @@
         "PMB_DASH_V2=1 PMB_DASH_STATE_DIR=/Users/hamad/Desktop/PolyMarket-5m/state/staging uv run streamlit run scripts/dashboard.py --server.headless=true --server.port=8512 --browser.gatherUsageStats=false"
       ],
       "port": 8512
+    },
+    {
+      "name": "dashboard-v3-screenshot",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": [
+        "-c",
+        "PMB_DASHBOARD_HOST=127.0.0.1 PMB_DASHBOARD_PORT=8505 PMB_DASH_STATE_DIR=/Users/hamad/Desktop/PolyMarket-5m/state/staging uv run python -m polymarket_bot.dashboard_server"
+      ],
+      "port": 8505
     }
   ]
 }

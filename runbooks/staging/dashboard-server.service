@@ -1,0 +1,43 @@
+[Unit]
+Description=Polymarket bot v3 operations dashboard (FastAPI + React @ 8505)
+Documentation=https://github.com/FalconAEZ/polymarket-5m-bot/blob/main/design/dashboard-v3.md
+After=network-online.target rtt-collector.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ops
+Group=ops
+WorkingDirectory=/home/ops/polymarket-bot
+
+Environment=PATH=/home/ops/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PMB_DASH_STATE_DIR=/home/ops/polymarket-bot/state
+Environment=PMB_DASHBOARD_HOST=127.0.0.1
+Environment=PMB_DASHBOARD_PORT=8505
+
+# Serves React static build from apps/dashboard-v3/dist/ + REST snapshot
+# at /api/state + WS push at /api/live. Bound to 127.0.0.1 only — never
+# the public interface; SSH tunnel is the only access path.
+ExecStart=/home/ops/.local/bin/uv run --quiet python -m polymarket_bot.dashboard_server
+
+Restart=on-failure
+RestartSec=10s
+StandardOutput=append:/home/ops/polymarket-bot/state/dashboard-server.log
+StandardError=inherit
+
+MemoryMax=512M
+CPUQuota=50%
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/home/ops/polymarket-bot/state
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictRealtime=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target
