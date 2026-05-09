@@ -1,0 +1,356 @@
+Subject: Phase 11.A.2 post-incident continuation — ship background-settle
+fix + investigate 3 dashboard bugs + advance Phase 3-4 of the v3 roadmap.
+
+Bot is RUNNING on spot_aware_v2 with instant-settle DISABLED after a
+real incident I caused last session (2026-05-09 22:20 UTC queue
+overflow, ~4,600 dropped records, postmortem written, mitigation
+applied). 369 tests pass; PRs #1 + #2 open; bot at +$32.65 bankroll
+clean. This session's priority: fix the background-settle architecture
+properly so instant-settle can be re-enabled without blocking the
+event loop.
+
+================================================================================
+READ FIRST (vault context, in order)
+================================================================================
+
+1. /Users/hamad/.claude/projects/-Users-hamad-Desktop-PolyMarket-5m/memory/MEMORY.md
+   — index of all memories; read the top item ("Checkpoint: Phase 11.A.2
+     (v2 LIVE, instant-settle DISABLED post-incident...)") for state.
+2. ~/.claude/projects/-Users-hamad-Desktop-PolyMarket-5m/memory/checkpoint_phase_11_a.md
+   — full hand-off detail.
+3. runbooks/incidents/2026-05-09-instant-settle-queue-overflow.md
+   — what broke, why, the fix sketch.
+4. ~/.claude/projects/-Users-hamad-Desktop-PolyMarket-5m/memory/feedback_test_under_load.md
+   — the lesson; apply it when shipping the proper fix this session.
+5. design/bot_v3_roadmap.md — engineering-grounded 10-phase plan
+   (currently we're inside Phase 3 with the background-settle fix as
+    inserted Phase 1.5).
+6. /Users/hamad/Desktop/PolyMarket-5m/CLAUDE.md
+   — durable preferences, 10 anti-vibe rules, locked decisions index.
+
+================================================================================
+STATE AT HAND-OFF (verify before driving)
+================================================================================
+
+Branch:  claude/jovial-hermann-7e103f (worktree from main 1baf993)
+HEAD:    37be165 (incident postmortem)
+Pushed:  yes
+
+VPS:
+  bot-staging.service active since 2026-05-09 22:25:05 UTC
+  STRATEGY=spot_aware_v2
+  INSTANT_SETTLE_ENABLED commented out (DISABLED)
+  Dashboard at 127.0.0.1:8505 → SSH tunnel:
+    ssh -i ~/Downloads/LightsailDefaultKey-eu-west-1.pem -p 2222 \
+        -L 8505:127.0.0.1:8505 -N -f ops@108.132.51.116
+
+Quick state check (run these before any work):
+  bash runbooks/scripts/sync_staging.sh
+  uv run python runbooks/scripts/v2_soak_daily_rollup.py
+  bash runbooks/gates/spot-aware-paper.sh
+
+Expected: bot active, INSTANT_SETTLE_ENABLED commented in .envrc, 0
+queue overflow alerts since 22:25:05 UTC, decisions_truth_source
+"polymarket" on dashboard, bankroll positive.
+
+If any check fails: STOP. Re-read the incident postmortem before
+acting.
+
+================================================================================
+THE WORK — six items, in priority order
+================================================================================
+
+Sequential where dependencies require. Items 1+2 can ship in this
+session. Items 3-6 are continuation.
+
+------------------------------------------------------------------------
+ITEM 1 — Background-settle fix (~1-2h, ship to PR #1)
+------------------------------------------------------------------------
+
+The CORE fix from the postmortem. Convert `_settle_current_window` from
+inline-await to fire-and-forget background task. Sketch from the
+postmortem:
+
+  class PaperRunner:
+      def __init__(self, ...):
+          ...
+          self._pending_settles: set[asyncio.Task[None]] = set()
+
+      async def _maybe_emit_boundaries(self, ts_ns: int) -> None:
+          ...
+          if new_window_ts != current:
+              await self._strategy.on_event(WindowBoundary(...kind=close...))
+              # Snapshot state for the closing window BEFORE start_window resets it
+              snap = self._snapshot_for_settle()
+              # Fire-and-forget — main loop continues immediately
+              task = asyncio.create_task(
+                  self._settle_window_background(snap),
+                  name=f"settle-{snap.window_ts}",
+              )
+              self._pending_settles.add(task)
+              task.add_done_callback(self._pending_settles.discard)
+              self._state.start_window(new_window_ts)
+              ...
+
+      async def _settle_window_background(self, snap: SettleSnapshot) -> None:
+          try:
+              # Same logic as old _settle_current_window but reads from snap
+              # and writes via try/except so a settle error never kills the runner
+              ...
+          except Exception as exc:
+              LOG.exception("settle background task failed: %s", exc)
+              self._alert(Level.CRITICAL, f"settle task failed: {exc}",
+                          decision_id=snap.decision_id)
+
+      async def run(self, ...) -> None:
+          try:
+              ...
+          finally:
+              # Wait for in-flight settle tasks before closing log
+              if self._pending_settles:
+                  LOG.info("awaiting %d in-flight settle tasks",
+                           len(self._pending_settles))
+                  await asyncio.gather(*self._pending_settles,
+                                       return_exceptions=True)
+              self._log.close()
+
+Key requirements:
+  - Snapshot state at scheduling time (the main loop will mutate
+    self._state for the next window before settle completes)
+  - try/except in background task — never propagate errors to main loop
+  - Track tasks in self._pending_settles set; .add_done_callback for
+    cleanup
+  - Shutdown awaits all in-flight settles (avoid losing settled records)
+
+Tests REQUIRED before deploy (per the lesson from feedback_test_under_load.md):
+
+  tests/paper/test_runner_settle_background.py — NEW FILE:
+    1. test_main_loop_processes_records_during_settle:
+       Inject a slow gamma poll (10s); produce 100 records via FakeFeed
+       at 10/s during that 10s window; assert all 100 records are
+       processed AND queue.qsize() never exceeded 10 during the test
+    2. test_settle_task_failure_doesnt_kill_runner:
+       Inject a gamma poll that raises; verify next window's settle
+       still runs + main loop continues processing records
+    3. test_shutdown_awaits_in_flight_settles:
+       Schedule 3 background settles with 5s delays; trigger shutdown
+       1s in; verify run() exits only after all 3 complete
+    4. test_settle_uses_snapshot_not_live_state:
+       Modify self._state mid-settle; verify the in-flight settle
+       writes the SNAPSHOTTED window_ts/decision_id, not the new ones
+
+After tests pass:
+  - make verify must be green
+  - Commit + push to PR #1
+  - SSH to VPS, edit .envrc to UNCOMMENT INSTANT_SETTLE_ENABLED=1
+  - Restart bot-staging.service
+  - Watch journal for 30 min: zero queue overflow alerts; first
+    settle within 1-3s of T+300
+
+If queue overflows AGAIN: rollback (re-comment env var, restart). Do
+NOT iterate fixes mid-soak.
+
+------------------------------------------------------------------------
+ITEM 2 — Investigate 3 dashboard bugs (~1-2h)
+------------------------------------------------------------------------
+
+Surfaced 2026-05-09 22:35 UTC by operator. Diagnoses already in the
+checkpoint; this item is the FIX.
+
+2.1 — Decisions tape "not showing last trade"
+  - API tape correctly returns 100 most recent, newest first
+  - Bug is in the React frontend rendering on dashboard branch
+    (claude/dashboard-pm-truth-fix-7e103f or its successor)
+  - Investigate apps/dashboard-v3/src/components/DecisionsTape*.tsx
+    (or wherever the tape is rendered)
+  - Likely fix: ensure the most-recent row isn't hidden by sticky-
+    header CSS or off-screen by initial scroll position
+
+2.2 — Orphan-fire recovery (window 1778361000 stuck "settling…")
+  - Real bug: fires that happen mid-window without a corresponding
+    settle (because the bot was stopped before the window closed)
+    leave orphan records that the dashboard's resolver_loop can't
+    fix (resolver only corrects existing settled records)
+  - Fix: bot startup-time scan for fired-without-settled records in
+    the current and previous UTC days; for each orphan, call
+    gamma_resolver.gamma_resolution(window_ts) to get the truth and
+    write a synthesized settled record with resolution_source=
+    "polymarket-recovery"
+  - File: src/polymarket_bot/_paper/runner.py — add a
+    `_recover_orphan_fires()` method called from `__init__` or
+    `run()` startup path
+  - Tests: test that orphan fires get synthesized settled records;
+    test idempotency (running twice doesn't double-write)
+
+2.3 — DOWN book empty
+  - Real bug: dashboard subscribes to DOWN side correctly
+    (ctf_book.side="DOWN", recent ts_ns) but asks/bids/mid all empty
+  - Investigate: src/polymarket_bot/dashboard/polymarket_orderbook.py
+    or dashboard_server upstream (on dashboard branch)
+  - Possible causes: (a) Polymarket actually returns empty for this
+    market's DOWN token (low liquidity), (b) parser bug eats valid
+    book data, (c) the upstream poller subscribed but the response
+    handler doesn't update the cache for DOWN
+  - Reproduce: SSH to VPS, curl Polymarket Gamma directly for the
+    DOWN token's order book and compare with what the dashboard
+    received
+  - Fix: depending on root cause; may need to update parser logic
+
+Each of 2.1, 2.2, 2.3 is a separate commit. 2.1 + 2.3 likely land on
+the dashboard branch (PR #2 or successor); 2.2 lands on this branch
+(PR #1).
+
+------------------------------------------------------------------------
+ITEM 3 — Re-enable instant-settle (after Item 1 ships + soaks 30 min clean)
+------------------------------------------------------------------------
+
+  ssh ops@108.132.51.116 'sudo systemctl restart bot-staging.service'
+  # after editing .envrc to set INSTANT_SETTLE_ENABLED=1
+
+Post-deploy verification (per the existing deploy script's verify path):
+  - 0 queue overflow alerts within 30 min
+  - First settle (post-restart, at next window closure) completes in
+    1-3s with resolution_source=polymarket
+  - Dashboard pipeline.settle_wait_s drops from None to <5s
+  - bot-staging journal shows "instant-settle ENABLED"
+
+------------------------------------------------------------------------
+ITEM 4 — v2 soak monitoring (passive, daily — ~5 min/day)
+------------------------------------------------------------------------
+
+Run daily during the v2 7-day soak (deploys 2026-05-09 → evaluate
+2026-05-16):
+
+  bash runbooks/scripts/sync_staging.sh
+  uv run python runbooks/scripts/v2_soak_daily_rollup.py
+
+Output goes to runbooks/gate-evidence/v2-soak-day-N.txt (operator
+captures via tee). Look for:
+  - v2 fire cadence (target: ≥3/day; the v2 fire-rate model predicted
+    ~1/day at recent market quietness, which is too low)
+  - Per-tier PnL in 30-50% (the bet)
+  - Cumulative PnL > 0 trending
+
+If after 24-48h v2 has fired ≤1 time, escalate per design/bot_v3_roadmap.md
+Phase 3 decision tree:
+  - Option B: extend priors table to cover |Δ| 2-5 bps
+  - Option C: rollback to v1+aggressive (gives more data, accepts
+    regime-dependence)
+  - Option D: v2.1 with softer Δ floor
+
+------------------------------------------------------------------------
+ITEM 5 — Phase 4 (regime detector) validation script
+------------------------------------------------------------------------
+
+Per design/regime_detector.md, BEFORE implementing the detector, write
+the validation script:
+
+  runbooks/scripts/regime_classifier_validation.py
+
+For each of the 256+ existing fires, compute the 5m/10m vol ratio at
+decision time using state/ticks/binance/*.parquet. Bucket trades by
+regime (trending / chop / mixed) using the proposed thresholds (1.20 /
+0.80). Compute WR + per-trade PnL per bucket. Compute counterfactual:
+"what if we'd only fired in trending?".
+
+Validation gate:
+  - (a) Trending WR ≥ 8pp higher than chop WR + counterfactual filter
+        ≥ +$0.50/trade improvement → IMPLEMENT regime detector
+  - (b) Trending vs chop WR < 8pp → try alternative classifier
+  - (c) All classifiers fail → regime detection isn't the right
+        approach; revisit the signal entirely
+
+------------------------------------------------------------------------
+ITEM 6 — Vault closeout
+------------------------------------------------------------------------
+
+  - state/sessions/<today>-spot-aware-v2-postincident-fix.md
+    (mirror structure of state/sessions/2026-05-09-spot-aware-deep-dive.md)
+  - state/phases/phase-11-spot-aware.md status update
+  - Memory checkpoint refresh
+  - Append "FIXED at d19e438" to runbooks/gate-evidence/phase-11.a.2-dashboard-diff.txt
+    once PRs merge
+
+================================================================================
+ANTI-VIBE RULES — enforced this session, especially relevant
+================================================================================
+
+Same 10 rules in CLAUDE.md. Especially:
+
+- **Test runtime behavior under load (NEW from feedback_test_under_load.md)**:
+  Item 1's tests must include the queue-doesn't-overflow check. Don't
+  trust your own code-review comments.
+- **Design doc before code (#1)**: Items 1, 2.2, 2.3 are bug fixes,
+  no design doc needed. Item 5's regime detector design already exists.
+- **Bug → failing test → fix → green (#2)**: Item 1's "main loop
+  processes records during settle" test must FAIL on the current code,
+  then pass after the fix. Don't ship the fix without a test that
+  catches the original bug.
+- **Phase advances (#4)**: Phase 3 (v2 soak) is in flight — don't
+  declare Phase 3 complete until 7 days of clean data + the daily
+  roll-up gate criterion is met.
+- **Always ship a kill-switch env var**: Items 1's instant-settle has
+  it (INSTANT_SETTLE_ENABLED). Item 2.2's orphan-recovery should also
+  have one (ORPHAN_RECOVERY_ENABLED defaulting to true; can disable
+  if it misbehaves).
+
+================================================================================
+HARD LIMITS
+================================================================================
+
+- Bankroll: $1,000 paper (locked decision #10). Don't promote
+  anything whose cumulative PnL crosses -$150.
+- bot.service stays DISABLED (Phase 6 stub).
+- Funder key NEVER goes to the VPS.
+- Anthropic spend: $0.405 cumulative (Phase 3 only). This session
+  adds $0 (no LLM calls).
+
+================================================================================
+SESSION BOUNDARY — ENDS WHEN ONE OF
+================================================================================
+
+(a) Items 1 + 2 shipped, tested, deployed; instant-settle re-enabled
+    + soaking clean for 30+ min. ✅ full
+(b) Item 1 shipped + tested + PR'd but operator wants to review
+    before re-enabling on VPS. ✅ partial
+(c) Three-fix-failed on Item 1 → write
+    runbooks/incidents/<date>-background-settle-broken.md, abort. 🛑
+(d) Context ≥ 60% before Item 1 completes → close out what's green,
+    write a partial checkpoint, stop. ⏸
+
+================================================================================
+FOUR REMINDERS
+================================================================================
+
+1. **The bot is RUNNING.** Don't restart bot-staging.service unless
+   you're shipping Item 1 + 3. Aggregate metrics keep accumulating
+   during the soak, which is fine.
+
+2. **Item 1 is the priority.** Don't go off-roadmap. The dashboard
+   bugs (Item 2) are real but lower priority than restoring
+   instant-settle properly.
+
+3. **The proper background-settle fix MUST have the queue-doesn't-
+   overflow test.** This is the explicit lesson from feedback_test_under_load.md.
+   Without that test, the fix isn't done.
+
+4. **Operator preserved trust through last session's incident.** Don't
+   blow it again — slow down on the new code. One change at a time,
+   test before deploy, kill-switch env var, monitor 30 min before
+   declaring success.
+
+================================================================================
+HAND-OFF SIGNATURE
+================================================================================
+
+Previous session closed at HEAD 37be165 on `claude/jovial-hermann-7e103f`.
+Pushed to github.com/FalconAEZ/polymarket-5m-bot.
+
+Bot active, on spot_aware_v2, instant-settle disabled. v2 fires ~1/day
+at recent market quietness — Item 4's daily roll-up will tell us if
+that holds. Operator caught a real bug in last session (queue
+overflow); next session ships the proper fix. 9 commits this branch;
+PRs #1 + #2 both open and unmerged on github.
+
+This session: ship Item 1 (background-settle fix) + Item 2 (3 dashboard
+bugs). Run Items 3+5+6 if context permits. Item 4 is daily passive.
