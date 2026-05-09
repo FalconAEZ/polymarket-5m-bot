@@ -14,9 +14,20 @@ import type { DecisionTapeRow } from "../store/types"
  *  - PnL with proportional bar fill behind the number
  *  - hover reveals the rationale fields (delta_bps, p_win, ev)
  */
+// 5-minute Polymarket window length in seconds. Identical to
+// resolver.WINDOW_SECONDS on the Python side; duplicated here to avoid
+// pulling a backend constant into the React bundle just for one panel.
+const WINDOW_DURATION_S = 300
+
 export function DecisionsTape() {
   const s = useDashboard()
   if (!s) return <Panel title="DECISIONS TAPE" />
+
+  // Server-supplied "now" so the countdown advances on every WS push
+  // (~1s) without each row needing its own setInterval. The ISO string
+  // is precise to milliseconds, well within the precision we need to
+  // render an MM:SS countdown.
+  const nowS = Date.parse(s.now_utc_iso) / 1000
 
   return (
     <Panel title="DECISIONS TAPE" subtitle={`${s.n_decisions_total} total · newest first`}>
@@ -31,11 +42,12 @@ export function DecisionsTape() {
           <thead className="sticky top-0 bg-bg-panel z-10">
             <tr className="text-text-muted text-[9px] uppercase tracking-[0.08em]">
               <th className="text-left font-bold py-1.5">When</th>
+              <th className="text-left font-bold py-1.5">Market</th>
               <th className="text-left font-bold py-1.5">Side</th>
               <th className="text-left font-bold py-1.5">Tier</th>
               <th className="text-right font-bold py-1.5">Limit</th>
               <th className="text-right font-bold py-1.5">Fill</th>
-              <th className="text-right font-bold py-1.5">PnL</th>
+              <th className="text-right font-bold py-1.5">PnL · Status</th>
               <th className="text-right font-bold py-1.5">Δbps</th>
               <th className="text-right font-bold py-1.5">p_win</th>
             </tr>
@@ -43,7 +55,7 @@ export function DecisionsTape() {
           <tbody>
             <AnimatePresence initial={false}>
               {s.decisions.map((d) => (
-                <DecisionRow key={d.decision_id} d={d} />
+                <DecisionRow key={d.decision_id} d={d} nowS={nowS} />
               ))}
             </AnimatePresence>
           </tbody>
@@ -53,11 +65,27 @@ export function DecisionsTape() {
   )
 }
 
-function DecisionRow({ d }: { d: DecisionTapeRow }) {
+function fmtCountdown(seconds: number): string {
+  const total = Math.max(0, Math.floor(seconds))
+  const m = Math.floor(total / 60)
+  const s = total % 60
+  return `${m}:${s.toString().padStart(2, "0")}`
+}
+
+function DecisionRow({ d, nowS }: { d: DecisionTapeRow; nowS: number }) {
   const won =
     d.resolution !== null && d.fill_price !== null && d.resolution === d.side
   const lost = d.resolution !== null && d.fill_price !== null && !won
   const sideUp = d.side === "UP"
+  // Open = no resolution yet. Window closes WINDOW_DURATION_S after
+  // window_ts; Polymarket then takes another ~60-90s to publish the
+  // truth. We surface those phases distinctly so the operator can tell
+  // "still betting" from "waiting for oracle".
+  const open = d.resolution === null
+  const windowEndS = d.window_ts + WINDOW_DURATION_S
+  const secondsLeft = windowEndS - nowS
+  const inWindow = open && secondsLeft > 0
+  const settling = open && secondsLeft <= 0
 
   const borderTone = won
     ? "border-l-good"
@@ -98,6 +126,7 @@ function DecisionRow({ d }: { d: DecisionTapeRow }) {
       )}
     >
       <td className="px-2 py-0.5 text-text-secondary">{time}</td>
+      <td className="px-2 py-0.5 text-text-secondary font-mono">{d.window_ts}</td>
       <td className="px-2 py-0.5">
         <span className={cn("font-bold", sideUp ? "text-good" : "text-bad")}>
           {sideUp ? "▲" : "▼"} {d.side}
@@ -120,9 +149,19 @@ function DecisionRow({ d }: { d: DecisionTapeRow }) {
             transition={{ duration: 0.5, ease: "easeOut" }}
           />
         )}
-        <span className={cn("relative z-10 font-bold", pnlTone)}>
-          {fmtUsd(d.pnl_usd, 2)}
-        </span>
+        {inWindow ? (
+          <span className="relative z-10 font-bold text-warn tabular-nums">
+            {fmtCountdown(secondsLeft)} left
+          </span>
+        ) : settling ? (
+          <span className="relative z-10 font-bold text-text-muted">
+            settling…
+          </span>
+        ) : (
+          <span className={cn("relative z-10 font-bold", pnlTone)}>
+            {fmtUsd(d.pnl_usd, 2)}
+          </span>
+        )}
       </td>
       <td
         className={cn(
