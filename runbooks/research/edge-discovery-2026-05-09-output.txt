@@ -1,0 +1,131 @@
+================================================================================
+EDGE-DISCOVERY AUDIT — Phase 11.A.2 mid-soak
+  generated: 2026-05-09T18:01:53.770137+00:00
+  data: 256 fires / 250 settled
+  span: 2026-05-08T20:31:03.886500+00:00 -> 2026-05-09T17:55:00.931000+00:00
+  elapsed: 21.40h
+================================================================================
+
+[1] AGGREGATE BASELINE (everything)
+--------------------------------------------------------------------------------
+  ALL TRADES                              n=256 filled=243  WR= 49.4% (n=243)  pnl=   $-0.80  per= -0.003
+  AGGRESSIVE-MODE ONLY                    n=254 filled=243  WR= 49.4% (n=243)  pnl=   $-0.80  per= -0.003
+  PRE-AGGRESSIVE (loose-start)            n=  2 filled=  0  WR=  0.0% (n=  0)  pnl=   $+0.00  per= +0.000
+
+[2] HIGHS + LOWS (cumulative PnL trajectory)
+--------------------------------------------------------------------------------
+  PEAK cumulative PnL:   $+133.88 at 2026-05-09T05:30:00.876000+00:00
+  TROUGH cumulative PnL: $-14.91 at 2026-05-09T16:55:00.480580+00:00
+  CURRENT cumulative:    $-0.80
+  Drawdown from peak:    $-134.68
+
+  BEST single trade:  $+28.11  side=UP tier=15-30 Δ=+1.9bps p_win=0.54  2026-05-08T22:24:02.265000+00:00
+  WORST single trade: $-5.00  side=UP tier=50-70 Δ=+0.0bps p_win=0.54  2026-05-08T23:20:00.597000+00:00
+
+  BEST hour:  2026-05-09 03 UTC  pnl=$+42.21 (12 fires)
+  WORST hour: 2026-05-09 08 UTC  pnl=$-39.78 (12 fires)
+
+  Per-UTC-day PnL:
+    2026-05-08  pnl=   $+9.48  fires=39
+    2026-05-09  pnl=  $-10.28  fires=217
+
+  Best win streak:  7
+  Worst loss streak: 7
+
+[3] PER-TIER (the bedrock slice)
+--------------------------------------------------------------------------------
+  tier 15-30%                             n=  4 filled=  4  WR= 50.0% (n=  4)  pnl=  $+37.98  per= +9.496
+  tier 30-50%                             n= 54 filled= 52  WR= 50.0% (n= 52)  pnl=  $+40.92  per= +0.787
+  tier 50-70%                             n=195 filled=185  WR= 49.2% (n=185)  pnl=  $-76.73  per= -0.415
+  tier 70-85%                             n=  3 filled=  2  WR= 50.0% (n=  2)  pnl=   $-2.97  per= -1.485
+
+[4] PER-|Δ_bps| MAGNITUDE (does delta size predict edge?)
+--------------------------------------------------------------------------------
+  |Δ| 0-2 bps                             n=244 filled=234  WR= 50.0% (n=234)  pnl=  $+14.63  per= +0.063
+  |Δ| 2-5 bps                             n= 10 filled=  9  WR= 33.3% (n=  9)  pnl=  $-15.43  per= -1.715
+  |Δ| 5-10 bps                            n=  2 filled=  0  WR=  0.0% (n=  0)  pnl=   $+0.00  per= +0.000
+
+[5] |Δ_bps| × tier CROSS-TAB (the headline cross-cut)
+--------------------------------------------------------------------------------
+  tier↓ Δbkt→                0-2               2-5              5-10             10-20               20+
+  tier 15-30    n= 4 WR=  50%$+37.98                 -                 -                 -                 -
+  tier 30-50    n=47 WR=  53%$+55.05  n= 5 WR=  20%$-14.14                 -                 -                 -
+  tier 50-70    n=182 WR=  49%$-80.44  n= 3 WR=  67%$+3.70  n= 0 WR=   0%$+0.00                 -                 -
+  tier 70-85    n= 1 WR= 100%$+2.03  n= 1 WR=   0%$-5.00  n= 0 WR=   0%$+0.00                 -                 -
+
+[6] PER-p_win BUCKET (does the priors table actually predict?)
+--------------------------------------------------------------------------------
+  p_win [0.50,0.55)                       n=254 filled=243  WR= 49.4% (n=243)  pnl=   $-0.80  per= -0.003
+  p_win [0.70+]                           n=  2 filled=  0  WR=  0.0% (n=  0)  pnl=   $+0.00  per= +0.000
+
+[7] PER-SIDE (UP vs DOWN imbalance?)
+--------------------------------------------------------------------------------
+  side UP                                 n=149 filled=144  WR= 50.7% (n=144)  pnl=  $+39.36  per= +0.273
+  side DOWN                               n=107 filled= 99  WR= 47.5% (n= 99)  pnl=  $-40.17  per= -0.406
+
+[8] WHAT-IF FILTERED BACKTESTS (counterfactual PnL)
+--------------------------------------------------------------------------------
+  baseline (no filter)                        n=256 filled=243  WR= 49.4% (n=243)  pnl=   $-0.80  per= -0.003
+  |Δ| ≥ 5  (loose-start floor)                n=  2 filled=  0  WR=  0.0% (n=  0)  pnl=   $+0.00  per= +0.000
+  |Δ| ≥ 8  (design-doc default)               n=  1 filled=  0  WR=  0.0% (n=  0)  pnl=   $+0.00  per= +0.000
+  |Δ| ≥ 10 (tighter floor)                    n=  0 filled=  0  WR=  0.0% (n=  0)  pnl=   $+0.00  per= +0.000
+  EV ≥ 0   (positive-EV only)                 n=142 filled=136  WR= 44.1% (n=136)  pnl=   $-2.20  per= -0.016
+  EV ≥ 0.005 (design-doc EV floor)            n=142 filled=136  WR= 44.1% (n=136)  pnl=   $-2.20  per= -0.016
+  tier 30-50 ONLY                             n= 54 filled= 52  WR= 50.0% (n= 52)  pnl=  $+40.92  per= +0.787
+  tier 30-50 + 50-70                          n=249 filled=237  WR= 49.4% (n=237)  pnl=  $-35.82  per= -0.151
+  tier 30-50 + |Δ| ≥ 5                        n=  0 filled=  0  WR=  0.0% (n=  0)  pnl=   $+0.00  per= +0.000
+  tier 30-50 + |Δ| ≥ 8                        n=  0 filled=  0  WR=  0.0% (n=  0)  pnl=   $+0.00  per= +0.000
+  tier 30-50 + EV ≥ 0                         n= 54 filled= 52  WR= 50.0% (n= 52)  pnl=  $+40.92  per= +0.787
+  p_win ≥ 0.55                                n=  2 filled=  0  WR=  0.0% (n=  0)  pnl=   $+0.00  per= +0.000
+  p_win ≥ 0.60                                n=  2 filled=  0  WR=  0.0% (n=  0)  pnl=   $+0.00  per= +0.000
+  tier 30-50 + p_win ≥ 0.55                   n=  0 filled=  0  WR=  0.0% (n=  0)  pnl=   $+0.00  per= +0.000
+  DROP tier 50-70 (the drag)                  n= 61 filled= 58  WR= 50.0% (n= 58)  pnl=  $+75.93  per= +1.309
+  KEEP only |Δ|≥5 AND p_win≥0.55 AND EV>0     n=  2 filled=  0  WR=  0.0% (n=  0)  pnl=   $+0.00  per= +0.000
+
+[9] BUCKET BY HOUR-OF-DAY (UTC, any cyclical pattern?)
+--------------------------------------------------------------------------------
+  hour 00:00  n= 12 settled-fills= 12 WR= 66.7%  pnl= $+20.46  ++++++++++++++++++++++++++++++++++++++++
+  hour 01:00  n= 12 settled-fills= 12 WR= 66.7%  pnl= $+17.02  ++++++++++++++++++++++++++++++++++
+  hour 02:00  n= 12 settled-fills= 12 WR= 66.7%  pnl= $+16.14  ++++++++++++++++++++++++++++++++
+  hour 03:00  n= 12 settled-fills= 12 WR= 75.0%  pnl= $+42.21  ++++++++++++++++++++++++++++++++++++++++
+  hour 04:00  n= 12 settled-fills= 12 WR= 58.3%  pnl=  $+3.89  +++++++
+  hour 05:00  n= 12 settled-fills= 12 WR= 58.3%  pnl=  $+8.94  +++++++++++++++++
+  hour 06:00  n= 12 settled-fills= 12 WR= 41.7%  pnl= $-12.57  -------------------------
+  hour 07:00  n= 12 settled-fills= 12 WR= 41.7%  pnl= $-11.93  -----------------------
+  hour 08:00  n= 12 settled-fills= 12 WR= 16.7%  pnl= $-39.78  ----------------------------------------
+  hour 09:00  n= 12 settled-fills= 12 WR= 50.0%  pnl=  $-3.97  -------
+  hour 10:00  n= 12 settled-fills= 12 WR= 50.0%  pnl=  $-2.58  -----
+  hour 11:00  n= 12 settled-fills= 12 WR= 50.0%  pnl=  $+1.22  ++
+  hour 12:00  n= 12 settled-fills= 12 WR= 50.0%  pnl=  $+5.76  +++++++++++
+  hour 13:00  n= 13 settled-fills= 11 WR= 36.4%  pnl= $-15.00  -----------------------------
+  hour 14:00  n= 12 settled-fills= 12 WR= 41.7%  pnl= $-10.61  ---------------------
+  hour 15:00  n= 12 settled-fills= 12 WR= 41.7%  pnl= $-13.16  --------------------------
+  hour 16:00  n= 12 settled-fills= 12 WR= 25.0%  pnl= $-30.42  ----------------------------------------
+  hour 17:00  n= 12 settled-fills= 11 WR= 63.6%  pnl= $+14.11  ++++++++++++++++++++++++++++
+  hour 18:00  n=  0 settled-fills=  0 WR=  0.0%  pnl=  $+0.00  
+  hour 19:00  n=  0 settled-fills=  0 WR=  0.0%  pnl=  $+0.00  
+  hour 20:00  n=  2 settled-fills=  0 WR=  0.0%  pnl=  $+0.00  
+  hour 21:00  n= 10 settled-fills=  5 WR= 40.0%  pnl=  $+3.83  +++++++
+  hour 22:00  n= 15 settled-fills= 12 WR= 58.3%  pnl= $+25.34  ++++++++++++++++++++++++++++++++++++++++
+  hour 23:00  n= 12 settled-fills= 12 WR= 33.3%  pnl= $-19.69  ---------------------------------------
+
+[10] EV-IS-A-LIE CHECK (does ev marker correlate with outcome?)
+--------------------------------------------------------------------------------
+  EV negative             n=114 filled=107  WR= 56.1% (n=107)  pnl=   $+1.40  per= +0.013
+  EV in [0, 0.02)         n= 37 filled= 36  WR= 41.7% (n= 36)  pnl=  $-33.79  per= -0.939
+  EV in [0.02, 0.05)      n= 57 filled= 55  WR= 38.2% (n= 55)  pnl=  $-60.06  per= -1.092
+  EV in [0.05, 0.10)      n= 25 filled= 23  WR= 65.2% (n= 23)  pnl=  $+51.57  per= +2.242
+  EV ≥ 0.10               n= 23 filled= 22  WR= 40.9% (n= 22)  pnl=  $+40.08  per= +1.822
+
+[11] FILL-QUALITY (entry vs limit slippage)
+--------------------------------------------------------------------------------
+  filled trades: 243
+  fill_price - price_limit (cents):
+    p10  -1.90¢
+    p50  -1.00¢
+    p90  -1.00¢
+    mean -1.53¢
+
+================================================================================
+END OF EDGE-DISCOVERY AUDIT
+================================================================================
