@@ -1,6 +1,6 @@
 ---
 title: Phase 11 — SpotAwareStrategy paper-soak (post phase-5-pass)
-status: 11.A.2 active — aggressive_mode soak running on bot-staging since 2026-05-08 22:26:15 UTC; v2 early-read at 18.1h (2026-05-09 16:30 UTC) all gates OK / verdict DEFER (under 24h pickup); 48h committed gate review 2026-05-10 22:26:15 UTC
+status: 11.A.2 — v2 + instant-settle LIVE on bot-staging since 2026-05-09 23:12:00 UTC after the 22:20 UTC queue-overflow incident; proper background-settle fix landed at 43872e9 (PR #1), re-deployed clean; 30-min re-soak in progress 2026-05-09 23:12 → 23:42 UTC; orphan-recovery + dashboard fixes pushed but pending next natural restart; 48h gate review 2026-05-10 22:26:15 UTC
 tags: [phase, spot-aware, paper-soak, aggressive-mode, in-progress]
 ---
 
