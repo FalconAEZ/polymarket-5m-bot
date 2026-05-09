@@ -20,9 +20,27 @@
       "runtimeExecutable": "bash",
       "runtimeArgs": [
         "-c",
-        "PMB_DASH_STATE_DIR=state/staging uv run streamlit run scripts/dashboard.py --server.headless=true --server.port=8503 --browser.gatherUsageStats=false"
+        "PMB_DASH_STATE_DIR=/Users/hamad/Desktop/PolyMarket-5m/state/staging uv run streamlit run scripts/dashboard.py --server.headless=true --server.port=8503 --browser.gatherUsageStats=false"
       ],
       "port": 8503
+    },
+    {
+      "name": "dashboard-v1-screenshot",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": [
+        "-c",
+        "PMB_DASH_V2=0 PMB_DASH_STATE_DIR=/Users/hamad/Desktop/PolyMarket-5m/state/staging uv run streamlit run scripts/dashboard.py --server.headless=true --server.port=8511 --browser.gatherUsageStats=false"
+      ],
+      "port": 8511
+    },
+    {
+      "name": "dashboard-v2-screenshot",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": [
+        "-c",
+        "PMB_DASH_V2=1 PMB_DASH_STATE_DIR=/Users/hamad/Desktop/PolyMarket-5m/state/staging uv run streamlit run scripts/dashboard.py --server.headless=true --server.port=8512 --browser.gatherUsageStats=false"
+      ],
+      "port": 8512
     }
   ]
 }

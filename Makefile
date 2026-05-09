@@ -1,4 +1,4 @@
-.PHONY: verify lint format type test gate-0 gate-1a gate-1 gate-2 gate-3 gate-4 gate-4.5 gate-5 gate-6 dashboard sync-staging dash-staging study-A study-B study-C study-D study-E study-F study-G clean
+.PHONY: verify lint format type test gate-0 gate-1a gate-1 gate-2 gate-3 gate-4 gate-4.5 gate-5 gate-6 dashboard dashboard-v2 sync-staging dash-staging dash-staging-v2 dash-tunnel study-A study-B study-C study-D study-E study-F study-G clean
 
 # Default target — full local verification (mirrors CI)
 verify: lint type test
@@ -25,6 +25,20 @@ sync-staging:
 
 dash-staging: sync-staging
 	@PMB_DASH_STATE_DIR=state/staging uv run streamlit run scripts/dashboard.py
+
+# === Phase 11.A.X — v2 dashboard (Bloomberg-terminal layout, feature-flagged) ===
+dashboard-v2:
+	@PMB_DASH_V2=1 uv run streamlit run scripts/dashboard.py
+
+dash-staging-v2: sync-staging
+	@PMB_DASH_V2=1 PMB_DASH_STATE_DIR=state/staging uv run streamlit run scripts/dashboard.py
+
+# === Phase 11.A.X — open SSH tunnel from laptop to VPS dashboard ===
+# After deploying streamlit-dashboard.service on the VPS (per
+# runbooks/staging/deploy-dashboard.md), run `make dash-tunnel` from
+# your laptop. Browse to http://127.0.0.1:8503/.
+dash-tunnel:
+	@bash runbooks/operations/dashboard-tunnel.sh
 
 # === Phase gates (each runs the matching gate script) ===
 gate-0:

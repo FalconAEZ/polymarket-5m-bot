@@ -1,0 +1,45 @@
+[Unit]
+Description=Polymarket bot — VPS-side provider RTT collector
+Documentation=https://github.com/FalconAEZ/polymarket-5m-bot/blob/main/design/dashboard-v2.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ops
+Group=ops
+WorkingDirectory=/home/ops/polymarket-bot
+
+Environment=PATH=/home/ops/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PMB_DASH_STATE_DIR=/home/ops/polymarket-bot/state
+
+# Pings 5 providers every 10s, appends to state/provider_rtt.jsonl. The
+# dashboard reads from that file via load_provider_rtt(). Independent of
+# the dashboard process so RTT history accumulates continuously even
+# when the dashboard is stopped.
+ExecStart=/home/ops/.local/bin/uv run --quiet python -m polymarket_bot.dashboard.rtt_collector
+
+Restart=always
+RestartSec=15s
+
+StandardOutput=append:/home/ops/polymarket-bot/state/rtt-collector.log
+StandardError=inherit
+
+# Tiny footprint — 5 HTTP pings every 10s.
+MemoryMax=128M
+CPUQuota=20%
+
+# Hardening.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/home/ops/polymarket-bot/state
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictRealtime=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

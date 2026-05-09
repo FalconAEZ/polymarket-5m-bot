@@ -1,13 +1,16 @@
-"""Single-page Streamlit dashboard — Phase 4.5 operations observability.
+"""Single-page Streamlit dashboard — operations observability.
 
-Run with: `uv run streamlit run scripts/dashboard.py`. Binds to 127.0.0.1:8501
-per .streamlit/config.toml. Reads state/decisions/*.jsonl + state/feeds_health.json
-+ paper.log + capture.log. Auto-refreshes every N seconds (sidebar control).
+Run with: `uv run streamlit run scripts/dashboard.py`. Binds to
+127.0.0.1:8501 per .streamlit/config.toml. Reads state/decisions/*.jsonl
++ state/feeds_health.json + paper.log + capture.log. Auto-refreshes
+every N seconds (sidebar control).
 
-Layout per design/dashboard.md §4.3:
-  Header strip → 5 KPI hero cards → Center hero PnL chart →
-  System + Feeds rows → Agent activity panel → Decisions table →
-  Live logs (paper + capture, side-by-side tabs).
+Two layouts:
+  - PMB_DASH_V2=0 (default): v1 layout per design/dashboard.md §4.3
+  - PMB_DASH_V2=1: v2 Bloomberg-terminal layout per design/dashboard-v2.md §5
+
+Both share state loaders + theme tokens; v2 adds the hero pixel-display
+PnL, live tape, pipeline strip, orderbook panels, and provider RTT.
 """
 
 from __future__ import annotations
@@ -26,9 +29,25 @@ if str(SRC) not in sys.path:
 import altair as alt  # noqa: E402
 import pandas as pd  # noqa: E402
 import streamlit as st  # noqa: E402
+import streamlit.components.v1 as components  # noqa: E402
 from streamlit_autorefresh import st_autorefresh  # noqa: E402
 
 from polymarket_bot.dashboard.agents_loader import load_transcript  # noqa: E402
+from polymarket_bot.dashboard.bankroll import load_bankroll  # noqa: E402
+from polymarket_bot.dashboard.components import (  # noqa: E402
+    bankroll_chip,
+    cycle_meta_chip,
+    live_pnl_panel,
+    live_tape,
+    market_tabs,
+    orderbook_from_ctf,
+    pipeline_stages_from_state,
+    pipeline_strip,
+    provider_rtt_panel,
+    tape_events_from_decisions,
+    tradingview_chart,
+    wallet_panel,
+)
 from polymarket_bot.dashboard.loaders import (  # noqa: E402
     DecisionRow,
     HealthSnapshot,
@@ -42,6 +61,11 @@ from polymarket_bot.dashboard.loaders import (  # noqa: E402
     per_tier_stats,
     tail_log,
 )
+from polymarket_bot.dashboard.pipeline_latency import derive_pipeline_latencies  # noqa: E402
+from polymarket_bot.dashboard.polymarket_orderbook import fetch_ctf_orderbook  # noqa: E402
+from polymarket_bot.dashboard.profit_pace import profit_pace_per_hour  # noqa: E402
+from polymarket_bot.dashboard.rtt_loader import load_provider_rtt  # noqa: E402
+from polymarket_bot.dashboard.streaks import compute_streak  # noqa: E402
 from polymarket_bot.dashboard.theme import (  # noqa: E402
     badge,
     incident_banner,
@@ -54,7 +78,6 @@ def _resolve_default_state_dir() -> Path:
     env = os.environ.get("PMB_DASH_STATE_DIR")
     if env:
         return Path(env)
-    # If state-demo/ exists with a feeds_health.json, prefer it (demo mode).
     demo = ROOT / "state-demo"
     if (demo / "feeds_health.json").exists():
         return demo
@@ -62,14 +85,19 @@ def _resolve_default_state_dir() -> Path:
 
 
 DEFAULT_STATE_DIR = _resolve_default_state_dir()
+DASH_V2 = os.environ.get("PMB_DASH_V2", "0") == "1"
 PAPER_LOG = "paper.log"
 CAPTURE_LOG = "capture.log"
 DECISIONS_SUBDIR = "decisions"
 PHASE_3_AB_PATH = ROOT / "runbooks" / "gate-evidence" / "phase-3.3-llm-ab.txt"
 PHASE_3_VERDICT_PATH = ROOT / "runbooks" / "decisions" / "llm-ab-result.md"
+SYNC_SCRIPT = ROOT / "runbooks" / "scripts" / "sync_staging.sh"
+SYNC_MIN_INTERVAL_S = 30.0
 
 
-# ----------------------------- helpers ---------------------------------------
+# ============================================================================
+# Shared formatting helpers (used by both v1 and v2)
+# ============================================================================
 
 
 def _fmt_currency(value: float | None, *, decimals: int = 2) -> str:
@@ -130,20 +158,13 @@ def _detect_incidents(
     snap: HealthSnapshot | None,
     paper_log_path: Path,
 ) -> list[str]:
-    """Aggregate red signals into a single list for the top banner.
-
-    Per design-critique recommendation #1 — operator should not have to
-    scan multiple panels during an incident. One source of truth.
-    """
     issues: list[str] = []
-    # Process aliveness
     if paper.pid is not None and not paper.alive:
         issues.append(f"paper process dead (pid {paper.pid})")
     elif paper.pid is None:
         issues.append("paper process not running")
     if capture.pid is not None and not capture.alive:
         issues.append(f"capture process dead (pid {capture.pid})")
-    # Feed health
     if snap is None:
         issues.append("feeds_health.json missing")
     else:
@@ -153,14 +174,10 @@ def _detect_incidents(
         age_s = (datetime.now(tz=UTC) - snap.snapshot_mtime_utc).total_seconds()
         if age_s > 300:
             issues.append(f"feeds_health snapshot stale ({_humanize_age(age_s)})")
-    # Recent paper.log tracebacks (cheap: scan last 64KB)
     recent = tail_log(paper_log_path, n_lines=200)
     if any("Traceback" in line for line in recent):
         issues.append("traceback in paper.log (last 200 lines)")
     return issues
-
-
-# ----------------------------- panels ----------------------------------------
 
 
 _MODE_BADGE = {
@@ -170,7 +187,59 @@ _MODE_BADGE = {
 }
 
 
-def _render_header(
+def _maybe_auto_sync(state_dir: Path) -> float | None:
+    sentinel = state_dir / "feeds_health.json"
+    if not sentinel.exists():
+        return None
+    return (
+        datetime.now(tz=UTC) - datetime.fromtimestamp(sentinel.stat().st_mtime, tz=UTC)
+    ).total_seconds()
+
+
+def _run_sync(state_dir: Path) -> bool:
+    if not SYNC_SCRIPT.exists():
+        return False
+    sentinel = state_dir / "feeds_health.json"
+    if sentinel.exists():
+        age = (
+            datetime.now(tz=UTC) - datetime.fromtimestamp(sentinel.stat().st_mtime, tz=UTC)
+        ).total_seconds()
+        if age < SYNC_MIN_INTERVAL_S:
+            return False
+    if sentinel.exists():
+        try:
+            sentinel.touch()
+        except OSError:
+            pass
+    try:
+        import subprocess
+
+        subprocess.Popen(  # noqa: S603
+            ["/bin/bash", str(SYNC_SCRIPT)],
+            cwd=str(ROOT),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        return True
+    except Exception:
+        return False
+
+
+def _log_age_label(mtime: float | None) -> str:
+    if mtime is None:
+        return "missing"
+    age_s = (datetime.now(tz=UTC) - datetime.fromtimestamp(mtime, tz=UTC)).total_seconds()
+    return _humanize_age(age_s)
+
+
+# ============================================================================
+# v1 panels (unchanged from prior implementation)
+# ============================================================================
+
+
+def _render_header_v1(
     refreshed_at: datetime,
     since_filter: str | None,
     *,
@@ -181,7 +250,7 @@ def _render_header(
     if since_filter:
         sub_parts.append(f"since {since_filter}")
     if last_sync_age_s is not None:
-        sub_parts.append(f"vps sync: {_humanize_age(last_sync_age_s)} ago")
+        sub_parts.append(f"vps sync: {_humanize_age(last_sync_age_s)}")
     else:
         sub_parts.append("vps sync: never")
     sub = " · ".join(sub_parts)
@@ -212,7 +281,7 @@ def _render_header(
     )
 
 
-def _render_kpi_row(rows: list[DecisionRow], paper: ProcessStatus) -> None:
+def _render_kpi_row_v1(rows: list[DecisionRow], paper: ProcessStatus) -> None:
     agg = aggregate_pnl(rows)
     pnl = agg["total_pnl_usd"]
     win_rate = agg["win_rate"]
@@ -243,7 +312,7 @@ def _render_kpi_row(rows: list[DecisionRow], paper: ProcessStatus) -> None:
     rate_subtitle = f"{fires_24h} in 24h · {int(rate_per_hour * 24)}/d projected"
     if rate_per_hour == 0:
         rate_tone: str = "warn"
-    elif rate_per_hour > 14.5:  # >350/d → trip wire #2 in aggressive runbook
+    elif rate_per_hour > 14.5:
         rate_tone = "bad"
     else:
         rate_tone = "good"
@@ -251,18 +320,22 @@ def _render_kpi_row(rows: list[DecisionRow], paper: ProcessStatus) -> None:
     pnl_card = kpi_card(
         label="Cumulative PnL",
         value=_fmt_currency(pnl) if isinstance(pnl, float) else "—",
-        subtitle=f"avg {_fmt_currency(avg_pnl, decimals=3)} / trade"
-        if isinstance(avg_pnl, float)
-        else None,
+        subtitle=(
+            f"avg {_fmt_currency(avg_pnl, decimals=3)} / trade"
+            if isinstance(avg_pnl, float)
+            else None
+        ),
         tone=pnl_tone,
         glyph=pnl_glyph,
     )
     win_card = kpi_card(
         label="Win Rate",
         value=_fmt_pct(win_rate) if isinstance(win_rate, float) else "—",
-        subtitle=f"{n_won}/{n_settled} settled"
-        if isinstance(n_won, int) and isinstance(n_settled, int)
-        else None,
+        subtitle=(
+            f"{n_won}/{n_settled} settled"
+            if isinstance(n_won, int) and isinstance(n_settled, int)
+            else None
+        ),
         tone=wr_tone,
     )
     decisions_card = kpi_card(
@@ -292,11 +365,8 @@ def _render_kpi_row(rows: list[DecisionRow], paper: ProcessStatus) -> None:
         tone=uptime_tone,
     )
 
-    # KPI grid uses the SAME 55/25/20 column ratios as the panel grid
-    # below so each KPI vertically aligns with its related panel.
     main_kpi_col, side_kpi_col, log_kpi_col = st.columns([0.55, 0.25, 0.20], gap="small")
     with main_kpi_col:
-        # 4 sub-KPIs (PnL / Win / Decisions / Fire Rate) above the chart+table panel
         a, b, c, d = st.columns(4, gap="small")
         with a:
             st.html(pnl_card)
@@ -307,21 +377,18 @@ def _render_kpi_row(rows: list[DecisionRow], paper: ProcessStatus) -> None:
         with d:
             st.html(rate_card)
     with side_kpi_col:
-        st.html(last_card)  # above the Processes/Feeds panel
+        st.html(last_card)
     with log_kpi_col:
-        st.html(uptime_card)  # above the Live Logs panel
+        st.html(uptime_card)
 
 
 def _section_header(title: str, badge_html: str = "") -> None:
-    """A panel section header. Used to group widgets visually without
-    trying to wrap them in HTML containers (which breaks Streamlit's block
-    model). Each header is a single self-contained st.html call."""
     st.html(
         f'<div class="pmb-section"><div class="pmb-card__title">{title}{badge_html}</div></div>'
     )
 
 
-def _render_pnl_chart(rows: list[DecisionRow]) -> None:
+def _render_pnl_chart_v1(rows: list[DecisionRow]) -> None:
     settled = [r for r in rows if r.pnl_usd is not None]
     _section_header("📈 Cumulative PnL")
     if not settled:
@@ -341,7 +408,6 @@ def _render_pnl_chart(rows: list[DecisionRow]) -> None:
         }
     ).sort_values("decision_dt_utc")
     df["cumulative_pnl"] = df["pnl_usd"].cumsum()
-    df["color"] = df["cumulative_pnl"].apply(lambda v: "good" if v >= 0 else "bad")
 
     base = alt.Chart(df).encode(
         x=alt.X(
@@ -349,25 +415,25 @@ def _render_pnl_chart(rows: list[DecisionRow]) -> None:
             title=None,
             axis=alt.Axis(
                 format="%b %d %H:%M",
-                labelColor="#9ba6b3",
-                titleColor="#9ba6b3",
+                labelColor="#9c8d6b",
+                titleColor="#9c8d6b",
                 grid=False,
                 domain=False,
-                tickColor="#1f242e",
+                tickColor="#2a261c",
                 labelFontSize=10,
                 labelFontWeight=500,
                 labelPadding=6,
-                tickCount=6,  # ~6 label slots — was ~14, much less clutter
+                tickCount=6,
             ),
         ),
         y=alt.Y(
             "cumulative_pnl:Q",
             title=None,
             axis=alt.Axis(
-                labelColor="#9ba6b3",
+                labelColor="#9c8d6b",
                 grid=True,
-                gridColor="#171c25",
-                gridOpacity=0.6,
+                gridColor="#2a261c",
+                gridOpacity=0.5,
                 domain=False,
                 ticks=False,
                 labelFontSize=10,
@@ -377,12 +443,12 @@ def _render_pnl_chart(rows: list[DecisionRow]) -> None:
         ),
     )
     area = base.mark_area(
-        line={"color": "#2ee08c", "strokeWidth": 2, "strokeJoin": "round", "strokeCap": "round"},
+        line={"color": "#8aff7a", "strokeWidth": 2, "strokeJoin": "round", "strokeCap": "round"},
         color=alt.Gradient(
             gradient="linear",
             stops=[
-                alt.GradientStop(color="rgba(46, 224, 140, 0.42)", offset=0),
-                alt.GradientStop(color="rgba(46, 224, 140, 0.02)", offset=1),
+                alt.GradientStop(color="rgba(138, 255, 122, 0.42)", offset=0),
+                alt.GradientStop(color="rgba(138, 255, 122, 0.02)", offset=1),
             ],
             x1=1,
             x2=1,
@@ -401,23 +467,11 @@ def _render_pnl_chart(rows: list[DecisionRow]) -> None:
     )
     zero_rule = (
         alt.Chart(pd.DataFrame({"y": [0.0]}))
-        .mark_rule(color="#2a3140", strokeWidth=1, strokeDash=[3, 3])
+        .mark_rule(color="#3d3725", strokeWidth=1, strokeDash=[3, 3])
         .encode(y="y:Q")
     )
-    # Pulsing dot at the latest data point — shows the "live" tip of the line.
-    latest = df.iloc[-1:]
-    glow = (
-        alt.Chart(latest)
-        .mark_point(size=380, filled=True, color="#2ee08c", opacity=0.20)
-        .encode(x="decision_dt_utc:T", y="cumulative_pnl:Q")
-    )
-    dot = (
-        alt.Chart(latest)
-        .mark_point(size=120, filled=True, color="#2ee08c", stroke="#08090c", strokeWidth=2)
-        .encode(x="decision_dt_utc:T", y="cumulative_pnl:Q")
-    )
     chart = (
-        (zero_rule + area + glow + dot)
+        (zero_rule + area)
         .properties(
             height=280,
             background="transparent",
@@ -430,8 +484,6 @@ def _render_pnl_chart(rows: list[DecisionRow]) -> None:
 
 
 def _render_processes_inline(capture: ProcessStatus, paper: ProcessStatus) -> None:
-    """Same content as _render_processes but no outer .pmb-card wrapper —
-    used inside .st-key-pmb-side-panel which already provides the card."""
     rows_html: list[str] = []
     for p in (capture, paper):
         if p.alive:
@@ -452,7 +504,6 @@ def _render_processes_inline(capture: ProcessStatus, paper: ProcessStatus) -> No
 
 
 def _render_feeds_inline(snap: HealthSnapshot | None) -> None:
-    """No outer card; inline variant for use inside a side-panel container."""
     if snap is None:
         st.html(
             '<div class="pmb-card__title" style="margin-top: 14px;">📡 Feeds Health</div>'
@@ -481,126 +532,7 @@ def _render_feeds_inline(snap: HealthSnapshot | None) -> None:
     )
 
 
-def _render_processes(capture: ProcessStatus, paper: ProcessStatus) -> None:
-    rows_html: list[str] = []
-    for p in (capture, paper):
-        if p.alive:
-            tone, label = "good", "ALIVE"
-        elif p.pid is not None:
-            tone, label = "bad", "DEAD"
-        else:
-            tone, label = "muted", "ABSENT"
-        pid_str = f"pid {p.pid}" if p.pid is not None else "no pid file"
-        uptime = _process_uptime(p)
-        rows_html.append(
-            f'<div class="pmb-proc-row">'
-            f'<div><div class="pmb-proc-row__name">{html.escape(p.name)}</div>'
-            f'<div class="pmb-proc-row__sub">{html.escape(pid_str)} · uptime {html.escape(uptime)}</div>'
-            f"</div>{badge(label, tone=tone)}</div>"
-        )
-    st.html(
-        f'<div class="pmb-card">'
-        f'<div class="pmb-card__title">⚙️ Processes</div>'
-        f"{''.join(rows_html)}"
-        f"</div>"
-    )
-
-
-def _render_feeds(snap: HealthSnapshot | None) -> None:
-    if snap is None:
-        st.html(
-            '<div class="pmb-card">'
-            '<div class="pmb-card__title">📡 Feeds Health</div>'
-            '<div class="pmb-empty">No feeds_health.json found.</div>'
-            "</div>"
-        )
-        return
-    age_s = (datetime.now(tz=UTC) - snap.snapshot_mtime_utc).total_seconds()
-    age_tone = "good" if age_s < 60 else ("warn" if age_s < 300 else "bad")
-    age_badge = badge(_humanize_age(age_s), tone=age_tone)
-    feed_cards: list[str] = []
-    for f in snap.feeds:
-        tone = "good" if f.healthy else "bad"
-        last_err = f.last_error[:80] if f.last_error else "no errors"
-        feed_cards.append(
-            f'<div class="pmb-feed">'
-            f'<div class="pmb-feed__name">{html.escape(f.name)}'
-            f"{badge('OK' if f.healthy else 'BAD', tone=tone)}</div>"
-            f'<div class="pmb-feed__stat"><strong>{f.msgs_seen:,}</strong> msgs</div>'
-            f'<div class="pmb-feed__stat"><strong>{f.reconnects}</strong> reconnects</div>'
-            f'<div class="pmb-feed__err">{html.escape(last_err)}</div>'
-            f"</div>"
-        )
-    st.html(
-        f'<div class="pmb-card">'
-        f'<div class="pmb-card__title">📡 Feeds Health{age_badge}</div>'
-        f'<div class="pmb-feed-row">{"".join(feed_cards)}</div>'
-        f"</div>"
-    )
-
-
-def _render_agent_panel() -> None:
-    transcript = load_transcript(PHASE_3_AB_PATH, verdict_path=PHASE_3_VERDICT_PATH)
-    title = (
-        '<div class="pmb-card__title pmb-card__title--muted">🤖 Agent Activity'
-        f"{badge('HISTORICAL · Phase 3 A/B', tone='warn')}</div>"
-    )
-
-    if transcript is None:
-        st.html(
-            f'<div class="pmb-card pmb-card--dim">{title}'
-            '<div class="pmb-empty">No Phase 3 evidence found. The LLM ensemble '
-            "runs only when explicitly enabled — see <code>scripts/run_ab.py "
-            "--enable-ensemble</code>.</div></div>"
-        )
-        return
-
-    det = transcript.deterministic
-    ens = transcript.ensemble
-    pieces: list[str] = [
-        '<div class="pmb-feed-row pmb-feed-row--4col">',
-        '<div class="pmb-feed">'
-        '<div class="pmb-feed__name">deterministic</div>'
-        f'<div class="pmb-feed__stat"><strong>{det.n_fired if det else "—"}</strong> fired</div>'
-        f'<div class="pmb-feed__stat"><strong>{det.n_filled if det else "—"}</strong> filled · '
-        f"<strong>{det.n_won if det else '—'}</strong> won</div>"
-        f'<div class="pmb-feed__stat"><strong>{_fmt_pct(det.win_rate) if det else "—"}</strong> win-rate</div>'
-        f'<div class="pmb-feed__stat"><strong>{_fmt_currency(det.total_pnl_usd) if det else "—"}</strong> pnl</div>'
-        "</div>",
-        '<div class="pmb-feed">'
-        '<div class="pmb-feed__name">ensemble</div>'
-        f'<div class="pmb-feed__stat"><strong>{ens.n_fired if ens else "—"}</strong> fired</div>'
-        f'<div class="pmb-feed__stat"><strong>{ens.n_filled if ens else "—"}</strong> filled · '
-        f"<strong>{ens.n_won if ens else '—'}</strong> won</div>"
-        f'<div class="pmb-feed__stat"><strong>{_fmt_pct(ens.win_rate) if ens else "—"}</strong> win-rate</div>'
-        f'<div class="pmb-feed__stat"><strong>{_fmt_currency(ens.total_pnl_usd) if ens else "—"}</strong> pnl</div>'
-        "</div>",
-        '<div class="pmb-feed">'
-        '<div class="pmb-feed__name">api activity</div>'
-        f'<div class="pmb-feed__stat"><strong>{transcript.n_anthropic_calls:,}</strong> /v1/messages calls</div>'
-        f'<div class="pmb-feed__stat"><strong>{ens.elapsed_s:.1f}s</strong> elapsed</div>'
-        '<div class="pmb-feed__stat">3 specialists x Sonnet meta · decision #5</div>'
-        "</div>",
-        '<div class="pmb-feed">'
-        '<div class="pmb-feed__name">verdict</div>'
-        f'<div class="pmb-feed__stat" style="margin-top: 6px;">'
-        f"{badge(transcript.verdict or 'PENDING', tone='bad' if transcript.verdict == 'CUT' else 'good')}"
-        "</div>"
-        '<div class="pmb-feed__err">decision #16: kept iff uplift≥3pp, p99≤4s, $/dec≤$0.01. Two of three failed.</div>'
-        "</div>",
-        "</div>",
-    ]
-    if transcript.sample_rationales:
-        pieces.append(
-            '<div class="pmb-rationale__heading">Sample agent rationales (from schema-validation logs):</div>'
-        )
-        for r in transcript.sample_rationales[:3]:
-            pieces.append(f'<div class="pmb-rationale">{html.escape(r)}</div>')
-    body = "".join(pieces)
-    st.html(f'<div class="pmb-card pmb-card--dim">{title}{body}</div>')
-
-
-def _render_decisions_table(rows: list[DecisionRow]) -> None:
+def _render_decisions_table_v1(rows: list[DecisionRow]) -> None:
     _section_header("📋 Decisions")
     if not rows:
         st.html(
@@ -634,7 +566,7 @@ def _render_decisions_table(rows: list[DecisionRow]) -> None:
                 "Composite": r.composite_pct,
                 "TTL": f"{r.ttl_s}s",
             }
-            for r in reversed(rows)  # newest first
+            for r in reversed(rows)
         ]
     )
     st.dataframe(
@@ -645,9 +577,7 @@ def _render_decisions_table(rows: list[DecisionRow]) -> None:
             "When (UTC)": st.column_config.TextColumn("When", width="small"),
             "Market": st.column_config.NumberColumn(
                 "Market",
-                help="5-min market window_ts (Unix seconds). "
-                "Same identifier used in the Polymarket slug "
-                "btc-updown-5m-<window_ts>.",
+                help="5-min market window_ts (Unix seconds).",
                 format="%d",
                 width="small",
             ),
@@ -701,86 +631,7 @@ def _render_log_panel(state_dir: Path) -> None:
     )
 
 
-def _log_age_label(mtime: float | None) -> str:
-    if mtime is None:
-        return "missing"
-    age_s = (datetime.now(tz=UTC) - datetime.fromtimestamp(mtime, tz=UTC)).total_seconds()
-    return _humanize_age(age_s)
-
-
-# ----------------------------- main ------------------------------------------
-
-
-SYNC_SCRIPT = ROOT / "runbooks" / "scripts" / "sync_staging.sh"
-
-
-def _maybe_auto_sync(state_dir: Path) -> float | None:
-    """Run sync_staging.sh if enabled, return last-sync age in seconds."""
-    sentinel = state_dir / "feeds_health.json"
-    if not sentinel.exists():
-        return None
-    return (
-        datetime.now(tz=UTC) - datetime.fromtimestamp(sentinel.stat().st_mtime, tz=UTC)
-    ).total_seconds()
-
-
-SYNC_MIN_INTERVAL_S = 30.0
-
-
-def _run_sync(state_dir: Path) -> bool:
-    """Run sync_staging.sh in the background, throttled to one per 30s.
-
-    Streamlit autorefreshes every few seconds; sync_staging.sh takes
-    ~5-15s. Without throttling, sync processes stack up faster than they
-    complete and eat CPU. We use the on-disk feeds_health.json mtime as
-    the "last sync time" — anything newer than 30s skips. Subprocess is
-    fire-and-forget (Popen, no wait) so the Streamlit render is never
-    blocked on the rsync.
-    """
-    if not SYNC_SCRIPT.exists():
-        return False
-    sentinel = state_dir / "feeds_health.json"
-    if sentinel.exists():
-        age = (
-            datetime.now(tz=UTC) - datetime.fromtimestamp(sentinel.stat().st_mtime, tz=UTC)
-        ).total_seconds()
-        if age < SYNC_MIN_INTERVAL_S:
-            return False
-    # Race: multiple concurrent Streamlit autorefreshes can all see the
-    # same stale mtime and each spawn a sync. Touch the sentinel first
-    # so subsequent renders within the same throttle window see fresh
-    # mtime before the rsync writes its real content.
-    if sentinel.exists():
-        try:
-            sentinel.touch()
-        except OSError:
-            pass
-    try:
-        import subprocess
-
-        # bash + SYNC_SCRIPT are controlled paths in this repo. Popen
-        # (not run) — non-blocking; render proceeds while sync streams
-        # data in the background.
-        subprocess.Popen(  # noqa: S603
-            ["/bin/bash", str(SYNC_SCRIPT)],
-            cwd=str(ROOT),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            stdin=subprocess.DEVNULL,
-            start_new_session=True,
-        )
-        return True
-    except Exception:
-        return False
-
-
 def _render_aggressive_trip_wires(rows: list[DecisionRow]) -> None:
-    """Trip-wire panel for the aggressive-mode 48h experiment.
-
-    Shows progress against the four numerical exit criteria from
-    runbooks/decisions/aggressive-mode-2026-05-09.md so the operator can
-    see at a glance whether we're still safely inside the experiment.
-    """
     mode = latest_active_mode(rows)
     if mode != "aggressive":
         return
@@ -789,21 +640,17 @@ def _render_aggressive_trip_wires(rows: list[DecisionRow]) -> None:
     if not aggressive_rows:
         return
 
-    # PnL trip wire (-$50 in any rolling 24h)
     cutoff = datetime.now(tz=UTC) - timedelta(hours=24)
     rows_24h = [r for r in aggressive_rows if r.decision_dt_utc >= cutoff]
     pnl_24h = sum((r.pnl_usd or 0.0) for r in rows_24h)
 
-    # Fire rate trip wire (>350/d)
     rate_24h, fires_24h = fire_rate_per_hour(aggressive_rows, lookback_hours=24.0)
     fires_per_day = rate_24h * 24
 
-    # WR trip wire (<47% on 100+ settled)
     settled = [r for r in aggressive_rows if r.resolution is not None and r.fill_price is not None]
     won = [r for r in settled if r.resolution == r.side]
     wr = (len(won) / len(settled)) if settled else None
 
-    # 48h elapsed (from earliest aggressive decision)
     earliest = min(r.decision_dt_utc for r in aggressive_rows)
     elapsed_h = (datetime.now(tz=UTC) - earliest).total_seconds() / 3600
     review_due = elapsed_h >= 48
@@ -833,7 +680,7 @@ def _render_aggressive_trip_wires(rows: list[DecisionRow]) -> None:
     rows_html.append(
         _row(
             "Net win-rate",
-            f"{(wr*100):.1f}%" if wr is not None else "—",
+            f"{(wr * 100):.1f}%" if wr is not None else "—",
             "≥ 47% (after 100 settled)",
             wr is not None and len(settled) >= 100 and wr < 0.47,
         )
@@ -899,17 +746,522 @@ def _render_tier_panel(rows: list[DecisionRow]) -> None:
     )
 
 
+def _render_agent_panel() -> None:
+    transcript = load_transcript(PHASE_3_AB_PATH, verdict_path=PHASE_3_VERDICT_PATH)
+    title = (
+        '<div class="pmb-card__title pmb-card__title--muted">🤖 Agent Activity'
+        f"{badge('HISTORICAL · Phase 3 A/B', tone='warn')}</div>"
+    )
+
+    if transcript is None:
+        st.html(
+            f'<div class="pmb-card pmb-card--dim">{title}'
+            '<div class="pmb-empty">No Phase 3 evidence found.</div></div>'
+        )
+        return
+
+    det = transcript.deterministic
+    ens = transcript.ensemble
+    pieces: list[str] = [
+        '<div class="pmb-feed-row pmb-feed-row--4col">',
+        '<div class="pmb-feed">'
+        '<div class="pmb-feed__name">deterministic</div>'
+        f'<div class="pmb-feed__stat"><strong>{det.n_fired if det else "—"}</strong> fired</div>'
+        f'<div class="pmb-feed__stat"><strong>{det.n_filled if det else "—"}</strong> filled · '
+        f"<strong>{det.n_won if det else '—'}</strong> won</div>"
+        f'<div class="pmb-feed__stat"><strong>{_fmt_pct(det.win_rate) if det else "—"}</strong> win-rate</div>'
+        f'<div class="pmb-feed__stat"><strong>{_fmt_currency(det.total_pnl_usd) if det else "—"}</strong> pnl</div>'
+        "</div>",
+        '<div class="pmb-feed">'
+        '<div class="pmb-feed__name">ensemble</div>'
+        f'<div class="pmb-feed__stat"><strong>{ens.n_fired if ens else "—"}</strong> fired</div>'
+        f'<div class="pmb-feed__stat"><strong>{ens.n_filled if ens else "—"}</strong> filled · '
+        f"<strong>{ens.n_won if ens else '—'}</strong> won</div>"
+        f'<div class="pmb-feed__stat"><strong>{_fmt_pct(ens.win_rate) if ens else "—"}</strong> win-rate</div>'
+        f'<div class="pmb-feed__stat"><strong>{_fmt_currency(ens.total_pnl_usd) if ens else "—"}</strong> pnl</div>'
+        "</div>",
+        '<div class="pmb-feed">'
+        '<div class="pmb-feed__name">api activity</div>'
+        f'<div class="pmb-feed__stat"><strong>{transcript.n_anthropic_calls:,}</strong> /v1/messages calls</div>'
+        f'<div class="pmb-feed__stat"><strong>{ens.elapsed_s:.1f}s</strong> elapsed</div>'
+        '<div class="pmb-feed__stat">3 specialists x Sonnet meta · decision #5</div>'
+        "</div>",
+        '<div class="pmb-feed">'
+        '<div class="pmb-feed__name">verdict</div>'
+        f'<div class="pmb-feed__stat" style="margin-top: 6px;">'
+        f"{badge(transcript.verdict or 'PENDING', tone='bad' if transcript.verdict == 'CUT' else 'good')}"
+        "</div>"
+        '<div class="pmb-feed__err">decision #16: kept iff uplift≥3pp, p99≤4s, $/dec≤$0.01.</div>'
+        "</div>",
+        "</div>",
+    ]
+    body = "".join(pieces)
+    st.html(f'<div class="pmb-card pmb-card--dim">{title}{body}</div>')
+
+
+# ============================================================================
+# v2 panels
+# ============================================================================
+
+
+def _render_topstrip_v2(
+    rows: list[DecisionRow], paper: ProcessStatus, *, last_sync_age_s: float | None
+) -> None:
+    bankroll = load_bankroll(rows)
+    bankroll_html = bankroll_chip(bankroll.starting_usd, bankroll.current_usd)
+    tabs_html = market_tabs(active="BTC")
+
+    mode = latest_active_mode(rows)
+    if mode in _MODE_BADGE:
+        label, tone = _MODE_BADGE[mode]
+    elif mode is not None:
+        label, tone = (mode.upper(), "warn")
+    else:
+        label, tone = ("WAITING", "warn")
+    mode_badge = badge(label, tone=tone)
+
+    sub_text = "Phase 11.A · spot_aware paper-soak"
+    if mode == "aggressive":
+        sub_text = "Phase 11.A.2 · aggressive_mode · 48h gate at 2026-05-10 22:26 UTC"
+
+    sync_text = (
+        f"vps sync {_humanize_age(last_sync_age_s)}"
+        if last_sync_age_s is not None
+        else "vps sync: never"
+    )
+    clock = datetime.now(tz=UTC).strftime("%H:%M:%S UTC")
+    paper_status = "ALIVE" if paper.alive else "OFFLINE"
+    paper_tone = "good" if paper.alive else "bad"
+
+    st.html(
+        '<div class="pmb-topstrip">'
+        '<div class="pmb-topstrip__left">'
+        '<span class="pmb-live-dot" title="live"></span>'
+        '<span class="pmb-topstrip__brand">POLYMARKET 5M</span>'
+        f"{tabs_html}"
+        f"{mode_badge}"
+        f'<span class="pmb-topstrip__sub">{html.escape(sub_text)}</span>'
+        "</div>"
+        '<div class="pmb-topstrip__right">'
+        f"{bankroll_html}"
+        f"{badge(paper_status, tone=paper_tone)}"
+        f'<span class="pmb-topstrip__sub">{html.escape(sync_text)}</span>'
+        f'<span class="pmb-clock">{html.escape(clock)}</span>'
+        "</div>"
+        "</div>"
+    )
+
+
+def _render_live_tape_v2(rows: list[DecisionRow]) -> None:
+    events = tape_events_from_decisions(rows, n=12)
+    st.html(live_tape(events))
+
+
+def _render_pnl_chart_plotly(rows: list[DecisionRow]) -> None:
+    settled = [r for r in rows if r.pnl_usd is not None]
+    _section_header("📈 Cumulative PnL")
+    if not settled:
+        st.html(
+            '<div class="pmb-empty">'
+            "No settled decisions yet. Settled records appear after the 5-min "
+            "window closes and oracle resolution lands."
+            "</div>"
+        )
+        return
+    import plotly.graph_objects as go  # local import; plotly is heavy
+
+    df = pd.DataFrame(
+        {
+            "decision_dt_utc": [r.decision_dt_utc for r in settled],
+            "pnl_usd": [r.pnl_usd or 0.0 for r in settled],
+        }
+    ).sort_values("decision_dt_utc")
+    df["cumulative_pnl"] = df["pnl_usd"].cumsum()
+
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatter(
+            x=df["decision_dt_utc"],
+            y=df["cumulative_pnl"],
+            mode="lines",
+            line={"color": "#8aff7a", "width": 2, "shape": "spline", "smoothing": 0.8},
+            fill="tozeroy",
+            fillcolor="rgba(138, 255, 122, 0.18)",
+            hovertemplate="%{x|%Y-%m-%d %H:%M:%S}<br>Cumulative: $%{y:.4f}<extra></extra>",
+            name="Cumulative PnL",
+        )
+    )
+    fig.update_layout(
+        height=240,
+        margin={"t": 10, "b": 30, "l": 50, "r": 10},
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font={"family": "JetBrains Mono", "size": 10, "color": "#9c8d6b"},
+        xaxis={
+            "showgrid": False,
+            "tickformat": "%b %d %H:%M",
+            "tickfont": {"size": 9, "color": "#9c8d6b"},
+        },
+        yaxis={
+            "gridcolor": "rgba(42, 38, 28, 0.5)",
+            "tickformat": "$,.2f",
+            "tickfont": {"size": 9, "color": "#9c8d6b"},
+            "zerolinecolor": "#3d3725",
+            "zerolinewidth": 1,
+        },
+        hoverlabel={
+            "bgcolor": "#11100c",
+            "bordercolor": "#3d3725",
+            "font": {"family": "JetBrains Mono", "size": 11, "color": "#f5edd6"},
+        },
+        showlegend=False,
+    )
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+
+def _render_decisions_aggrid(rows: list[DecisionRow]) -> None:
+    _section_header("📋 Decisions Tape")
+    if not rows:
+        st.html(
+            '<div class="pmb-empty">No decisions logged yet. '
+            "Files at <code>state/decisions/&lt;UTC-date&gt;.jsonl</code> populate "
+            "as the active strategy fires.</div>"
+        )
+        return
+    from st_aggrid import AgGrid, GridOptionsBuilder
+    from st_aggrid.shared import GridUpdateMode
+
+    df = pd.DataFrame(
+        [
+            {
+                "When": r.decision_dt_utc.strftime("%H:%M:%S · %b %d"),
+                "Side": "▲ UP" if r.side == "UP" else "▼ DOWN",
+                "Tier": _tier_for_price(r.price_limit),
+                "Limit": round(r.price_limit, 4),
+                "Fill": round(r.fill_price, 4) if r.fill_price is not None else None,
+                "Outcome": (
+                    "WON"
+                    if r.resolution is not None and r.resolution == r.side
+                    else "LOST"
+                    if r.resolution is not None
+                    else "PENDING"
+                ),
+                "PnL": round(r.pnl_usd, 4) if r.pnl_usd is not None else None,
+                "Δ_bps": r.delta_bps,
+                "p_win": r.p_win,
+                "EV": r.ev_dollars,
+                "TTL": r.ttl_s,
+            }
+            for r in reversed(rows)
+        ]
+    )
+    gb = GridOptionsBuilder.from_dataframe(df)
+    gb.configure_default_column(
+        sortable=True,
+        filterable=False,
+        resizable=True,
+        suppressMenu=True,
+    )
+    gb.configure_grid_options(
+        rowHeight=26,
+        headerHeight=28,
+        suppressCellSelection=True,
+        suppressMovableColumns=True,
+    )
+    grid_opts = gb.build()
+    AgGrid(
+        df,
+        gridOptions=grid_opts,
+        theme="alpine-dark",
+        height=320,
+        update_mode=GridUpdateMode.NO_UPDATE,
+        allow_unsafe_jscode=False,
+        fit_columns_on_grid_load=True,
+        key="pmb_decisions_grid",
+    )
+
+
+def _tier_for_price(p: float) -> str:
+    if p < 0.15:
+        return "<15%"
+    if p < 0.30:
+        return "15-30%"
+    if p < 0.50:
+        return "30-50%"
+    if p < 0.70:
+        return "50-70%"
+    if p < 0.85:
+        return "70-85%"
+    return "85-100%"
+
+
+# ============================================================================
+# main entrypoints
+# ============================================================================
+
+
+def _render_main_v1(
+    capture: ProcessStatus,
+    paper: ProcessStatus,
+    snap: HealthSnapshot | None,
+    rows: list[DecisionRow],
+    issues: list[str],
+    state_dir: Path,
+    last_sync_age_s: float | None,
+    since: str,
+) -> None:
+    _render_header_v1(
+        refreshed_at=datetime.now(tz=UTC),
+        since_filter=since,
+        rows=rows,
+        last_sync_age_s=last_sync_age_s,
+    )
+    if issues:
+        st.html(incident_banner(issues))
+    _render_kpi_row_v1(rows, paper)
+
+    main_col, side_col, log_col = st.columns([0.55, 0.25, 0.20], gap="small")
+    with main_col, st.container(border=True, key="pmb-main-panel"):
+        _render_pnl_chart_v1(rows)
+        _render_decisions_table_v1(rows)
+    with side_col, st.container(border=True, key="pmb-side-panel"):
+        _render_processes_inline(capture, paper)
+        _render_feeds_inline(snap)
+    with log_col, st.container(border=True, key="pmb-log-panel"):
+        _render_log_panel(state_dir)
+
+    _render_aggressive_trip_wires(rows)
+    _render_tier_panel(rows)
+
+    with st.expander("🤖  Historical agent activity  ·  Phase 3 A/B (CUT)", expanded=False):
+        _render_agent_panel()
+
+
+def _today_pnl(rows: list[DecisionRow]) -> tuple[float | None, int]:
+    """Sum of pnl_usd for settled rows whose decision_dt_utc is today (UTC)."""
+    today = datetime.now(tz=UTC).date()
+    settled_today = [
+        r
+        for r in rows
+        if r.resolution is not None and r.pnl_usd is not None and r.decision_dt_utc.date() == today
+    ]
+    if not settled_today:
+        return (0.0, 0) if rows else (None, 0)
+    return (sum(r.pnl_usd or 0.0 for r in settled_today), len(settled_today))
+
+
+def _best_tier_pnl(rows: list[DecisionRow]) -> tuple[str | None, float | None]:
+    """Return (label, pnl_usd) of the tier with the highest cumulative PnL."""
+    stats = per_tier_stats(rows)
+    if not stats:
+        return (None, None)
+    best = max(stats, key=lambda s: s.pnl_usd)
+    return (best.tier, best.pnl_usd)
+
+
+def _elapsed_label(rows: list[DecisionRow]) -> str:
+    if not rows:
+        return "—"
+    first = min(rows, key=lambda r: r.decision_dt_utc).decision_dt_utc
+    elapsed_s = (datetime.now(tz=UTC) - first).total_seconds()
+    return _humanize_age(elapsed_s).replace(" ago", "")
+
+
+def _render_row1_panels(rows: list[DecisionRow], paper: ProcessStatus) -> None:
+    """Row 1 — wallet | TradingView | Polymarket CTF book | Live PnL pace.
+
+    Single horizontal strip; everything visible without scrolling.
+    """
+    bankroll = load_bankroll(rows)
+    agg = aggregate_pnl(rows)
+    streak = compute_streak(rows)
+    pace_per_hour, pace_n = profit_pace_per_hour(rows, window_s=3600.0)
+    today_pnl_val, today_n = _today_pnl(rows)
+    best_tier_label, best_tier_pnl = _best_tier_pnl(rows)
+
+    mode = latest_active_mode(rows)
+    if mode in _MODE_BADGE:
+        mode_label, mode_tone = _MODE_BADGE[mode]
+    else:
+        mode_label, mode_tone = ("OFFLINE" if not paper.alive else "WAITING", "warn")
+
+    win_rate_val = agg["win_rate"] if isinstance(agg["win_rate"], float) else None
+    avg_pnl_val = (
+        agg["avg_pnl_per_filled"] if isinstance(agg["avg_pnl_per_filled"], float) else None
+    )
+    n_fired_val = int(agg["n_fired"]) if isinstance(agg["n_fired"], int) else 0
+    n_filled_val = int(agg["n_filled"]) if isinstance(agg["n_filled"], int) else 0
+    n_settled_val = int(agg["n_settled"]) if isinstance(agg["n_settled"], int) else 0
+    n_won_val = int(agg["n_won"]) if isinstance(agg["n_won"], int) else 0
+
+    wallet_html = wallet_panel(
+        starting_usd=bankroll.starting_usd,
+        current_usd=bankroll.current_usd,
+        n_fired=n_fired_val,
+        n_filled=n_filled_val,
+        n_settled=n_settled_val,
+        n_won=n_won_val,
+        win_rate=win_rate_val,
+        avg_pnl_per_filled=avg_pnl_val,
+        elapsed_label=_elapsed_label(rows),
+        mode_label=mode_label,
+        mode_tone=mode_tone,  # type: ignore[arg-type]
+    )
+    live_html = live_pnl_panel(
+        pace_per_hour=pace_per_hour,
+        pace_n=pace_n,
+        streak_glyph=streak.current_glyph,
+        streak_n=streak.current_n,
+        best_win_streak=streak.best_win_streak,
+        worst_loss_streak=streak.worst_loss_streak,
+        today_pnl=today_pnl_val,
+        today_n=today_n,
+        best_tier_label=best_tier_label,
+        best_tier_pnl=best_tier_pnl,
+    )
+
+    ctf_snap = None
+    if rows:
+        most_recent = max(rows, key=lambda r: r.decision_dt_utc)
+        try:
+            ctf_snap = fetch_ctf_orderbook(most_recent.window_ts, side=most_recent.side)
+        except Exception:
+            ctf_snap = None
+    ctf_html = orderbook_from_ctf(ctf_snap)
+
+    wallet_col, chart_col, book_col, live_col = st.columns([0.22, 0.30, 0.22, 0.26], gap="small")
+    with wallet_col:
+        st.html(wallet_html)
+    with chart_col, st.container(border=True, key="pmb-row1-chart"):
+        st.html(
+            '<div class="pmb-panel__hdr" style="margin-bottom: 4px;">'
+            '<span class="pmb-panel__title">BTC · 5M · BINANCE</span>'
+            '<span class="pmb-panel__sub" style="margin:0">SPOT REFERENCE</span>'
+            "</div>"
+        )
+        components.html(tradingview_chart(), height=220, scrolling=False)
+    with book_col:
+        st.html(ctf_html)
+    with live_col:
+        st.html(live_html)
+
+
+def _render_pipeline_row_v2(
+    rows: list[DecisionRow],
+    feeds: list | None,
+    capture: ProcessStatus,
+    paper: ProcessStatus,
+    snap: HealthSnapshot | None,
+) -> None:
+    """Row 2 — pipeline strip + cycle meta chip on the right."""
+    latencies = derive_pipeline_latencies(rows, snap)
+    stages = pipeline_stages_from_state(
+        rows, snap.feeds if snap else None, capture, paper, latencies
+    )
+    n_fired_val = len(rows)
+    elapsed_label = "—"
+    if rows:
+        most_recent = max(rows, key=lambda r: r.decision_dt_utc)
+        if most_recent.resolution is None:
+            elapsed_s = (datetime.now(tz=UTC) - most_recent.decision_dt_utc).total_seconds()
+            elapsed_label = _humanize_age(elapsed_s).replace(" ago", "")
+        else:
+            elapsed_label = "settled"
+    pipeline_html = pipeline_strip(stages)
+    meta_html = cycle_meta_chip(
+        cycle_n=n_fired_val,
+        budget_label="5m",
+        elapsed_label=elapsed_label,
+    )
+    st.html(
+        '<div class="pmb-cycle-row">'
+        f'<div class="pmb-cycle-row__pipeline">{pipeline_html}</div>'
+        f'<div class="pmb-cycle-row__meta">{meta_html}</div>'
+        "</div>"
+    )
+
+
+def _render_row3_main(rows: list[DecisionRow]) -> None:
+    """Row 3 — PnL curve (60%) + decisions tape (40%)."""
+    chart_col, table_col = st.columns([0.60, 0.40], gap="small")
+    with chart_col, st.container(border=True, key="pmb-main-panel"):
+        _render_pnl_chart_plotly(rows)
+    with table_col, st.container(border=True, key="pmb-side-panel"):
+        _render_decisions_aggrid(rows)
+
+
+def _render_row4_bottom(
+    rows: list[DecisionRow],
+    capture: ProcessStatus,
+    paper: ProcessStatus,
+    snap: HealthSnapshot | None,
+    state_dir: Path,
+) -> None:
+    """Row 4 — provider RTT | trip-wires (compact) | per-tier (compact)."""
+    samples_by_provider = load_provider_rtt(state_dir)
+    last_age_s: float | None = None
+    if samples_by_provider:
+        most_recent = max(
+            (s.ts_utc for samples in samples_by_provider.values() for s in samples),
+            default=None,
+        )
+        if most_recent is not None:
+            last_age_s = (datetime.now(tz=UTC) - most_recent).total_seconds()
+
+    rtt_col, trip_col, tier_col = st.columns([0.30, 0.30, 0.40], gap="small")
+    with rtt_col, st.container(border=True, key="pmb-rtt-panel"):
+        st.html('<div class="pmb-card__title">📡 PROVIDER RTT · VPS</div>')
+        st.html(provider_rtt_panel(samples_by_provider, last_collected_age_s=last_age_s))
+    with trip_col, st.container(border=True, key="pmb-trip-panel"):
+        _render_aggressive_trip_wires(rows)
+        if not rows or latest_active_mode(rows) != "aggressive":
+            _render_processes_inline(capture, paper)
+            _render_feeds_inline(snap)
+    with tier_col, st.container(border=True, key="pmb-tier-panel"):
+        _render_tier_panel(rows)
+
+
+def _render_main_v2(
+    capture: ProcessStatus,
+    paper: ProcessStatus,
+    snap: HealthSnapshot | None,
+    rows: list[DecisionRow],
+    issues: list[str],
+    state_dir: Path,
+    last_sync_age_s: float | None,
+) -> None:
+    _render_topstrip_v2(rows, paper, last_sync_age_s=last_sync_age_s)
+    _render_live_tape_v2(rows)
+    if issues:
+        st.html(incident_banner(issues))
+
+    _render_row1_panels(rows, paper)
+    _render_pipeline_row_v2(rows, snap.feeds if snap else None, capture, paper, snap)
+    _render_row3_main(rows)
+    _render_row4_bottom(rows, capture, paper, snap, state_dir)
+
+    # Below-the-fold: deemphasized inspect tools (logs, agents) — collapsed.
+    with st.expander("📜 Live logs (paper.log + capture.log)", expanded=False):
+        _render_log_panel(state_dir)
+    with st.expander("🤖 Historical agent activity · Phase 3 A/B (CUT)", expanded=False):
+        _render_agent_panel()
+
+
 def main() -> None:
+    page_title = "Polymarket Bot — Operations" + (" · v2" if DASH_V2 else "")
     st.set_page_config(
-        page_title="Polymarket Bot — Operations",
+        page_title=page_title,
         page_icon="📈",
         layout="wide",
         initial_sidebar_state="collapsed",
     )
     st.markdown(inject(), unsafe_allow_html=True)
 
-    # Sidebar controls.
     st.sidebar.title("Dashboard")
+    if DASH_V2:
+        st.sidebar.markdown("**Layout:** v2 (Bloomberg terminal)")
+    else:
+        st.sidebar.markdown("**Layout:** v1")
     refresh_s = st.sidebar.slider("Auto-refresh (sec)", 2, 30, 4, step=1)
     refresh_paused = st.sidebar.toggle("⏸ Pause refresh", value=False)
     auto_sync = st.sidebar.toggle(
@@ -925,50 +1277,19 @@ def main() -> None:
     if not refresh_paused:
         st_autorefresh(interval=refresh_s * 1000, key="pmb_autorefresh")
 
-    # Pull fresh VPS state if requested. Best-effort; the rest of the
-    # page renders from local files regardless.
     if auto_sync and "staging" in str(state_dir):
         _run_sync(state_dir)
 
-    # Load state.
     last_sync_age_s = _maybe_auto_sync(state_dir)
     capture, paper = load_process_status(state_dir)
     snap = load_feeds_health(state_dir)
     rows = load_decisions(state_dir / DECISIONS_SUBDIR, since_utc_date=since or None)
     issues = _detect_incidents(capture, paper, snap, state_dir / PAPER_LOG)
 
-    # ABOVE THE FOLD — fits in a single viewport (~900px tall).
-    # Header → incident banner → KPI strip → 3-column terminal grid.
-    _render_header(
-        refreshed_at=datetime.now(tz=UTC),
-        since_filter=since,
-        rows=rows,
-        last_sync_age_s=last_sync_age_s,
-    )
-    if issues:
-        st.html(incident_banner(issues))
-    _render_kpi_row(rows, paper)
-
-    main_col, side_col, log_col = st.columns([0.55, 0.25, 0.20], gap="small")
-    with main_col, st.container(border=True, key="pmb-main-panel"):
-        _render_pnl_chart(rows)
-        _render_decisions_table(rows)
-    with side_col, st.container(border=True, key="pmb-side-panel"):
-        _render_processes_inline(capture, paper)
-        _render_feeds_inline(snap)
-    with log_col, st.container(border=True, key="pmb-log-panel"):
-        _render_log_panel(state_dir)
-
-    # Below-the-fold panels: aggressive-mode trip wires (only renders if
-    # mode==aggressive) + per-tier discipline breakdown.
-    _render_aggressive_trip_wires(rows)
-    _render_tier_panel(rows)
-
-    # Historical reference (Phase 3 ensemble that was CUT) — collapsed by
-    # default so the live above-fold content fills the viewport. Operator
-    # clicks to expand for the post-mortem.
-    with st.expander("🤖  Historical agent activity  ·  Phase 3 A/B (CUT)", expanded=False):
-        _render_agent_panel()
+    if DASH_V2:
+        _render_main_v2(capture, paper, snap, rows, issues, state_dir, last_sync_age_s)
+    else:
+        _render_main_v1(capture, paper, snap, rows, issues, state_dir, last_sync_age_s, since)
 
 
 if __name__ == "__main__":
