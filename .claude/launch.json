@@ -2,52 +2,17 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "dashboard",
-      "runtimeExecutable": "uv",
+      "name": "vps-tunnel-8505",
+      "runtimeExecutable": "ssh",
       "runtimeArgs": [
-        "run",
-        "streamlit",
-        "run",
-        "scripts/dashboard.py",
-        "--server.headless=true",
-        "--server.port=8501",
-        "--browser.gatherUsageStats=false"
-      ],
-      "port": 8501
-    },
-    {
-      "name": "dashboard-staging",
-      "runtimeExecutable": "bash",
-      "runtimeArgs": [
-        "-c",
-        "PMB_DASH_STATE_DIR=/Users/hamad/Desktop/PolyMarket-5m/state/staging uv run streamlit run scripts/dashboard.py --server.headless=true --server.port=8503 --browser.gatherUsageStats=false"
-      ],
-      "port": 8503
-    },
-    {
-      "name": "dashboard-v1-screenshot",
-      "runtimeExecutable": "bash",
-      "runtimeArgs": [
-        "-c",
-        "PMB_DASH_V2=0 PMB_DASH_STATE_DIR=/Users/hamad/Desktop/PolyMarket-5m/state/staging uv run streamlit run scripts/dashboard.py --server.headless=true --server.port=8511 --browser.gatherUsageStats=false"
-      ],
-      "port": 8511
-    },
-    {
-      "name": "dashboard-v2-screenshot",
-      "runtimeExecutable": "bash",
-      "runtimeArgs": [
-        "-c",
-        "PMB_DASH_V2=1 PMB_DASH_STATE_DIR=/Users/hamad/Desktop/PolyMarket-5m/state/staging uv run streamlit run scripts/dashboard.py --server.headless=true --server.port=8512 --browser.gatherUsageStats=false"
-      ],
-      "port": 8512
-    },
-    {
-      "name": "dashboard-v3-screenshot",
-      "runtimeExecutable": "bash",
-      "runtimeArgs": [
-        "-c",
-        "PMB_DASHBOARD_HOST=127.0.0.1 PMB_DASHBOARD_PORT=8505 PMB_DASH_STATE_DIR=/Users/hamad/Desktop/PolyMarket-5m/state/staging uv run python -m polymarket_bot.dashboard_server"
+        "-i", "/Users/hamad/Downloads/LightsailDefaultKey-eu-west-1.pem",
+        "-p", "2222",
+        "-N",
+        "-L", "8505:127.0.0.1:8505",
+        "-o", "ServerAliveInterval=30",
+        "-o", "ExitOnForwardFailure=yes",
+        "-o", "StrictHostKeyChecking=no",
+        "ops@108.132.51.116"
       ],
       "port": 8505
     }
