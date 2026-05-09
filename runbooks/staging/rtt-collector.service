@@ -30,11 +30,11 @@ MemoryMax=128M
 CPUQuota=20%
 
 # Hardening.
+# Hardening — matches bot-staging.service (ProtectHome=read-only blocked
+# uv cache writes per state/phases/phase-5-vps.md §5.4 lesson).
 NoNewPrivileges=true
 PrivateTmp=true
-ProtectSystem=strict
-ReadWritePaths=/home/ops/polymarket-5m-bot/state
-ProtectHome=read-only
+ProtectSystem=full
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true

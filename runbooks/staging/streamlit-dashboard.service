@@ -36,12 +36,11 @@ StandardError=inherit
 MemoryMax=512M
 CPUQuota=50%
 
-# Hardening (matches bot-staging conventions).
+# Hardening — matches bot-staging.service. Per state/phases/phase-5-vps.md
+# the strict + read-only home combo blocks uv cache writes; using full.
 NoNewPrivileges=true
 PrivateTmp=true
-ProtectSystem=strict
-ReadWritePaths=/home/ops/polymarket-5m-bot/state
-ProtectHome=read-only
+ProtectSystem=full
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
