@@ -16,8 +16,11 @@
 #   PMB_VPS_HOST       (default: 108.132.51.116)
 #   PMB_VPS_SSH_PORT   (default: 2222)
 #   PMB_VPS_USER       (default: ops)
+#   PMB_VPS_KEY        (default: $HOME/Downloads/LightsailDefaultKey-eu-west-1.pem
+#                       — same key used by runbooks/scripts/sync_staging.sh.
+#                       Set LIGHTSAIL_KEY env to override globally.)
 #   PMB_VPS_ALIAS      (optional ssh config Host alias; if set, used
-#                       instead of explicit -p/user/host)
+#                       instead of explicit -p/user/host/key)
 #
 # Per design/dashboard-v3.md §10. Quit the tunnel with Ctrl-C.
 
@@ -26,6 +29,7 @@ set -euo pipefail
 VPS_HOST="${PMB_VPS_HOST:-108.132.51.116}"
 VPS_PORT="${PMB_VPS_SSH_PORT:-2222}"
 VPS_USER="${PMB_VPS_USER:-ops}"
+VPS_KEY="${PMB_VPS_KEY:-${LIGHTSAIL_KEY:-$HOME/Downloads/LightsailDefaultKey-eu-west-1.pem}}"
 VPS_ALIAS="${PMB_VPS_ALIAS:-}"
 
 V3_PORT="${PMB_V3_PORT:-8505}"
@@ -52,7 +56,13 @@ if [[ -n "${VPS_ALIAS}" ]]; then
     -o ExitOnForwardFailure=yes \
     "${VPS_ALIAS}"
 else
+  if [[ ! -f "${VPS_KEY}" ]]; then
+    echo "[tunnel] ERROR: SSH key not found at ${VPS_KEY}" >&2
+    echo "[tunnel] Set PMB_VPS_KEY or LIGHTSAIL_KEY env var to the right path." >&2
+    exit 1
+  fi
   exec ssh \
+    -i "${VPS_KEY}" \
     -p "${VPS_PORT}" \
     -L "${V3_PORT}:127.0.0.1:${V3_PORT}" \
     -L "${V2_PORT}:127.0.0.1:${V2_PORT}" \
