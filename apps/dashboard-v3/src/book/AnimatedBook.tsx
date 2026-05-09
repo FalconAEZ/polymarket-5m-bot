@@ -33,9 +33,15 @@ export function AnimatedBook({
   const maxBidSize = Math.max(...visibleBids.map((r) => r.s), 1)
 
   return (
-    <div className="flex flex-col font-mono tabular-nums">
-      {/* asks: highest first descending toward mid */}
-      <div className="flex flex-col-reverse">
+    // Outer column fills the parent panel height and clips its own
+    // overflow — without this, the natural height (maxLevels * rowHeight
+    // * 2 + mid divider) bled past the panel boundary on tight grid
+    // cells. Asks/bids each take half the remaining space and clip from
+    // the side furthest from mid (top for asks, bottom for bids), which
+    // matches the conventional orderbook reading direction.
+    <div className="flex flex-col flex-1 min-h-0 overflow-hidden font-mono tabular-nums">
+      {/* asks: highest first descending toward mid; clip from the top */}
+      <div className="flex flex-col-reverse flex-1 min-h-0 overflow-hidden">
         <AnimatePresence initial={false}>
           {visibleAsks.map((row) => (
             <BookRow
@@ -52,7 +58,7 @@ export function AnimatedBook({
       </div>
 
       {mid !== null && (
-        <div className="flex justify-between items-baseline border-y border-dashed border-border-strong py-1 my-0.5">
+        <div className="flex shrink-0 justify-between items-baseline border-y border-dashed border-border-strong py-1 my-0.5">
           <span className="text-[8px] font-bold uppercase tracking-widest text-text-muted">
             MID
           </span>
@@ -68,8 +74,8 @@ export function AnimatedBook({
         </div>
       )}
 
-      {/* bids: highest first descending */}
-      <div className="flex flex-col">
+      {/* bids: highest first descending; clip from the bottom */}
+      <div className="flex flex-col flex-1 min-h-0 overflow-hidden">
         <AnimatePresence initial={false}>
           {visibleBids.map((row) => (
             <BookRow

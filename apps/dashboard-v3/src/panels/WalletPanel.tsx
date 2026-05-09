@@ -37,7 +37,7 @@ export function WalletPanel() {
     >
       <div className="flex flex-col gap-1">
         <div className="text-[9px] uppercase tracking-widest text-text-muted mt-1">
-          SESSION PNL
+          CUMULATIVE PNL · SINCE BOT START
         </div>
         <DigitRoll
           value={heroValue}
