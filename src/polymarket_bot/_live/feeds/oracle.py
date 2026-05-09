@@ -44,6 +44,20 @@ EVENT_TOPIC = "0x" + keccak(text=EVENT_SIGNATURE).hex()
 AGGREGATOR_FN_SIGNATURE = "aggregator()"
 AGGREGATOR_FN_SELECTOR = "0x" + keccak(text=AGGREGATOR_FN_SIGNATURE)[:4].hex()
 
+# WS hardening kwargs (see spot_binance.py for full rationale).
+WS_OPEN_TIMEOUT_S = 5.0
+WS_PING_INTERVAL_S = 10.0
+WS_PING_TIMEOUT_S = 10.0
+
+
+def _default_connect(url: str) -> object:
+    return websockets.connect(
+        url,
+        open_timeout=WS_OPEN_TIMEOUT_S,
+        ping_interval=WS_PING_INTERVAL_S,
+        ping_timeout=WS_PING_TIMEOUT_S,
+    )
+
 
 class OracleFeed:
     """Yields one Record per Chainlink AnswerUpdated event. Indefinite until stop().
@@ -72,7 +86,7 @@ class OracleFeed:
         self._proxy: str = (
             proxy_address if proxy_address is not None else os.environ.get(ENV_PROXY, DEFAULT_PROXY)
         ).lower()
-        self._connect: WSConnectFn = connect_fn if connect_fn is not None else websockets.connect  # type: ignore[assignment]
+        self._connect: WSConnectFn = connect_fn if connect_fn is not None else _default_connect  # type: ignore[assignment]
         self._clock_ns: ClockNs = clock_ns
         self._sleep: SleepFn = sleep
         self._rpc_timeout_s = rpc_timeout_s

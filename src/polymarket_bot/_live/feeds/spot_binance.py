@@ -32,6 +32,25 @@ SOURCE = "binance"
 KIND = "trade"
 MAX_BACKOFF_S = 60.0
 
+# WS hardening kwargs applied to the default connect path. Per audit
+# 2026-05-10: open_timeout caps the initial handshake at 5s (default 20s
+# was hurting MTTR on reconnect when DNS stalled); ping_interval +
+# ping_timeout enable the websockets library's built-in keepalive so a
+# silent TCP half-open is detected within 20s instead of waiting on
+# kernel keepalive (~2 min default).
+WS_OPEN_TIMEOUT_S = 5.0
+WS_PING_INTERVAL_S = 10.0
+WS_PING_TIMEOUT_S = 10.0
+
+
+def _default_connect(url: str) -> object:
+    return websockets.connect(
+        url,
+        open_timeout=WS_OPEN_TIMEOUT_S,
+        ping_interval=WS_PING_INTERVAL_S,
+        ping_timeout=WS_PING_TIMEOUT_S,
+    )
+
 
 class BinanceTradeFeed:
     """Yields one Record per Binance BTC/USDT trade, indefinitely until stop().
@@ -54,7 +73,7 @@ class BinanceTradeFeed:
         sleep: SleepFn = asyncio.sleep,
     ) -> None:
         self._url: str = url if url is not None else os.environ.get(ENV_URL, DEFAULT_URL)
-        self._connect: WSConnectFn = connect_fn if connect_fn is not None else websockets.connect  # type: ignore[assignment]
+        self._connect: WSConnectFn = connect_fn if connect_fn is not None else _default_connect  # type: ignore[assignment]
         self._clock_ns: ClockNs = clock_ns
         self._sleep: SleepFn = sleep
         self._stop = asyncio.Event()

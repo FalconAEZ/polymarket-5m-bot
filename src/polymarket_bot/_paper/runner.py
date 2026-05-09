@@ -275,14 +275,29 @@ class PaperRunner:
         fill = self._shadow.attempt_fill(decision, decision.ts_utc_ns, is_taker=True)
         snapshot = self._snapshot_for_log(decision)
         composite = _composite_from_rationale(decision.rationale)
-        decision_id = self._log.record_fired(
-            decision=decision,
-            side=side,
-            window_ts=self._state.window_ts,
-            snapshot=snapshot,
-            composite_pct=composite,
-            fill=fill,
-        )
+        # OSError guard: per audit 2026-05-10, an uncaught DecisionLog write
+        # exception (disk full, NFS unmount, permissions) would propagate up
+        # the async stack and kill the entire runner. We catch + alert + drop
+        # the decision rather than crash. The bot keeps running; the operator
+        # gets a CRITICAL page; the next decision retries the write.
+        try:
+            decision_id = self._log.record_fired(
+                decision=decision,
+                side=side,
+                window_ts=self._state.window_ts,
+                snapshot=snapshot,
+                composite_pct=composite,
+                fill=fill,
+            )
+        except OSError as exc:
+            LOG.critical("decision_log.record_fired raised OSError: %s", exc)
+            self._alert(
+                Level.CRITICAL,
+                f"decision_log.record_fired raised OSError; decision dropped: {exc}",
+                asset_id=decision.asset_id,
+                window_ts=self._state.window_ts,
+            )
+            return
         self._state.record_decision(decision, side, decision_id, fill)
 
     def _try_fill_pending(self, now_ts_ns: int) -> None:
@@ -300,6 +315,18 @@ class PaperRunner:
         self._state.pending_decision = None
 
     async def _settle_current_window(self) -> None:
+        # State-mutation invariant (per audit 2026-05-10): this method
+        # awaits via asyncio.to_thread for the gamma poll, so other
+        # coroutines CAN run during the await. However, the runner's
+        # event-pump is SINGLE-TASKED through `await self._on_record(record)`
+        # in `run()` -- no other coroutine on this runner mutates `self._state`.
+        # The ONLY mutator paths (`_on_event`, `_maybe_emit_boundaries`,
+        # `_on_decision`, `_state.start_window`) all run sequentially under
+        # the same `_on_record` await chain. Therefore reading state here
+        # while awaiting is safe by construction. If this invariant is
+        # ever violated by adding a parallel mutator (e.g., a separate
+        # task that touches _state), this method will need explicit
+        # synchronization.
         s = self._state
         if s.window_ts is None or s.decision_id is None:
             return
@@ -362,17 +389,30 @@ class PaperRunner:
         pnl = 0.0
         if fill is not None and resolution is not None and s.side is not None:
             pnl = _realised_pnl(fill, resolution == s.side)
-        self._log.record_settled(
-            decision_id=s.decision_id,
-            window_ts=s.window_ts,
-            settled_ts_ns=self._clock_ns(),
-            open_oracle=s.open_oracle,
-            close_oracle=s.close_oracle,
-            resolution=resolution,
-            fill_at_settle=fill,
-            pnl_usd=pnl,
-            resolution_source=resolution_source,
-        )
+        # OSError guard: same rationale as _on_decision (audit 2026-05-10).
+        # The settled record can be regenerated post-hoc from the fired
+        # record's data via gamma_resolver, so dropping a settle write on
+        # OSError loses less than dropping a fired write. Still alerted.
+        try:
+            self._log.record_settled(
+                decision_id=s.decision_id,
+                window_ts=s.window_ts,
+                settled_ts_ns=self._clock_ns(),
+                open_oracle=s.open_oracle,
+                close_oracle=s.close_oracle,
+                resolution=resolution,
+                fill_at_settle=fill,
+                pnl_usd=pnl,
+                resolution_source=resolution_source,
+            )
+        except OSError as exc:
+            LOG.critical("decision_log.record_settled raised OSError: %s", exc)
+            self._alert(
+                Level.CRITICAL,
+                f"decision_log.record_settled raised OSError; settle dropped: {exc}",
+                decision_id=s.decision_id,
+                window_ts=s.window_ts,
+            )
 
     def _snapshot_for_log(self, decision: Decision) -> dict[str, float | None]:
         s = self._state

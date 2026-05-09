@@ -34,6 +34,21 @@ SOURCE = "coinbase"
 KIND = "match"
 MAX_BACKOFF_S = 60.0
 
+# WS hardening kwargs (see spot_binance.py for full rationale).
+WS_OPEN_TIMEOUT_S = 5.0
+WS_PING_INTERVAL_S = 10.0
+WS_PING_TIMEOUT_S = 10.0
+
+
+def _default_connect(url: str) -> object:
+    return websockets.connect(
+        url,
+        open_timeout=WS_OPEN_TIMEOUT_S,
+        ping_interval=WS_PING_INTERVAL_S,
+        ping_timeout=WS_PING_TIMEOUT_S,
+    )
+
+
 SUBSCRIBE_PAYLOAD = json.dumps(
     {"type": "subscribe", "channels": [{"name": "matches", "product_ids": ["BTC-USD"]}]},
     separators=(",", ":"),
@@ -63,7 +78,7 @@ class CoinbaseMatchFeed:
         subscribe_payload: str = SUBSCRIBE_PAYLOAD,
     ) -> None:
         self._url: str = url if url is not None else os.environ.get(ENV_URL, DEFAULT_URL)
-        self._connect: WSConnectFn = connect_fn if connect_fn is not None else websockets.connect  # type: ignore[assignment]
+        self._connect: WSConnectFn = connect_fn if connect_fn is not None else _default_connect  # type: ignore[assignment]
         self._clock_ns: ClockNs = clock_ns
         self._sleep: SleepFn = sleep
         self._subscribe_payload = subscribe_payload

@@ -37,8 +37,25 @@ ENV_WS = "POLYMARKET_WS_URL"
 ENV_GAMMA = "GAMMA_API_BASE"
 SOURCE = "polymarket"
 MAX_BACKOFF_S = 60.0
-PING_INTERVAL_S = 9.0
+PING_INTERVAL_S = 9.0  # application-level PING (Polymarket-specific)
 HTTP_TIMEOUT_S = 10.0
+
+# WS hardening kwargs (see spot_binance.py for full rationale). These are
+# the protocol-level keepalive in the websockets library, distinct from
+# the application-level PING_INTERVAL_S above.
+WS_OPEN_TIMEOUT_S = 5.0
+WS_PING_INTERVAL_S = 10.0
+WS_PING_TIMEOUT_S = 10.0
+
+
+def _default_connect(url: str) -> object:
+    return websockets.connect(
+        url,
+        open_timeout=WS_OPEN_TIMEOUT_S,
+        ping_interval=WS_PING_INTERVAL_S,
+        ping_timeout=WS_PING_TIMEOUT_S,
+    )
+
 
 GammaFetchFn = Callable[[str], Awaitable[dict[str, Any] | None]]
 """Async function: takes an event slug, returns the Gamma event dict or None.
@@ -128,7 +145,7 @@ class PolymarketFeed:
         else:
             client = GammaClient()
             self._gamma = client.fetch_event
-        self._connect: WSConnectFn = connect_fn if connect_fn is not None else websockets.connect  # type: ignore[assignment]
+        self._connect: WSConnectFn = connect_fn if connect_fn is not None else _default_connect  # type: ignore[assignment]
         self._clock_ns: ClockNs = clock_ns
         self._sleep: SleepFn = sleep
         self._stop = asyncio.Event()
