@@ -1,6 +1,6 @@
 ---
 title: Phase 11 — SpotAwareStrategy paper-soak (post phase-5-pass)
-status: 11.A.2 active — aggressive_mode 24h soak running on bot-staging since 2026-05-08 22:26:15 UTC; 48h gate-eligible 2026-05-10 22:26:15 UTC
+status: 11.A.2 active — aggressive_mode soak running on bot-staging since 2026-05-08 22:26:15 UTC; v2 early-read at 18.1h (2026-05-09 16:30 UTC) all gates OK / verdict DEFER (under 24h pickup); 48h committed gate review 2026-05-10 22:26:15 UTC
 tags: [phase, spot-aware, paper-soak, aggressive-mode, in-progress]
 ---
 
@@ -74,7 +74,42 @@ The experiment auto-ends on ANY of:
 4. Net WR drops below **47% in 100+ settled trades** → revert
 5. Operator says halt → halt
 
-## Live data snapshot (3.8h into 11.A.2)
+## Live data snapshot (18.1h into 11.A.2 — v2 early-read 2026-05-09 16:30 UTC)
+
+**Polymarket-truth (laptop audit after `sync_staging.sh`):**
+
+```
+fires:           236 (aggressive only) / 238 (full history)
+filled:          225 (95.3%)
+settled:         230 (97.5%)
+won:             112
+lost:            113
+WR:              49.8% (n=225 filled+settled)
+PnL:            +$11.00
+bankroll:       $1,011.00 (paper)
+fire rate:       292/day (under 350 cap)
+worst rolling 24h PnL: +$3.83 (over -$50 floor)
+
+Per-tier (Polymarket-truth):
+  15-30%:   4 fires, 50.0% WR, $+37.98  ← n=4 too small
+  30-50%:  48 fires, n=45 settled-fills, 53.3% WR, $+54.18  ← n crossed 40, edge real
+  50-70%: 182 fires, n=174 settled-fills, 48.9% WR, $-78.20  ← biggest sample, the drag
+  70-85%:   2 fires, 50.0% WR, $-2.97  ← n=2 too small
+```
+
+**Dashboard view (VPS `/api/state`, oracle-truth — KNOWN WRONG, see incident):**
+
+```
+bankroll.delta_usd: -$43.07
+WR (oracle-truth):  47.1%
+```
+
+The dashboard reads oracle-truth (Chainlink-local), not Polymarket-truth.
+$54 PnL gap. See `runbooks/incidents/2026-05-09-dashboard-shows-oracle-truth.md`
+and the v2 dashboard-vs-truth diff. **For gate decisions, use the laptop
+audit only.**
+
+## Live data snapshot (3.8h into 11.A.2 — historical, launch session)
 
 ```
 fires:           52 (aggressive only)

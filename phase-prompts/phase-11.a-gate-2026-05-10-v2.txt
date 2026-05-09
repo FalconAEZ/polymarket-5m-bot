@@ -1,0 +1,199 @@
+Subject: Phase 11.A.2 aggressive-mode gate — v2 (full-history lens +
+dashboard-vs-truth check + refinement-plan deliverable). Supersedes v1
+(`phase-11.a-gate-2026-05-10.txt`); v1 stays in tree for history.
+
+Why v2: operator request 2026-05-09 ~16:30 UTC. The dashboard team
+shipped the v3 React dashboard + cumulative-PnL panel + 3-tier
+orphan-FD defense in depth on `claude/trusting-spence-03c165` (NOT
+merged to main yet — see `checkpoint_phase_11_a_x_b_dashboard_v3.md`).
+That branch landed a lot of new visibility surface but we never ran
+the broader audit that surface enables. v2 adds:
+
+  1. A "full-history audit" pre-step that buckets decisions by config
+     era (pre-loose / loose-start / aggressive), so the gate verdict
+     is anchored against the BEFORE state, not just the aggressive
+     window in isolation.
+  2. A "dashboard-vs-truth diff" sub-step that diffs the v3 dashboard's
+     panels against python ground-truth from the JSONL. Cheap insurance
+     against display drift before any decision rests on the dashboard.
+  3. A refinement-plan deliverable that captures (a) tier × era WR/PnL
+     matrix, (b) what the new dashboard now exposes vs what's still
+     blind, (c) ranked single-knob tightening proposals if revert.
+
+Everything else (5 hard exit criteria, decision tree, vault closeout,
+commit/push) is unchanged from v1.
+
+================================================================================
+TIMING — KNOWN STATE AT v2 AUTHORING (2026-05-09 ~16:30 UTC)
+================================================================================
+
+Bot config: aggressive_mode=1, Δ_min=5, EV_min=0.003. Strategy:
+spot_aware. All four services active.
+
+  - Aggressive-mode launch (config-side):  2026-05-08 22:26:15 UTC
+  - Orphan-FD incident recovery restart:   2026-05-09 13:21:05 UTC
+  - Current UTC at v2 authoring:           2026-05-09 16:23 UTC
+  - Elapsed vs original launch:            17.95h
+  - 24h pickup minimum:                    2026-05-09 22:26:15 UTC (~6h away)
+  - 48h committed gate review:             2026-05-10 22:26:15 UTC (~30h away)
+
+The orphan-FD recovery preserved decisions (`cat /proc/PID/fd/{11,12}
+> state/decisions-recovered/`); zero loss documented in
+`runbooks/incidents/2026-05-09-orphan-fd-decisions.md`. So the
+aggressive-window data is continuous on disk even though the bot
+process restarted.
+
+DECISION FRAMING for THIS session (2026-05-09 ~16:30 UTC pickup):
+  - We are BEFORE the 24h pickup minimum. The audit IS run, but
+    final promote/revert is DEFERRED until the operator explicitly
+    requests it after 24h or (preferably) 48h elapsed.
+  - This session produces an EARLY-READ verdict + the v3 audit
+    artifacts (gate script, gate evidence, full-history audit, tier ×
+    era matrix, refinement plan). The operator decides when to
+    promote/revert — same five criteria, just gated on time, not on
+    this session's clock.
+
+================================================================================
+CONTEXT ANCHORS — read in order
+================================================================================
+
+1. /Users/hamad/Desktop/PolyMarket-5m/CLAUDE.md
+2. /Users/hamad/Desktop/PolyMarket-5m/state/phases/phase-11-spot-aware.md
+3. /Users/hamad/Desktop/PolyMarket-5m/runbooks/decisions/aggressive-mode-2026-05-09.md
+4. /Users/hamad/Desktop/PolyMarket-5m/runbooks/decisions/loose-start-2026-05-09.md
+5. /Users/hamad/Desktop/PolyMarket-5m/runbooks/incidents/2026-05-09-oracle-resolver-mismatch.md
+6. /Users/hamad/Desktop/PolyMarket-5m/runbooks/incidents/2026-05-09-orphan-fd-decisions.md  (NEW — orphan-FD postmortem)
+7. /Users/hamad/Desktop/PolyMarket-5m/design/spot_aware_strategy.md
+8. ~/.claude/projects/-Users-hamad-Desktop-PolyMarket-5m/memory/checkpoint_phase_11_a.md
+9. ~/.claude/projects/-Users-hamad-Desktop-PolyMarket-5m/memory/checkpoint_phase_11_a_x_b_dashboard_v3.md
+10. /Users/hamad/Desktop/PolyMarket-5m/phase-prompts/phase-11.a-gate-2026-05-10.txt  (v1, this supersedes)
+
+================================================================================
+THE WORK — six steps (v2 expansion)
+================================================================================
+
+STEP 0 (NEW) — Full-history audit, bucketed by config era
+------------------------------------------------------------------------
+
+Pull the FULL paper-trading history (since 11.A launch, NOT just the
+aggressive window). Bucket each fire by its config era:
+
+  - **pre-loose** (≤ 2026-05-09 ~02:00 UTC): defaults Δ_min=8, EV=$0.005
+  - **loose-start** (2026-05-09 ~02:00 → 2026-05-08 22:26:15 UTC): Δ_min=5, EV=$0.003 (note: loose-start window is short — most "pre-aggressive" data is at design-doc defaults from the original 11.A launch)
+  - **aggressive** (≥ 2026-05-08 22:26:15 UTC): Δ_min/EV/Δ_max bypassed
+
+The actual era boundaries should be lifted from
+`runbooks/decisions/loose-start-2026-05-09.md` and
+`runbooks/decisions/aggressive-mode-2026-05-09.md` — NOT guessed. The
+above are illustrative; verify against the docs.
+
+Per-era report:
+  - n_fires, n_filled, n_settled, n_won, WR, cumulative PnL
+  - Per-tier breakdown within each era (15-30, 30-50, 50-70, 70-85)
+  - Fire rate (fires/hour normalized)
+
+This goes to `runbooks/gate-evidence/phase-11.a.2-full-history.txt`.
+
+The point: if aggressive-mode WR is 47% but pre-aggressive was 50%,
+the aggressive flag is the cause. If pre-aggressive was already 47%,
+aggressive is just continuing a pre-existing trend and the revert
+question is broader (probably "tighten loose-start knobs too").
+
+STEP 1 — sync_staging + aggressive-window audit (UNCHANGED from v1)
+------------------------------------------------------------------------
+
+  cd /Users/hamad/Desktop/PolyMarket-5m
+  bash runbooks/scripts/sync_staging.sh
+
+Then run the aggressive-window python script from v1 step 1. Save
+output. This is your live-data baseline for the aggressive window
+specifically; STEP 0 is the broader lens.
+
+STEP 2 — Author runbooks/gates/spot-aware-paper.sh (UNCHANGED from v1)
+------------------------------------------------------------------------
+
+Pattern: parallel to runbooks/gates/phase-5.sh. Five criteria mapped
+to runbooks/decisions/aggressive-mode-2026-05-09.md hard exit triggers:
+
+  1. Cumulative PnL (any rolling 24h) ≥ -$50
+  2. Fire rate (24h projected)        ≤ 350/day
+  3. Net WR (only if n≥100 settled)   ≥ 47%
+  4. Elapsed since aggressive launch  reportable
+  5. Services healthy (SSH check)     active
+
+Output to `runbooks/gate-evidence/phase-11.a.2.txt` via tee.
+
+STEP 3 — Run gate + dashboard-vs-truth diff (NEW sub-step 3.5)
+------------------------------------------------------------------------
+
+3.0  bash runbooks/gates/spot-aware-paper.sh | tee runbooks/gate-evidence/phase-11.a.2.txt
+
+3.5 (NEW) Dashboard-vs-truth diff:
+   - Hit the v3 dashboard backend (FastAPI on VPS at 127.0.0.1:8505)
+     via SSH tunnel: `curl -s http://127.0.0.1:8505/api/state | jq '...'`
+   - Pull the same headline numbers it shows: cumulative_pnl,
+     today_pnl, fire_count, fill_rate, win_rate.
+   - Diff against the python ground-truth from STEP 0 + STEP 1.
+   - If any number diverges by >$0.50 PnL or >2pp WR or >5% fire-count:
+     STOP. Open `runbooks/incidents/<date>-dashboard-truth-drift.md`,
+     reproduce, fix backend before final verdict.
+   - If clean: log the diff in
+     `runbooks/gate-evidence/phase-11.a.2-dashboard-diff.txt`.
+
+STEP 4 — DECIDE (UNCHANGED from v1, but with v2 framing)
+------------------------------------------------------------------------
+
+Same three branches (PROMOTE / REVERT / MIXED) BUT:
+
+  - If elapsed < 24h: NO binding decision in this session. Output the
+    early-read verdict + full-history audit. Operator decides at the
+    24h or 48h mark.
+  - If elapsed ≥ 24h and < 48h: binding decision allowed if any HARD
+    criterion is breached (same revert logic). Promote requires ≥48h.
+  - If elapsed ≥ 48h: full v1 decision tree.
+
+STEP 5 — Vault closeout + memory checkpoint (UNCHANGED from v1)
+------------------------------------------------------------------------
+
+PLUS (NEW v2 deliverable): write
+`runbooks/decisions/phase-11.a.2-refinement-plan-<date>.md` capturing:
+
+  (a) Tier × era WR/PnL matrix from STEP 0 (one big table).
+  (b) New dashboard visibility delta — what the v3 dashboard now
+      exposes vs what's still blind (for operator awareness).
+  (c) Ranked single-knob tightening proposals if revert. E.g.:
+      1st: drop SPOT_AWARE_AGGRESSIVE_MODE (return to loose-start)
+      2nd: also bump SPOT_AWARE_DELTA_MIN_BPS 5 → 6
+      3rd: also bump SPOT_AWARE_EV_MIN_DOLLARS 0.003 → 0.005 (design default)
+      4th: tier-restricted v2 (only fire 30-50% + 50-70%) — needs design doc
+
+STEP 6 — Commit + push (UNCHANGED from v1)
+------------------------------------------------------------------------
+
+Commit the gate script + evidence + full-history audit + refinement
+plan + v2 prompt + session note in one commit. Do NOT tag unless
+PROMOTE branch is taken (which requires ≥48h elapsed).
+
+================================================================================
+FOUR REMINDERS — UNCHANGED, plus one
+================================================================================
+
+(v1 reminders 1-4 stay as written.)
+
+5. **Bot uptime ≠ aggressive-mode elapsed.** Bot was restarted by the
+   orphan-FD recovery on 2026-05-09 13:21:05 UTC. The aggressive
+   config (.envrc) was unchanged across restart. Aggressive-window
+   data is continuous on disk (zero decisions lost per
+   incident postmortem). Always compute elapsed from the launch
+   timestamp, not from `systemctl show ActiveEnterTimestamp`.
+
+================================================================================
+HAND-OFF SIGNATURE
+================================================================================
+
+v2 authored 2026-05-09 ~16:30 UTC by the gate-review session. Bot
+running aggressive-mode spot_aware; 17.95h elapsed since launch; 24h
+mark in ~6h, 48h committed mark in ~30h. Operator pulled this session
+forward to do an early-read audit + dashboard-vs-truth check + author
+the refinement plan. Final promote/revert verdict deferred until the
+operator-chosen pickup time.

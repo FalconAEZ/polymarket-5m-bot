@@ -1,0 +1,71 @@
+==============================================================================
+SpotAwareStrategy paper-soak — full-history audit
+  generated: 2026-05-09T16:31:03Z
+  decisions: /Users/hamad/Desktop/PolyMarket-5m/.claude/worktrees/jovial-hermann-7e103f/state/staging/decisions
+  total fired: 238
+  total settled (matched): 232
+  aggressive launch: 2026-05-08T22:26:15Z
+  elapsed since aggressive launch: 18.08h
+==============================================================================
+
+  ── ERA: pre-aggressive ──
+     window:     2026-05-08T20:31:03Z → 2026-05-08T20:56:38Z  (0.43h)
+     fires:      2
+     filled:     0  (0.0%)
+     settled:    2  (100.0%)
+     won:        0
+     lost:       0
+     WR:         0.0%  (n=0 filled+settled)
+     PnL:        $+0.00
+     fire rate:  113/day (extrapolated from 0.4h)
+     per-tier breakdown:
+       tier      fires  filled  settled   won  lost       WR        PnL
+       50-70         1       0        1     0     0     0.0%$    +0.00
+       70-85         1       0        1     0     0     0.0%$    +0.00
+
+  ── ERA: aggressive ──
+     window:     2026-05-08T21:11:29Z → 2026-05-09T16:25:00Z  (19.23h)
+     fires:      236
+     filled:     225  (95.3%)
+     settled:    230  (97.5%)
+     won:        112
+     lost:       113
+     WR:         49.8%  (n=225 filled+settled)
+     PnL:        $+11.00
+     fire rate:  295/day (extrapolated from 19.2h)
+     per-tier breakdown:
+       tier      fires  filled  settled   won  lost       WR        PnL
+       15-30         4       4        4     2     2    50.0%$   +37.98
+       30-50        48      45       47    24    21    53.3%$   +54.18
+       50-70       182     174      177    85    89    48.9%$   -78.20
+       70-85         2       2        2     1     1    50.0%$    -2.97
+
+==============================================================================
+
+  ── ERA: ALL DATA (full history) ──
+     window:     2026-05-08T20:31:03Z → 2026-05-09T16:25:00Z  (19.90h)
+     fires:      238
+     filled:     225  (94.5%)
+     settled:    232  (97.5%)
+     won:        112
+     lost:       113
+     WR:         49.8%  (n=225 filled+settled)
+     PnL:        $+11.00
+     fire rate:  287/day (extrapolated from 19.9h)
+     per-tier breakdown:
+       tier      fires  filled  settled   won  lost       WR        PnL
+       15-30         4       4        4     2     2    50.0%$   +37.98
+       30-50        48      45       47    24    21    53.3%$   +54.18
+       50-70       183     174      178    85    89    48.9%$   -78.20
+       70-85         3       2        3     1     1    50.0%$    -2.97
+
+==============================================================================
+  ROLLING 24H PnL (aggressive window only)
+     cumulative PnL across aggressive window: $+11.00
+     worst rolling-24h PnL: $+0.00  (n/a)
+     gate #1 threshold: any rolling 24h ≥ -$50.00
+     gate #1 verdict: OK
+
+==============================================================================
+  END OF FULL-HISTORY AUDIT
+==============================================================================

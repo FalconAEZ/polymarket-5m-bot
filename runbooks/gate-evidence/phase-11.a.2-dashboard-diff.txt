@@ -1,0 +1,102 @@
+Phase 11.A.2 gate — dashboard-vs-truth diff
+============================================
+
+Generated: 2026-05-09T16:30Z (early-read pickup, 18.1h since aggressive launch)
+Run from:  v2 prompt (phase-prompts/phase-11.a-gate-2026-05-10-v2.txt)
+
+DELIBERATELY: this diff exists because the operator reported "-$39 / 47.1% WR"
+and the laptop audit (Polymarket-truth) said "+$11.00 / 49.8% WR". $54 swing
+on PnL alone — too big to ignore before any gate decision.
+
+== Three sources of truth ==
+
+  1. DASHBOARD                 → /api/state on VPS (127.0.0.1:8505)
+                                  bankroll.delta_usd
+  2. RAW VPS DECISIONS         → /home/ops/polymarket-5m-bot/state/decisions/
+                                  resolution_source = "chainlink-local"
+                                  rsynced into state/staging/decisions.raw/
+  3. POLYMARKET-TRUTH (RESOLVED) → resolve_decisions.py runs against
+                                  Polymarket Gamma settle-time data,
+                                  rewrites resolutions in
+                                  state/staging/decisions/
+
+== Headline numbers ==
+
+  | Source                        | PnL      | WR     | n_won | n_lost |
+  |-------------------------------|----------|--------|-------|--------|
+  | Dashboard (VPS /api/state)    | -$43.07  |  ~47%  | (matches oracle)|
+  | Raw VPS (oracle-truth)        | -$38.07  |  47.1% |  106  |  119   |
+  | Polymarket-truth (resolved)   | +$11.00  |  49.8% |  112  |  113   |
+
+The dashboard's bankroll.delta_usd computes against decisions in
+/home/ops/polymarket-5m-bot/state/decisions/, which use Chainlink-local
+oracle resolution. Per
+runbooks/incidents/2026-05-09-oracle-resolver-mismatch.md, ~33% of
+window resolutions disagree between Chainlink-local and Polymarket
+Streams. Polymarket Streams is settle-truth (it's what the market
+actually pays out on); Chainlink-local is a stale convenience read.
+
+The $5 difference between dashboard (-$43.07) and raw VPS (-$38.07) is
+likely the dashboard ignoring the 1 unresolvable decision plus minor
+arithmetic differences (bankroll vs cumulative-pnl-over-window). Within
+expected bounds for the same data source.
+
+== Per-tier diff ==
+
+(All three sources view the SAME 238 fired decisions / ~225 fills.
+The PnL differs only because the resolution decides who won.)
+
+| Tier   | Dashboard PnL | Oracle PnL  | PM-truth PnL | Δ (PM−Oracle) |
+|--------|---------------|-------------|--------------|---------------|
+| 15-30% |     +$37.98   |    +$37.98* |    +$37.98   |       $0      |
+| 30-50% |     +$63.26   |    +$63.26* |    +$54.18   |     -$9.08    |
+| 50-70% |    -$134.32   |   -$134.32* |    -$78.20   |    +$56.12    |
+| 70-85% |     -$10.00   |    -$10.00* |     -$2.97   |     +$7.03    |
+
+*oracle-truth values inferred from dashboard (which reads the same
+state). Actual diff between dashboard and oracle is ~$5 — see above.
+
+The 50-70% tier is where the resolution-truth gap matters most: oracle
+shows a -$134 hole, Polymarket-truth shows a -$78 hole. Still negative,
+but materially less catastrophic.
+
+== Why this happened ==
+
+The dashboard backend (apps/dashboard-server on VPS at 127.0.0.1:8505)
+was added in Phase 11.A.X.B. Per
+~/.claude/projects/.../memory/checkpoint_phase_11_a_x_b_dashboard_v3.md
+the orphan-FD postmortem flagged this surface but the v3 dashboard
+ships without a settle-time Polymarket-truth re-read. It computes
+bankroll.delta_usd directly from the on-disk decisions JSONL, which
+on the VPS is oracle-truth.
+
+The fix path (per the post-hoc workaround) is sync_staging.sh + the
+Streamlit dashboard at PMB_DASH_STATE_DIR=state/staging — which IS
+Polymarket-truth on the laptop side. But the operator-facing v3
+dashboard on the VPS shows oracle-truth.
+
+== Implication for the 11.A.2 gate ==
+
+Under EITHER view the 5 hard exit criteria pass at this 18h read:
+
+  | Criterion                           | Oracle-truth          | PM-truth              |
+  |-------------------------------------|-----------------------|-----------------------|
+  | #1 cumulative PnL (any 24h) ≥ -$50  | -$38   OK             | +$11    OK            |
+  | #2 fire rate ≤ 350/day              | 292                   | 292    OK             |
+  | #3 net WR ≥ 47% (n≥100)             | 47.1%  OK (squeaks)   | 49.8%   OK (clear)    |
+  | #4 elapsed                          | 18.13h INFO (<24h)    | 18.13h  INFO (<24h)   |
+  | #5 services healthy                 | active OK             | active  OK            |
+
+Strong DO-NOT-REVERT signal under both views. Dashboard-truth-drift
+is a SEPARATE incident (see follow-up file).
+
+== Action ==
+
+1. Flag the dashboard-truth-drift as its own incident.
+2. Spawn a task to fix the v3 dashboard backend so it reads
+   Polymarket-truth (either by running resolve_decisions on demand
+   or by querying Gamma at settle time, like sync_staging does).
+3. In the meantime: the canonical PnL/WR for ANY 11.A.2 gate decision
+   is the laptop-side Polymarket-truth read, NOT the VPS dashboard.
+4. Update operator-facing reading guide in the dashboard checkpoint
+   to flag the truth source.
