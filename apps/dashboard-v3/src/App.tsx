@@ -4,6 +4,7 @@ import { LiveTape } from "./panels/LiveTape"
 import { WalletPanel } from "./panels/WalletPanel"
 import { ChartPanel } from "./panels/ChartPanel"
 import { DecisionsTape } from "./panels/DecisionsTape"
+import { CumulativePnlPanel } from "./panels/CumulativePnlPanel"
 import { LivePnlPanel } from "./panels/LivePnlPanel"
 import { PipelineStrip } from "./panels/PipelineStrip"
 import { SpotBookPanel } from "./panels/SpotBookPanel"
@@ -48,13 +49,14 @@ export default function App() {
         {/* ROW B — pipeline */}
         <div><PipelineStrip /></div>
 
-        {/* ROW C — decisions tape | CTF book.
+        {/* ROW C — decisions tape | cumulative PnL chart | CTF book.
             min-h-0 on each cell is required so the inner Panel + table
             can shrink under flex/grid; without it the table's intrinsic
             height pushes the row past min-h-[280px] and bleeds past the
             panel boundary on Safari. */}
         <div className="grid grid-cols-12 gap-2 min-h-[280px]">
-          <div className="col-span-9 min-h-0"><DecisionsTape /></div>
+          <div className="col-span-5 min-h-0"><DecisionsTape /></div>
+          <div className="col-span-4 min-h-0"><CumulativePnlPanel /></div>
           <div className="col-span-3 min-h-0"><CTFBookPanel /></div>
         </div>
 

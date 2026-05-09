@@ -174,6 +174,36 @@ def _trip_wires(rows: list[DecisionRow]) -> list[dict[str, Any]]:
     ]
 
 
+def _cumulative_pnl_series(
+    rows: list[DecisionRow], *, max_points: int = 500
+) -> list[dict[str, float | int]]:
+    """Build the running PnL curve plotted on the dashboard.
+
+    One point per settled decision, sorted ascending by decision time.
+    Each point carries the wall-clock UTC second at which the decision
+    fired and the running sum of pnl_usd up to and including that point.
+    The curve starts at the first settled decision's PnL value (NOT
+    forced to zero) so the chart's vertical scale matches WalletPanel's
+    cumulative number — operator can read absolute dollars off the
+    y-axis without mental arithmetic.
+
+    Capped at the most recent ``max_points`` for payload sanity. The
+    bot fires ~150-300 decisions/day, so 500 points covers ~2 days at
+    aggressive cadence; deeper history can be backfilled by extending
+    the lookback if the operator asks.
+    """
+    series: list[dict[str, float | int]] = []
+    running = 0.0
+    for r in rows:
+        if r.resolution is None or r.pnl_usd is None:
+            continue
+        running += r.pnl_usd
+        series.append({"ts": int(r.decision_dt_utc.timestamp()), "pnl": running})
+    if len(series) > max_points:
+        series = series[-max_points:]
+    return series
+
+
 def _today_pnl(rows: list[DecisionRow]) -> tuple[float | None, int]:
     today = datetime.now(tz=UTC).date()
     settled_today = [
@@ -419,6 +449,7 @@ def snapshot(
             for s in tier_stats
         ],
         "best_tier": {"label": best_tier_label, "pnl_usd": best_tier_pnl},
+        "cumulative_pnl_series": _cumulative_pnl_series(rows),
         "trip_wires": _trip_wires(rows),
         "halt_requested": halt_requested,
         "incidents": incidents,

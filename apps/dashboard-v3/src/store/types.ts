@@ -184,6 +184,13 @@ export interface BestTierBlock {
   pnl_usd: number | null
 }
 
+/** Single point on the running PnL curve. Backend `cumulative_pnl_series`
+ * field — one entry per settled decision, sorted ascending by ts. */
+export interface CumulativePnlPoint {
+  ts: number
+  pnl: number
+}
+
 export interface DashboardState {
   schema_version: number
   now_utc_iso: string
@@ -202,6 +209,7 @@ export interface DashboardState {
   provider_rtt: ProviderRttBlock
   tier_breakdown: TierBreakdownRow[]
   best_tier: BestTierBlock
+  cumulative_pnl_series: CumulativePnlPoint[]
   trip_wires: TripWire[]
   halt_requested: boolean
   incidents: string[]
