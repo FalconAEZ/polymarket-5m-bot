@@ -23,6 +23,25 @@
         "PMB_DASH_STATE_DIR=state/staging uv run streamlit run scripts/dashboard.py --server.headless=true --server.port=8503 --browser.gatherUsageStats=false"
       ],
       "port": 8503
+    },
+    {
+      "name": "vps-dashboard-tunnel",
+      "runtimeExecutable": "ssh",
+      "runtimeArgs": [
+        "-i",
+        "/Users/hamad/Downloads/LightsailDefaultKey-eu-west-1.pem",
+        "-p",
+        "2222",
+        "-L",
+        "8505:127.0.0.1:8505",
+        "-N",
+        "-o",
+        "StrictHostKeyChecking=no",
+        "-o",
+        "ServerAliveInterval=30",
+        "ops@108.132.51.116"
+      ],
+      "port": 8505
     }
   ]
 }

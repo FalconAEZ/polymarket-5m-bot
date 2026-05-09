@@ -23,7 +23,6 @@ runner pipeline unchanged.
 
 from __future__ import annotations
 
-import logging
 from typing import Literal
 
 from polymarket_bot.backtest.types import (
@@ -44,8 +43,6 @@ from polymarket_bot.strategies.spot_aware import (
     delta_bps,
 )
 from polymarket_bot.strategies.spot_aware_priors import SpotAwarePriors
-
-LOG = logging.getLogger("polymarket_bot.strategies.spot_aware_v2")
 
 # v2 defaults differ from v1: delta_min=5 (matches priors-table coverage
 # at the loose-start floor) instead of v1's 8. The priors table's

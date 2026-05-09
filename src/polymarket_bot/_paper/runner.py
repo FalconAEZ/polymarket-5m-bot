@@ -104,6 +104,7 @@ class PaperRunner:
         self._gamma_client = gamma_client
         self._instant_settle_timeout_s = instant_settle_timeout_s
         self._instant_settle_interval_s = instant_settle_interval_s
+        self._gamma_timeout_count = 0
 
     def _alert(self, level: Level, message: str, **fields: str | int | float) -> None:
         try:
@@ -228,7 +229,7 @@ class PaperRunner:
                 kind="close",
             )
         )
-        self._settle_current_window()
+        await self._settle_current_window()
         self._state.start_window(new_window_ts)
         await self._strategy.on_event(
             WindowBoundary(
@@ -298,7 +299,7 @@ class PaperRunner:
         self._state.settled_fill = fill
         self._state.pending_decision = None
 
-    def _settle_current_window(self) -> None:
+    async def _settle_current_window(self) -> None:
         s = self._state
         if s.window_ts is None or s.decision_id is None:
             return
@@ -309,8 +310,15 @@ class PaperRunner:
         # Per design/instant_settlement.md: 30x faster than the Chainlink-
         # local fallback (60s -> 1-3s typical). Falls through to Chainlink
         # if Gamma times out or instant-settle is disabled.
+        #
+        # CRITICAL: poll_gamma_for_resolution is synchronous (sleep+http).
+        # It MUST be wrapped in asyncio.to_thread so the runner's event
+        # loop keeps processing incoming market events for the NEXT window
+        # while we wait for Gamma. Without this, the bot freezes for up to
+        # ``timeout_s`` seconds at every window boundary.
         if self._instant_settle_enabled and self._gamma_client is not None:
-            truth = poll_gamma_for_resolution(
+            truth = await asyncio.to_thread(
+                poll_gamma_for_resolution,
                 s.window_ts,
                 client=self._gamma_client,
                 timeout_s=self._instant_settle_timeout_s,
@@ -319,6 +327,25 @@ class PaperRunner:
             if truth in ("UP", "DOWN"):
                 resolution = truth
                 resolution_source = "polymarket"
+            else:
+                # Gamma didn't resolve in time. Increment counter; emit a
+                # WARN alert every Nth failure so the operator notices a
+                # degraded state without spamming on every single timeout.
+                self._gamma_timeout_count += 1
+                if self._gamma_timeout_count == 1 or self._gamma_timeout_count % 10 == 0:
+                    LOG.warning(
+                        "instant-settle gamma timeout #%d for window %s; "
+                        "falling back to chainlink-local",
+                        self._gamma_timeout_count,
+                        s.window_ts,
+                    )
+                    self._alert(
+                        Level.WARN,
+                        f"instant-settle gamma timeout x{self._gamma_timeout_count}; "
+                        "falling back to chainlink-local",
+                        gamma_timeout_total=self._gamma_timeout_count,
+                        window_ts=s.window_ts,
+                    )
 
         # Chainlink-local fallback — also the legacy behavior when
         # instant-settle is disabled.

@@ -198,6 +198,11 @@ def _build_strategy(name: str) -> Strategy:
         # fallback), and re-enforces delta_min/max + EV gate. Same env-var
         # overrides as v1 but ignores SPOT_AWARE_AGGRESSIVE_MODE (v2 cannot
         # be put into aggressive bypass mode).
+        if _env_bool("SPOT_AWARE_AGGRESSIVE_MODE", False):
+            LOG.warning(
+                "STRATEGY=spot_aware_v2 IGNORES SPOT_AWARE_AGGRESSIVE_MODE=1; "
+                "v2 has no aggressive bypass. Unset the flag to silence this warning."
+            )
         v2_kwargs: dict[str, float] = {}
         d_min = _env_float("SPOT_AWARE_DELTA_MIN_BPS", None)
         if d_min is not None:

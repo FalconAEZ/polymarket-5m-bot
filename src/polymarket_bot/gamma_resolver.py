@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from pathlib import Path
 from typing import Any, Literal
 
@@ -279,8 +280,6 @@ def poll_gamma_for_resolution(
     ``sleep_fn`` and ``monotonic_fn`` are injected for deterministic tests.
     Default to ``time.sleep`` / ``time.monotonic``.
     """
-    import time
-
     sleep = sleep_fn if sleep_fn is not None else time.sleep
     monotonic = monotonic_fn if monotonic_fn is not None else time.monotonic
     deadline = monotonic() + timeout_s
