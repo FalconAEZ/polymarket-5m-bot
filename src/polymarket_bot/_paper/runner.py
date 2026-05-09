@@ -22,6 +22,8 @@ import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
+import httpx
+
 from polymarket_bot._paper.decision_log import DecisionLog
 from polymarket_bot._paper.shadow_book import ShadowBook
 from polymarket_bot.alerts import Alert, AlertSink, Level, NullAlertSink
@@ -37,6 +39,7 @@ from polymarket_bot.backtest.types import (
     WindowBoundary,
 )
 from polymarket_bot.feeds.protocols import Feed, Record
+from polymarket_bot.gamma_resolver import poll_gamma_for_resolution
 from polymarket_bot.resolver import (
     WINDOW_SECONDS,
     active_window_ts,
@@ -47,6 +50,13 @@ from polymarket_bot.strategies.protocol import Strategy
 LOG = logging.getLogger("polymarket_bot._paper.runner")
 
 DEFAULT_QUEUE_SIZE = 1024
+# Instant-settle defaults — see design/instant_settlement.md. Gamma poll
+# typically resolves within 1-3s of T+300; 30s timeout is the operator-
+# configurable upper bound before falling back to Chainlink-local. The bot
+# blocks during settle (no decisions to make at the exact moment between
+# windows), so a 1-3s block here is acceptable.
+DEFAULT_INSTANT_SETTLE_TIMEOUT_S = 30.0
+DEFAULT_INSTANT_SETTLE_INTERVAL_S = 1.0
 
 
 class PaperRunner:
@@ -64,6 +74,17 @@ class PaperRunner:
         queue_size: int = DEFAULT_QUEUE_SIZE,
         alert_sink: AlertSink | None = None,
         alert_source: str = "bot-staging",
+        # Instant-settle: when enabled, _settle_current_window polls
+        # Polymarket Gamma for the truth resolution before falling back to
+        # the local Chainlink-derived actual_resolution(). Disabled by
+        # default to preserve legacy behavior; enabled in production via
+        # scripts/run_paper.py reading INSTANT_SETTLE_* env vars.
+        # gamma_client is injected for testability (MockTransport in tests);
+        # production passes a real httpx.Client with timeouts.
+        instant_settle_enabled: bool = False,
+        gamma_client: httpx.Client | None = None,
+        instant_settle_timeout_s: float = DEFAULT_INSTANT_SETTLE_TIMEOUT_S,
+        instant_settle_interval_s: float = DEFAULT_INSTANT_SETTLE_INTERVAL_S,
     ) -> None:
         if not feeds:
             raise ValueError("PaperRunner requires at least one Feed")
@@ -79,6 +100,10 @@ class PaperRunner:
         self._state = _RunState()
         self._alerts: AlertSink = alert_sink if alert_sink is not None else NullAlertSink()
         self._alert_source = alert_source
+        self._instant_settle_enabled = instant_settle_enabled
+        self._gamma_client = gamma_client
+        self._instant_settle_timeout_s = instant_settle_timeout_s
+        self._instant_settle_interval_s = instant_settle_interval_s
 
     def _alert(self, level: Level, message: str, **fields: str | int | float) -> None:
         try:
@@ -278,8 +303,34 @@ class PaperRunner:
         if s.window_ts is None or s.decision_id is None:
             return
         resolution: Side | None = None
-        if s.open_oracle is not None and s.close_oracle is not None:
+        resolution_source: str | None = None
+
+        # Instant-settle path — try Polymarket Gamma first if enabled.
+        # Per design/instant_settlement.md: 30x faster than the Chainlink-
+        # local fallback (60s -> 1-3s typical). Falls through to Chainlink
+        # if Gamma times out or instant-settle is disabled.
+        if self._instant_settle_enabled and self._gamma_client is not None:
+            truth = poll_gamma_for_resolution(
+                s.window_ts,
+                client=self._gamma_client,
+                timeout_s=self._instant_settle_timeout_s,
+                interval_s=self._instant_settle_interval_s,
+            )
+            if truth in ("UP", "DOWN"):
+                resolution = truth
+                resolution_source = "polymarket"
+
+        # Chainlink-local fallback — also the legacy behavior when
+        # instant-settle is disabled.
+        if resolution is None and s.open_oracle is not None and s.close_oracle is not None:
             resolution = actual_resolution(s.window_ts, s.open_oracle, s.close_oracle)
+            # Mark the source so dashboards / postmortems know this was
+            # the fallback, not the primary truth path. Only set when the
+            # instant-settle path was actually attempted -- otherwise leave
+            # source=None for backward compat with legacy callers.
+            if self._instant_settle_enabled:
+                resolution_source = "chainlink-local-fallback"
+
         fill = s.settled_fill
         pnl = 0.0
         if fill is not None and resolution is not None and s.side is not None:
@@ -293,6 +344,7 @@ class PaperRunner:
             resolution=resolution,
             fill_at_settle=fill,
             pnl_usd=pnl,
+            resolution_source=resolution_source,
         )
 
     def _snapshot_for_log(self, decision: Decision) -> dict[str, float | None]:

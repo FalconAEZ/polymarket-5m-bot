@@ -46,6 +46,7 @@ from polymarket_bot.strategies.deterministic import (  # noqa: E402
 from polymarket_bot.strategies.protocol import Strategy  # noqa: E402
 from polymarket_bot.strategies.spot_aware import SpotAwareStrategy  # noqa: E402
 from polymarket_bot.strategies.spot_aware_priors import load_priors  # noqa: E402
+from polymarket_bot.strategies.spot_aware_v2 import SpotAwareStrategyV2  # noqa: E402
 
 LOG = logging.getLogger("polymarket_bot.scripts.run_paper")
 WARM_LOOKAHEAD_WINDOWS = 12  # ~1 hour of windows pre-resolved
@@ -190,7 +191,32 @@ def _build_strategy(name: str) -> Strategy:
                 aggressive,
             )
         return SpotAwareStrategy(priors=load_priors(), aggressive_mode=aggressive, **kwargs)
-    raise ValueError(f"unknown STRATEGY env value {name!r}; pick deterministic or spot_aware")
+    if name == "spot_aware_v2":
+        # v2 = tier-restricted, no-fallback variant of spot_aware. Locked
+        # spec: design/spot_aware_v2_tier_restricted.md. Drops tier 50-70%
+        # explicitly, requires a real priors-table hit (no p_win=0.54
+        # fallback), and re-enforces delta_min/max + EV gate. Same env-var
+        # overrides as v1 but ignores SPOT_AWARE_AGGRESSIVE_MODE (v2 cannot
+        # be put into aggressive bypass mode).
+        v2_kwargs: dict[str, float] = {}
+        d_min = _env_float("SPOT_AWARE_DELTA_MIN_BPS", None)
+        if d_min is not None:
+            v2_kwargs["delta_min_bps"] = d_min
+        d_max = _env_float("SPOT_AWARE_DELTA_MAX_BPS", None)
+        if d_max is not None:
+            v2_kwargs["delta_max_bps"] = d_max
+        ev_min = _env_float("SPOT_AWARE_EV_MIN_DOLLARS", None)
+        if ev_min is not None:
+            v2_kwargs["ev_min_dollars_per_share"] = ev_min
+        limit_buf = _env_float("SPOT_AWARE_LIMIT_BUFFER_USD", None)
+        if limit_buf is not None:
+            v2_kwargs["limit_buffer_usd"] = limit_buf
+        if v2_kwargs:
+            LOG.warning("spot_aware_v2 overrides: %s", v2_kwargs)
+        return SpotAwareStrategyV2(priors=load_priors(), **v2_kwargs)
+    raise ValueError(
+        f"unknown STRATEGY env value {name!r}; pick deterministic | spot_aware | spot_aware_v2"
+    )
 
 
 def _build_alert_sink() -> AlertSink:
@@ -235,6 +261,26 @@ async def main() -> int:
     strategy = _build_strategy(os.environ.get("STRATEGY", DEFAULT_STRATEGY_NAME))
     LOG.info("active strategy: %s", strategy.name)
     decision_log = DecisionLog(root="state/decisions")
+
+    # Instant-settle: optional Polymarket Gamma poll at T+300+1s before
+    # falling back to the local Chainlink-derived resolution. Per
+    # design/instant_settlement.md. Disabled by default (legacy behavior);
+    # set INSTANT_SETTLE_ENABLED=1 in .envrc to enable. Reduces settle
+    # latency from ~60s to ~1-3s. Owns its own httpx.Client so the runner
+    # doesn't share the polymarket-feed client.
+    import httpx as _httpx
+
+    instant_settle_enabled = _env_bool("INSTANT_SETTLE_ENABLED", False)
+    instant_settle_timeout_s = _env_float("INSTANT_SETTLE_GAMMA_TIMEOUT_S", 30.0) or 30.0
+    instant_settle_interval_s = _env_float("INSTANT_SETTLE_GAMMA_POLL_INTERVAL_S", 1.0) or 1.0
+    gamma_client_for_settle = _httpx.Client() if instant_settle_enabled else None
+    if instant_settle_enabled:
+        LOG.info(
+            "instant-settle ENABLED: gamma poll timeout=%ss interval=%ss",
+            instant_settle_timeout_s,
+            instant_settle_interval_s,
+        )
+
     runner = PaperRunner(
         feeds=feeds,
         strategy=strategy,
@@ -242,6 +288,10 @@ async def main() -> int:
         shadow_book=ShadowBook(),
         decision_log=decision_log,
         alert_sink=alert_sink,
+        instant_settle_enabled=instant_settle_enabled,
+        gamma_client=gamma_client_for_settle,
+        instant_settle_timeout_s=instant_settle_timeout_s,
+        instant_settle_interval_s=instant_settle_interval_s,
     )
 
     stop_event = asyncio.Event()

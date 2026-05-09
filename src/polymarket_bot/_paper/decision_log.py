@@ -118,11 +118,19 @@ class DecisionLog:
         resolution: Side | None,
         fill_at_settle: Fill | None,
         pnl_usd: float,
+        resolution_source: str | None = None,
     ) -> None:
-        """Write a `settled` line for a previously-fired decision."""
+        """Write a `settled` line for a previously-fired decision.
+
+        ``resolution_source`` is optional for backward compat. Set to
+        "polymarket" when the resolution came from a successful Gamma
+        poll (instant-settle path); set to "chainlink-local-fallback"
+        when Gamma timed out and we used the local Chainlink read; omit
+        for legacy callers that don't track the source.
+        """
         if self._closed:
             raise RuntimeError("DecisionLog is closed")
-        line = {
+        line: dict[str, object] = {
             "kind": "settled",
             "decision_id": decision_id,
             "window_ts": window_ts,
@@ -133,6 +141,8 @@ class DecisionLog:
             "fill_at_settle": _fill_to_dict(fill_at_settle),
             "pnl_usd": pnl_usd,
         }
+        if resolution_source is not None:
+            line["resolution_source"] = resolution_source
         self._write(settled_ts_ns, line)
 
     def close(self) -> None:
