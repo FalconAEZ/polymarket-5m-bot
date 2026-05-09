@@ -87,7 +87,18 @@ export function ChartPanel() {
 
   return (
     <Panel title="BTC · 5M · BINANCE" subtitle="SPOT REFERENCE">
-      <div ref={containerRef} className="flex-1 min-h-[220px]" />
+      {/*
+        Container is `relative + overflow-hidden` so the lightweight-charts
+        canvas (which absolutely-positions its layers) is always clipped
+        to the panel bounds. min-h/max-h together prevent autoSize from
+        ballooning the canvas vertically on iOS Safari, which was bleeding
+        into the row below per operator's screenshot 2.
+      */}
+      <div
+        ref={containerRef}
+        className="relative w-full overflow-hidden min-h-[220px] max-h-[260px] flex-shrink"
+        style={{ flexBasis: "240px" }}
+      />
     </Panel>
   )
 }

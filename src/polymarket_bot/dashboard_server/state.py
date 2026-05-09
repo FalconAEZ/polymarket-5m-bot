@@ -260,14 +260,27 @@ def snapshot(
             )
     halt_requested = (state_dir / "halt.sentinel").exists()
 
+    # Incident detection. Only the actual outages go in the banner —
+    # if the bot is alive, missing telemetry files are surfaced by the
+    # individual panels (CAPTURE 0/0 in the pipeline, "—" in the feeds
+    # column) rather than as a screaming top-of-page banner. Per
+    # operator critique 2026-05-09 — the v2.1 incident banner was
+    # crying about feeds_health.json missing on the VPS even though
+    # the bot was clearly alive; the v3 banner only fires for the
+    # things that actually need operator action.
     incidents: list[str] = []
     if paper.pid is not None and not paper.alive:
         incidents.append(f"paper process dead (pid {paper.pid})")
-    elif paper.pid is None:
+    elif not paper.alive:
         incidents.append("paper process not running")
     if capture.pid is not None and not capture.alive:
         incidents.append(f"capture process dead (pid {capture.pid})")
-    if snap is None:
+    if snap is None and paper.alive:
+        # Bot is alive but no feeds_health.json — soft warning, not
+        # incident-worthy. (The bot's _live.health aggregator may not
+        # be running, which is a degraded but non-critical state.)
+        pass
+    elif snap is None:
         incidents.append("feeds_health.json missing")
     elif snap is not None:
         for f in snap.feeds:

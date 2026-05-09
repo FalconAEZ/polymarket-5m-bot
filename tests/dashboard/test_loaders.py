@@ -367,3 +367,67 @@ def test_aggregate_pnl_with_rows(tmp_path: Path) -> None:
     assert isinstance(win_rate, float)
     assert isinstance(pnl, float)
     assert abs(pnl - -0.6) < 1e-9  # 4.4 + -5.0 with float drift
+
+
+# ---------- _float_marker regression (operator screenshot 2026-05-09) ----------
+
+
+def test_float_marker_word_boundary_avoids_longer_marker_collision() -> None:
+    """A rationale containing `entry_delta_bps=80400` and `delta_bps=12.5`
+    must NOT return 80400 when asked for `delta_bps=` — that bug rendered
+    "80400.00" in the v3 dashboard's Δbps column on 2026-05-09.
+    """
+    from polymarket_bot.dashboard.loaders import _float_marker
+
+    rationale = (
+        "strategy=spot_aware mode=aggressive entry_delta_bps=80400 "
+        "delta_bps=12.5 p_win=0.54 ev=0.0123 ttl=18s side=UP"
+    )
+    assert _float_marker(rationale, "delta_bps=") == 12.5
+    assert _float_marker(rationale, "p_win=") == 0.54
+    assert _float_marker(rationale, "ev=") == 0.0123
+
+
+def test_float_marker_returns_none_when_marker_absent() -> None:
+    from polymarket_bot.dashboard.loaders import _float_marker
+
+    assert _float_marker("strategy=spot_aware mode=aggressive", "delta_bps=") is None
+
+
+def test_float_marker_negative_and_exponent() -> None:
+    from polymarket_bot.dashboard.loaders import _float_marker
+
+    rationale = "delta_bps=-12.5 ev=1.5e-3 p_win=0.54"
+    assert _float_marker(rationale, "delta_bps=") == -12.5
+    assert _float_marker(rationale, "ev=") == 0.0015
+
+
+def test_float_marker_anchored_at_start_of_string() -> None:
+    """Rationale starting with a marker (no leading whitespace) still parses."""
+    from polymarket_bot.dashboard.loaders import _float_marker
+
+    assert _float_marker("delta_bps=12.5 mode=aggressive", "delta_bps=") == 12.5
+
+
+# ---------- systemd-aware paper-process fallback ----------
+
+
+def test_read_process_systemd_fallback_inactive(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """When pid file is absent and PMB_DASH_PAPER_SYSTEMD_UNIT is set
+    but systemctl reports the unit inactive, return alive=False."""
+    from polymarket_bot.dashboard.loaders import _read_process
+
+    monkeypatch.setenv("PMB_DASH_PAPER_SYSTEMD_UNIT", "absolutely-not-a-real-unit.service")
+    status = _read_process(tmp_path, "paper")
+    assert status.alive is False
+
+
+def test_read_process_systemd_fallback_unset(tmp_path: Path, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """No pid file + no PMB_DASH_*_SYSTEMD_UNIT env → alive=False, no
+    systemctl call attempted."""
+    from polymarket_bot.dashboard.loaders import _read_process
+
+    monkeypatch.delenv("PMB_DASH_PAPER_SYSTEMD_UNIT", raising=False)
+    status = _read_process(tmp_path, "paper")
+    assert status.alive is False
+    assert status.pid is None

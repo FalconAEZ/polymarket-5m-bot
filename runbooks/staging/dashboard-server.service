@@ -14,6 +14,10 @@ Environment=PATH=/home/ops/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=PMB_DASH_STATE_DIR=/home/ops/polymarket-5m-bot/state
 Environment=PMB_DASHBOARD_HOST=127.0.0.1
 Environment=PMB_DASHBOARD_PORT=8505
+# Tell the dashboard's process-status loader to query systemd directly
+# when state/paper.pid is absent — the bot runs as a service on the VPS,
+# not via a pid file. See loaders.py:_read_process.
+Environment=PMB_DASH_PAPER_SYSTEMD_UNIT=bot-staging.service
 
 # Serves React static build from apps/dashboard-v3/dist/ + REST snapshot
 # at /api/state + WS push at /api/live. Bound to 127.0.0.1 only — never

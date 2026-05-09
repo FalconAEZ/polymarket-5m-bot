@@ -11,6 +11,9 @@ no cache decoration is needed for v1.
 from __future__ import annotations
 
 import json
+import os
+import re
+import subprocess
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -101,9 +104,91 @@ def load_process_status(state_dir: Path | str) -> tuple[ProcessStatus, ProcessSt
     )
 
 
+def _systemd_unit_for(name: Literal["capture", "paper"]) -> str | None:
+    """Returns the systemd unit name to query for this process, or None.
+    Honors PMB_DASH_PAPER_SYSTEMD_UNIT and PMB_DASH_CAPTURE_SYSTEMD_UNIT
+    env vars (set by the v3 dashboard-server.service on the VPS).
+    """
+    return os.environ.get(f"PMB_DASH_{name.upper()}_SYSTEMD_UNIT") or None
+
+
+_SYSTEMCTL_PATHS: tuple[str, ...] = ("/usr/bin/systemctl", "/bin/systemctl")
+
+
+def _systemctl_path() -> str | None:
+    """Locate systemctl on a Linux host. Returns None on macOS/Windows
+    or any system where the binary isn't at a standard path."""
+    for p in _SYSTEMCTL_PATHS:
+        if Path(p).exists():
+            return p
+    return None
+
+
+def _from_systemd(
+    name: Literal["capture", "paper"], pid_file: Path, unit: str
+) -> ProcessStatus | None:
+    """Query systemd for the unit's MainPID + ActiveState, build a
+    ProcessStatus equivalent to what we'd derive from a pid file.
+    Returns None on any error so the caller can fall through.
+    """
+    systemctl = _systemctl_path()
+    if systemctl is None:
+        return None
+    try:
+        result = subprocess.run(  # noqa: S603
+            [
+                systemctl,
+                "show",
+                unit,
+                "--property=MainPID",
+                "--property=ActiveState",
+                "--property=ExecMainStartTimestamp",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=2.0,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    fields: dict[str, str] = {}
+    for line in result.stdout.splitlines():
+        if "=" in line:
+            k, _, v = line.partition("=")
+            fields[k.strip()] = v.strip()
+    active_state = fields.get("ActiveState", "")
+    pid_raw = fields.get("MainPID", "0")
+    try:
+        pid = int(pid_raw)
+    except ValueError:
+        pid = 0
+    if active_state != "active" or pid <= 0:
+        return ProcessStatus(
+            name=name, pid=None, alive=False, pid_file=pid_file, create_time_utc=None
+        )
+    create_time_utc: datetime | None = None
+    if psutil.pid_exists(pid):
+        try:
+            proc = psutil.Process(pid)
+            create_time_utc = datetime.fromtimestamp(proc.create_time(), tz=UTC)
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            create_time_utc = None
+    return ProcessStatus(
+        name=name, pid=pid, alive=True, pid_file=pid_file, create_time_utc=create_time_utc
+    )
+
+
 def _read_process(state_dir: Path, name: Literal["capture", "paper"]) -> ProcessStatus:
     pid_file = state_dir / f"{name}.pid"
     if not pid_file.exists():
+        # Fallback: maybe the bot runs as a systemd unit (the v3 deploy
+        # path on the VPS). Honor PMB_DASH_PAPER_SYSTEMD_UNIT etc.
+        unit = _systemd_unit_for(name)
+        if unit:
+            via_systemd = _from_systemd(name, pid_file, unit)
+            if via_systemd is not None:
+                return via_systemd
         return ProcessStatus(
             name=name, pid=None, alive=False, pid_file=pid_file, create_time_utc=None
         )
@@ -296,18 +381,18 @@ def _mode_from_rationale(rationale: str) -> str | None:
 
 
 def _float_marker(rationale: str, marker: str) -> float | None:
-    """Parse 'marker<number>' out of a rationale string. Returns None if absent."""
-    idx = rationale.find(marker)
-    if idx < 0:
-        return None
-    tail = rationale[idx + len(marker) :]
-    end = 0
-    while end < len(tail) and (tail[end].isdigit() or tail[end] in "+-.eE"):
-        end += 1
-    if end == 0:
+    """Parse 'marker<number>' out of a rationale string. Anchored at
+    start-of-string or whitespace so a longer marker name ending with
+    `marker` can't be mistaken for it (e.g. `last_delta_bps=80400` would
+    not match a search for `delta_bps=` and return 80400 — which was the
+    v3 dashboard bug spotted in operator screenshot 2026-05-09).
+    """
+    pattern = re.compile(r"(?:^|\s)" + re.escape(marker) + r"([+-]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)")
+    m = pattern.search(rationale)
+    if m is None:
         return None
     try:
-        return float(tail[:end])
+        return float(m.group(1))
     except ValueError:
         return None
 
