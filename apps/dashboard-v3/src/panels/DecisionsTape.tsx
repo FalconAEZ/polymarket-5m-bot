@@ -115,9 +115,20 @@ function DecisionRow({ d, nowS }: { d: DecisionTapeRow; nowS: number }) {
   const time = new Date(d.decision_dt_utc).toISOString().substring(11, 19)
 
   return (
+    // Entry animation is fade + scaleY only — NO `y` translate. Per the
+    // Phase 11.A.2 hand-off Item 2.1 ("operator: tape isn't showing the
+    // last trade"): the previous `y: -8` initial state slid the new top
+    // row UP into the sticky <thead> region. The thead has `z-10` and
+    // <motion.tr> creates its own stacking context via the transform,
+    // so the row stacks at z-auto BELOW the thead during the entire
+    // 280ms entry animation — on Safari this sometimes settled with the
+    // row still partially clipped. Fading in at position avoids any
+    // overlap with the sticky header. The exit animation keeps the y
+    // offset because exit happens at the BOTTOM of the tape (row 100
+    // sliding off) where there is no sticky element to clip against.
     <motion.tr
-      initial={{ opacity: 0, y: -8, scaleY: 0.92 }}
-      animate={{ opacity: 1, y: 0, scaleY: 1 }}
+      initial={{ opacity: 0, scaleY: 0.92 }}
+      animate={{ opacity: 1, scaleY: 1 }}
       exit={{ opacity: 0, y: 6 }}
       transition={{ duration: 0.28, ease: [0.65, 0, 0.3, 1] }}
       className={cn(
