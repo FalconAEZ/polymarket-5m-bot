@@ -3,11 +3,14 @@
 Cover: fired+settled lines write+read; append-only behaviour across
 re-opens; closed instance rejects writes; per-UTC-date file selection;
 join_fired_settled pairs records correctly even with interleaved order;
-read_jsonl tolerates blank lines.
+read_jsonl tolerates blank lines; inode-change auto-recovery (regression
+guard for runbooks/incidents/2026-05-09-orphan-fd-decisions.md).
 """
 
 from __future__ import annotations
 
+import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -195,6 +198,147 @@ def test_read_jsonl_tolerates_blank_lines(tmp_path: Path) -> None:
     p.write_text('{"a":1}\n\n{"b":2}\n   \n{"c":3}\n', encoding="utf-8")
     records = list(read_jsonl(p))
     assert records == [{"a": 1}, {"b": 2}, {"c": 3}]
+
+
+def test_reopens_when_path_inode_replaced_atomically(tmp_path: Path) -> None:
+    """Regression — orphan-FD-decisions incident 2026-05-09.
+
+    A second writer atomic-renames over our path. Our existing FD now
+    points at an orphan (unlinked) inode while the visible file is a
+    fresh inode. The next write must detect the inode mismatch, drop
+    the orphan FD, and reopen against the live path so subsequent
+    decisions land in the visible file.
+    """
+    log = DecisionLog(root=tmp_path)
+    # First write — opens FD on inode A.
+    decision_id_1 = log.record_fired(
+        decision=_decision(),
+        side="UP",
+        window_ts=WINDOW_TS,
+        snapshot={"k": "before-replacement"},
+        composite_pct=0.6,
+        fill=None,
+    )
+    files = list(tmp_path.glob("*.jsonl"))
+    assert len(files) == 1
+    live_path = files[0]
+    inode_a = live_path.stat().st_ino
+
+    # Simulate the in-place re-resolver (or any atomic-rename writer):
+    # write a fresh file with stale content via tmp + rename. This
+    # creates inode B, while the bot's FD still points at inode A.
+    tmp_replacement = live_path.with_suffix(live_path.suffix + ".tmp")
+    tmp_replacement.write_text(
+        '{"kind":"fired","decision_id":"stale","window_ts":0}\n',
+        encoding="utf-8",
+    )
+    tmp_replacement.rename(live_path)
+    inode_b = live_path.stat().st_ino
+    assert inode_a != inode_b, "test setup expected new inode after rename"
+
+    # Second write — should detect inode mismatch, salvage + reopen,
+    # and land its line in the new visible file (inode B).
+    decision_id_2 = log.record_fired(
+        decision=_decision(ts_offset_ns=60_000_000_000),
+        side="DOWN",
+        window_ts=WINDOW_TS + 300,
+        snapshot={"k": "after-replacement"},
+        composite_pct=-0.7,
+        fill=None,
+    )
+    log.close()
+
+    assert decision_id_1 != decision_id_2
+
+    # Inode of the live file should now be inode B (unchanged from rename).
+    assert live_path.stat().st_ino == inode_b
+
+    # The visible file must contain the stale line PLUS the new decision.
+    records = list(read_jsonl(live_path))
+    assert any(r.get("decision_id") == "stale" for r in records)
+    assert any(r.get("decision_id") == decision_id_2 for r in records)
+    assert all(
+        r.get("decision_id") != decision_id_1 for r in records
+    ), "decision 1 should remain in the orphan, NOT the visible file"
+
+    # On Linux a `*.recovered` salvage file should exist with the
+    # orphan's content (decision 1). Skip on non-Linux where /proc is
+    # absent.
+    if sys.platform.startswith("linux") and Path("/proc/self/fd").exists():
+        recovered = sorted(tmp_path.glob("*.jsonl.*.recovered"))
+        assert len(recovered) >= 1, "expected salvage file on Linux"
+        rescued = list(read_jsonl(recovered[0]))
+        assert any(r.get("decision_id") == decision_id_1 for r in rescued)
+
+
+def test_inode_unchanged_path_does_not_reopen(tmp_path: Path) -> None:
+    """Sanity guard — the inode check must not falsely trip in the
+    common case where nothing replaced the file. Two consecutive writes
+    must land in the same inode and produce no salvage file."""
+    log = DecisionLog(root=tmp_path)
+    log.record_fired(
+        decision=_decision(),
+        side="UP",
+        window_ts=WINDOW_TS,
+        snapshot={},
+        composite_pct=0.6,
+        fill=None,
+    )
+    files = list(tmp_path.glob("*.jsonl"))
+    assert len(files) == 1
+    inode_before = files[0].stat().st_ino
+
+    log.record_fired(
+        decision=_decision(ts_offset_ns=60_000_000_000),
+        side="DOWN",
+        window_ts=WINDOW_TS + 300,
+        snapshot={},
+        composite_pct=-0.7,
+        fill=None,
+    )
+    log.close()
+
+    files_after = list(tmp_path.glob("*.jsonl"))
+    assert len(files_after) == 1
+    assert files_after[0].stat().st_ino == inode_before
+    assert not list(tmp_path.glob("*.jsonl.*.recovered"))
+    records = list(read_jsonl(files_after[0]))
+    assert len(records) == 2
+
+
+def test_reopens_when_path_unlinked(tmp_path: Path) -> None:
+    """If someone `rm`s the file out from under us, the next write must
+    transparently recreate it at the same path."""
+    log = DecisionLog(root=tmp_path)
+    log.record_fired(
+        decision=_decision(),
+        side="UP",
+        window_ts=WINDOW_TS,
+        snapshot={"k": "first"},
+        composite_pct=0.6,
+        fill=None,
+    )
+    files = list(tmp_path.glob("*.jsonl"))
+    assert len(files) == 1
+    live_path = files[0]
+    os.unlink(live_path)
+    assert not live_path.exists()
+
+    log.record_fired(
+        decision=_decision(ts_offset_ns=60_000_000_000),
+        side="DOWN",
+        window_ts=WINDOW_TS + 300,
+        snapshot={"k": "second"},
+        composite_pct=-0.7,
+        fill=None,
+    )
+    log.close()
+    assert live_path.exists()
+    records = list(read_jsonl(live_path))
+    # The first decision is in the orphan inode (not visible). The
+    # second decision is what we expect to see at the recreated path.
+    assert len(records) == 1
+    assert records[0]["snapshot"] == {"k": "second"}
 
 
 def test_per_utc_date_file_split(tmp_path: Path) -> None:

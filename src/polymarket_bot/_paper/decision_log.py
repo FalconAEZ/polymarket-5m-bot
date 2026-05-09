@@ -9,19 +9,33 @@ to the same file. Atomic line writes (one record per write+flush) so
 a crash mid-line cannot leave a half-record on disk. Phase 8 ensemble
 re-runs read these JSONL files; the schema must not drift after
 the first decision lands.
+
+Inode-stability check (added 2026-05-09 after the orphan-FD incident,
+runbooks/incidents/2026-05-09-orphan-fd-decisions.md). Before each
+write we verify our open FD's (st_dev, st_ino) still match the path's
+on-disk inode. If something atomic-renamed the file out from under us
+(e.g. an in-place re-resolver, or a sync push), we close the orphan
+FD and reopen against the live path so the dashboard + readers see
+new lines. Best-effort salvage of the orphan content lands at
+``<path>.<utc-ts>.recovered`` next to the live file when /proc is
+available.
 """
 
 from __future__ import annotations
 
 import json
+import logging
+import os
 import uuid
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import IO, Any, Literal
 
 from polymarket_bot.backtest.types import Decision, Fill, Side
+
+LOG = logging.getLogger("polymarket_bot._paper.decision_log")
 
 
 @dataclass(frozen=True, slots=True)
@@ -151,13 +165,75 @@ class DecisionLog:
 
     def _write(self, ts_utc_ns: int, line: dict[str, Any]) -> None:
         date = _date_for_ns(ts_utc_ns)
+        path = self._root / f"{date}.jsonl"
         handle = self._handles.get(date)
+        if handle is not None and not _path_inode_matches_fd(path, handle):
+            self._salvage_and_drop(date, path, handle)
+            handle = None
         if handle is None:
-            path = self._root / f"{date}.jsonl"
             handle = path.open("a", encoding="utf-8")
             self._handles[date] = handle
         handle.write(json.dumps(line, separators=(",", ":")) + "\n")
         handle.flush()
+
+    def _salvage_and_drop(self, date: str, path: Path, handle: IO[str]) -> None:
+        """The path's inode no longer matches our FD's inode. Salvage the
+        orphan content (best-effort) then close the FD; the next call
+        to ``_write`` reopens against the current path.
+
+        Salvage uses ``/proc/self/fd/<n>`` which on Linux exposes the
+        orphan inode for reading even after it was unlinked from the
+        directory tree. On non-Linux platforms (mac dev) the salvage is
+        skipped and the FD is just closed — the orphan content is lost,
+        but the bot's *future* writes land on the live path.
+        """
+        ts = datetime.now(tz=UTC).strftime("%Y%m%dT%H%M%SZ")
+        rescue = path.with_name(f"{path.name}.{ts}.recovered")
+        try:
+            handle.flush()
+            proc_path = Path(f"/proc/self/fd/{handle.fileno()}")
+            if proc_path.exists():
+                rescue.write_bytes(proc_path.read_bytes())
+                LOG.warning(
+                    "decision_log: inode change at %s detected; orphan "
+                    "salvaged to %s; reopening on live path",
+                    path,
+                    rescue,
+                )
+            else:
+                LOG.warning(
+                    "decision_log: inode change at %s detected; /proc not "
+                    "available so orphan content lost; reopening on live path",
+                    path,
+                )
+        except OSError as exc:
+            LOG.warning(
+                "decision_log: inode change at %s detected; salvage failed "
+                "(%s); reopening on live path",
+                path,
+                exc,
+            )
+        try:
+            handle.close()
+        except OSError:
+            pass
+        self._handles.pop(date, None)
+
+
+def _path_inode_matches_fd(path: Path, handle: IO[str]) -> bool:
+    """Return True iff ``path`` resolves to the same (st_dev, st_ino) as
+    the open file descriptor behind ``handle``.
+
+    A False return means either the path has been unlinked, or it now
+    points at a different inode (atomic rename). Either way the caller
+    should treat the FD as orphaned and reopen.
+    """
+    try:
+        disk = path.stat()
+        fd = os.fstat(handle.fileno())
+    except (FileNotFoundError, OSError):
+        return False
+    return (disk.st_dev, disk.st_ino) == (fd.st_dev, fd.st_ino)
 
 
 def read_jsonl(path: str | Path) -> Iterator[dict[str, Any]]:

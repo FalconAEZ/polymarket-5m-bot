@@ -36,6 +36,15 @@ from polymarket_bot.dashboard.streaks import compute_streak
 
 DECISIONS_SUBDIR = "decisions"
 WINDOW_DURATION_S: int = 300
+# Surface "decisions stale" as an incident when the most recent fired
+# decision is older than this AND the bot process is still alive — that
+# combination is the orphan-FD-decisions failure mode (the bot is firing
+# but its writes are landing on an unlinked inode while the dashboard
+# reads a frozen visible file). Per runbooks/incidents/2026-05-09-
+# orphan-fd-decisions.md. The threshold is generous enough that a
+# legitimate quiet 15-min stretch (no fires) does NOT trip it for the
+# typical aggressive-mode fire rate (~3-4/h).
+DECISIONS_STALE_THRESHOLD_S: float = 30 * 60.0
 
 
 @dataclass(slots=True)
@@ -275,6 +284,22 @@ def snapshot(
         incidents.append("paper process not running")
     if capture.pid is not None and not capture.alive:
         incidents.append(f"capture process dead (pid {capture.pid})")
+    # Decisions-stale wire — orphan-FD-decisions failure mode. If the
+    # bot is alive but the most recent fired decision is older than the
+    # threshold, the bot is likely writing into an unlinked inode while
+    # the dashboard reads a frozen visible file. The Strategy can also
+    # legitimately go quiet (no edge), so we only fire this when paper
+    # IS alive AND we have any prior fires AND the gap exceeds the
+    # threshold. Operator's cue to check `lsof -p <bot_pid> | grep
+    # state/decisions` for "(deleted)" markers.
+    if paper.alive and rows:
+        last_fire = max(r.decision_dt_utc for r in rows)
+        gap_s = (now - last_fire).total_seconds()
+        if gap_s > DECISIONS_STALE_THRESHOLD_S:
+            incidents.append(
+                f"decisions JSONL stale: last fire {_humanize_age(gap_s)} ago "
+                "while bot alive (check for orphan FDs)"
+            )
     if snap is None and paper.alive:
         # Bot is alive but no feeds_health.json — soft warning, not
         # incident-worthy. (The bot's _live.health aggregator may not

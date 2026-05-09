@@ -15,12 +15,21 @@ Why this exists:
   corrected `resolution` and `pnl_usd`.
 
 Usage:
-    # In-place rewrite (legacy, single arg):
-    uv run python scripts/resolve_decisions.py state/staging/decisions/
-
-    # Two-arg mode: read from SRC, write to DST atomically. Used by
-    # sync_staging.sh so the dashboard never reads a half-resolved view.
+    # Two-arg mode (the only supported mode): read from SRC, write to
+    # DST atomically. Used by sync_staging.sh so the dashboard never
+    # reads a half-resolved view.
     uv run python scripts/resolve_decisions.py SRC_DIR DST_DIR
+
+Refused calls (added 2026-05-09 after the orphan-FD-decisions incident,
+runbooks/incidents/2026-05-09-orphan-fd-decisions.md):
+
+  * In-place rewrite (single-arg) was the legacy mode and has been
+    REMOVED. Atomic-rename replaces the inode at the path; if the bot
+    has a live append FD on that file, its writes silently land in the
+    orphaned inode and the visible file freezes. Always use two-arg
+    mode and let the dashboard read from a separate dst.
+  * SRC_DIR == DST_DIR is rejected for the same reason — a "two-arg"
+    call with the same path is identical to in-place mode.
 
   Records that already have a Gamma resolution recorded under
   ``resolution_source: "polymarket"`` are skipped. Idempotent. Safe to
@@ -284,27 +293,46 @@ def re_resolve_file(
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(
+        description=(
+            "Re-resolve settled decisions against Polymarket Gamma. "
+            "Refuses in-place mode — see the orphan-FD-decisions "
+            "incident 2026-05-09."
+        ),
+    )
     parser.add_argument(
         "src_dir",
         type=Path,
-        help="Source decisions/ directory containing *.jsonl files.",
+        help="Source decisions/ directory containing *.jsonl files (read-only).",
     )
     parser.add_argument(
         "dst_dir",
         type=Path,
-        nargs="?",
-        default=None,
-        help="Optional destination dir. Omit for in-place rewrite (legacy mode).",
+        help="Destination dir for cooked output (must differ from src_dir).",
     )
     args = parser.parse_args()
     src: Path = args.src_dir
-    dst: Path | None = args.dst_dir
+    dst: Path = args.dst_dir
     if not src.is_dir():
         print(f"not a directory: {src}", file=sys.stderr)
         return 2
-    if dst is not None:
-        dst.mkdir(parents=True, exist_ok=True)
+    # Refuse in-place rewrite (same path or same inode). Atomic-rename
+    # writes orphan any concurrent appender's FD; the bot's DecisionLog
+    # now self-heals via the inode-stability check, but defense in depth
+    # demands the script never tee up that failure mode in the first
+    # place. See runbooks/incidents/2026-05-09-orphan-fd-decisions.md.
+    try:
+        if dst.exists() and src.resolve() == dst.resolve():
+            print(
+                f"refusing in-place rewrite: src and dst resolve to the "
+                f"same path ({src.resolve()}). Pick a different dst_dir.",
+                file=sys.stderr,
+            )
+            return 2
+    except OSError as exc:
+        print(f"could not resolve src/dst paths: {exc}", file=sys.stderr)
+        return 2
+    dst.mkdir(parents=True, exist_ok=True)
 
     paths = sorted(src.glob("*.jsonl"))
     if not paths:
@@ -317,7 +345,7 @@ def main() -> int:
     with httpx.Client() as client:
         for p in paths:
             print(f"== {p.name} ==")
-            target = (dst / p.name) if dst is not None else None
+            target = dst / p.name
             n_settled, n_changed, n_unresolvable = re_resolve_file(p, client=client, dst=target)
             print(f"   settled={n_settled} changed={n_changed} unresolvable={n_unresolvable}")
             total_settled += n_settled
