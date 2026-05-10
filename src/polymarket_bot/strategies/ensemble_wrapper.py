@@ -70,15 +70,18 @@ MIN_VOTES_FOR_META = 2
 # the first ~17min of gate-mode). On timeout, we fall back to base
 # candidate (same policy as meta=None).
 #
-# Bumped 2.5s -> 4.0s on 2026-05-10 14:38 UTC, then 4.0s -> 8.0s on
-# 14:50 UTC after observing 100% (14/14) of votes timing out at 4s
-# even with adaptive thinking off. Real round-trip from Dublin to
-# Anthropic is 5-7s for Sonnet-medium + 3 parallel Haiku specialists.
-# 8s is safe for the runner: queue fills at 5-10 records/sec, so
-# 8s blocking = 40-80 records buffered, well under the 1024 queue
-# limit. Per-window 8s blocking is 2.7% of the 5min cycle so the
-# queue drains comfortably between windows.
-DEFAULT_GATE_LLM_TIMEOUT_S = 8.0
+# Bumped 2.5s -> 4.0s on 2026-05-10 14:38, then 4.0s -> 8.0s at 14:50
+# (still 100% timeout), then 8.0s -> 12.0s at 16:05 UTC after a direct
+# latency probe on the VPS measured the actual round-trip:
+#   specialists (3x Haiku parallel): median 2.15s, max 4.55s
+#   meta (Sonnet medium serial):     median 3.23s, max 3.67s
+#   total end-to-end:                median 5.18s, p95 7.08s, max 7.67s
+# 8s = ~0.3s headroom over max — too tight, occasional timeouts.
+# 12s = ~4s headroom, with queue still draining comfortably (12s
+# blocking = 4% of the 5min cycle, buffers ~60-120 records vs 1024
+# queue limit). Async pre-compute remains the next step if the LLM
+# ever reliably exceeds 12s.
+DEFAULT_GATE_LLM_TIMEOUT_S = 12.0
 
 
 class EnsembleWrapper:
