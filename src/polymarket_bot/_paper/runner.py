@@ -165,6 +165,27 @@ class PaperRunner:
                     f"orphan recovery raised: {exc}",
                 )
 
+        # Cross-restart double-fire guard — operator-observed bug
+        # 2026-05-10 03:55 UTC: bot was restarted at 03:59:44 UTC, but
+        # window 1778385300 (opened 03:55:00) had already been fired by
+        # the OLD bot at 03:55:00 (DOWN, tier 85-100%). The NEW bot
+        # started with fresh `_state` and didn't know about that fire,
+        # so when wide_fire emitted a candidate at 03:59:46 the runner
+        # accepted it (UP, tier 30-50%). Net: two opposing bets on the
+        # same 5m market, guaranteed -$5 loss. Orphan recovery only
+        # handles PAST windows; this handles the CURRENT one. Pre-
+        # populates self._state with the prior fire so the existing
+        # duplicate-fire guard in `_on_decision` rejects new candidates
+        # in the same window. Cheap (one file read) and idempotent.
+        try:
+            self._prime_active_window_state()
+        except Exception as exc:
+            LOG.exception("active-window prime raised; continuing startup")
+            self._alert(
+                Level.WARN,
+                f"active-window prime raised: {exc}",
+            )
+
         external_stop = stop
         queue: asyncio.Queue[Record | None] = asyncio.Queue(self._queue_size)
 
@@ -478,6 +499,92 @@ class PaperRunner:
                 recovered=recovered,
                 unresolved=unresolved,
             )
+
+    def _prime_active_window_state(self) -> None:
+        # Scan today's decision_log for fired records in the CURRENT
+        # 5m window (active_window_ts(now)). If found, pre-populate
+        # self._state so _on_decision's existing duplicate-fire guard
+        # rejects new candidates from the strategy.
+        #
+        # Why this matters even though `_recover_orphan_fires` runs
+        # first: orphan recovery only handles PAST windows (fires
+        # whose close has already happened). A fire in the CURRENT
+        # window is legitimately pending — orphan recovery skips it.
+        # Without this method, a restart mid-window leaves the new
+        # runner unaware of the prior fire and a second decision in
+        # the same window becomes possible.
+        log_root = self._log.root
+        now_s = self._clock_ns() // 1_000_000_000
+        current_window = active_window_ts(now_s)
+
+        from datetime import UTC, datetime
+
+        today = datetime.fromtimestamp(now_s, tz=UTC).date()
+        path = log_root / f"{today.strftime('%Y-%m-%d')}.jsonl"
+        if not path.exists():
+            return
+
+        prior_fires_in_window: list[dict[str, Any]] = []
+        settled_ids: set[str] = set()
+        for rec in read_jsonl(path):
+            did = rec.get("decision_id")
+            if not isinstance(did, str):
+                continue
+            kind = rec.get("kind")
+            if kind == "fired" and rec.get("window_ts") == current_window:
+                prior_fires_in_window.append(rec)
+            elif kind == "settled":
+                settled_ids.add(did)
+
+        # Only fires WITHOUT a settled record matter — settled fires are
+        # over and don't conflict with a new fire in (technically) the
+        # same window. (In practice, settled-in-current-window is rare
+        # but possible if instant-settle resolved early.)
+        unsettled = [f for f in prior_fires_in_window if f["decision_id"] not in settled_ids]
+        if not unsettled:
+            return
+
+        # Use the most-recent unsettled fire — that's the one that
+        # would conflict with the next fire from the strategy.
+        most_recent = unsettled[-1]
+        decision_id = most_recent["decision_id"]
+        side = most_recent.get("side")
+        if side not in ("UP", "DOWN"):
+            return  # malformed; can't trust it
+        LOG.info(
+            "active window %s already has unsettled fire %s (side=%s); "
+            "priming _state to block double-fire",
+            current_window,
+            decision_id[:8],
+            side,
+        )
+        # Build a stub Decision to set as pending so the duplicate-fire
+        # guard in _on_decision (`pending_decision is not None`) trips.
+        try:
+            stub = Decision(
+                ts_utc_ns=int(most_recent["decision_ts_ns"]),
+                asset_id=str(most_recent["asset_id"]),
+                side="BUY",
+                size_usd=float(most_recent["size_usd"]),
+                price_limit=float(most_recent["price_limit"]),
+                ttl_s=int(most_recent["ttl_s"]),
+                rationale=str(most_recent.get("rationale", "")),
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            LOG.warning("could not reconstruct pending decision for prime: %s", exc)
+            return
+
+        self._state.window_ts = current_window
+        self._state.decision_id = decision_id
+        self._state.side = side
+        self._state.pending_decision = stub
+        # Also set settled_fill if the original fire had an immediate
+        # taker fill — that way both branches of the duplicate-guard
+        # are armed.
+        fill_dict = most_recent.get("fill")
+        fill = _fill_from_dict(fill_dict)
+        if fill is not None:
+            self._state.settled_fill = fill
 
     def _snapshot_for_settle(self) -> _SettleSnapshot | None:
         # Capture everything the settle path needs for the closing window
