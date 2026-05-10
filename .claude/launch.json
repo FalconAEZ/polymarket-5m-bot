@@ -42,6 +42,15 @@
         "ops@108.132.51.116"
       ],
       "port": 8505
+    },
+    {
+      "name": "vps-dashboard-attach",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": [
+        "-c",
+        "if lsof -i :8505 >/dev/null 2>&1; then echo 'tunnel already up on :8505'; while true; do sleep 3600; done; else echo 'no tunnel; run: ssh -i ~/Downloads/LightsailDefaultKey-eu-west-1.pem -p 2222 -L 8505:127.0.0.1:8505 -N -f ops@108.132.51.116'; exit 1; fi"
+      ],
+      "port": 8505
     }
   ]
 }

@@ -154,6 +154,45 @@ If neither is clearly better:
   - Run BOTH for another week. Don't make a permanent call on noisy data.
 
 ------------------------------------------------------------------------
+ITEM 4.5 — Extend the simulator depth-floor guard to the MAKER path (~45min)
+------------------------------------------------------------------------
+
+The taker guard added in commit 6464541 only covers the taker path.
+Live observation 2026-05-10 ~05:40 UTC: window 1778390700 fired DOWN
+at price_limit=$0.03 with best_ask=$0.01 + ask_size_top=None at
+decision time. Taker guard correctly refused (fill=None at fired-
+time). The order rested, book later crashed to ask=$0.03, simulator
+filled the full $5 at the maker limit ($0.03 × 166.67 shares), DOWN
+won → +$161.67 phantom maker win.
+
+src/polymarket_bot/backtest/fills.py, the maker branch (currently
+lines ~93-99):
+
+  else:
+      # Maker path: a later book update has dropped the ask to or
+      # below our resting limit. Treat as an incoming seller crossing
+      # our bid; fill at the resting limit price.
+      if decision.price_limit < book.best_ask:
+          return None
+      fill_price = decision.price_limit
+
+Add: refuse when `book.best_ask <= self._floor_best_ask AND
+book.ask_size_top is None`. Same condition as the taker guard. The
+LATER book we're filling against may carry depth info (book snapshot
+events do); only refuse when that LATER book has no depth AND is at
+the floor.
+
+Tests:
+  * maker fill REFUSED when later book at floor w/o depth
+  * maker fill ALLOWED when later book at floor WITH depth
+  * maker fill ALLOWED when later book above floor regardless
+
+Backfill consideration: window 1778390700 should also be neutralized
+(corrected_pnl=0, phantom_fill=true). Add it to
+PHANTOM_WINDOWS in scripts/backfill_phantom_floor_fills.py and
+re-run on the VPS. Total dashboard correction will be ~$1,060.
+
+------------------------------------------------------------------------
 ITEM 5 — Document the phantom-floor-fill simulator bug (~30min)
 ------------------------------------------------------------------------
 
