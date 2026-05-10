@@ -65,6 +65,10 @@ def parse_rationale(rationale: str) -> dict[str, Any]:
 
 
 def tier_bucket(price: float | None) -> str:
+    """Classify a polymarket price into the v2 tier banding. Boundaries
+    are inclusive on the lower edge: e.g., 0.50 belongs to "50-70", not
+    "30-50". This matches the strategy's reject-band logic in
+    spot_aware_v2._is_tier_rejected which checks ``lo <= price < hi``."""
     if price is None:
         return "?"
     if price < 0.30:
@@ -74,6 +78,29 @@ def tier_bucket(price: float | None) -> str:
     if price < 0.70:
         return "50-70"
     return "70-85"
+
+
+def _classify_fire_tier(fire: dict[str, Any], settled: dict[str, Any] | None) -> str:
+    """Classify the tier this fire ACTUALLY traded in. Prefers fill price
+    (the truth of the transaction); falls back to snapshot.best_ask
+    (what the strategy decided against); falls back to price_limit (the
+    worst-case ceiling — only relevant if neither fill nor ask is
+    recorded). Audit 2026-05-10 fixed a misleading classification where
+    price_limit=0.50 (a hard cap that protects against maker fills
+    landing in the reject band) was mis-classified as a 50-70% tier
+    fire even though the actual fill was at fill_price=0.481 in 30-50%."""
+    fill = (fire.get("fill") or {}).get("price_filled")
+    if fill is not None:
+        return tier_bucket(float(fill))
+    if settled is not None:
+        s_fill = (settled.get("fill_at_settle") or {}).get("price_filled")
+        if s_fill is not None:
+            return tier_bucket(float(s_fill))
+    snap = fire.get("snapshot") or {}
+    ask = snap.get("best_ask")
+    if ask is not None:
+        return tier_bucket(float(ask))
+    return tier_bucket(fire.get("price_limit"))
 
 
 def main() -> None:
@@ -118,7 +145,7 @@ def main() -> None:
             {
                 "ts": ts,
                 "side": f["side"],
-                "tier": tier_bucket(f.get("price_limit")),
+                "tier": _classify_fire_tier(f, s if s else None),
                 "delta_bps": rat["delta_bps"] or 0.0,
                 "ev": rat["ev"] or 0.0,
                 "strategy": rat["strategy"],

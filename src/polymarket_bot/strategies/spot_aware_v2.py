@@ -197,7 +197,23 @@ class SpotAwareStrategyV2:
         if p_win is None:
             return None
 
-        price_limit = min(0.99, ask + self._limit_buffer)
+        # Compute price_limit and CAP IT just below any reject band the
+        # uncapped limit would cross into. Without this cap the strategy
+        # leaks: taker fills at `ask + impact` (impact cap 1¢) and maker
+        # fills at `price_limit` literally, so an ask=0.49 fire with
+        # buffer=0.02 yields limit=0.51 and an effective_ask up to 0.50,
+        # landing inside the [0.50, 0.70) reject band. Audit 2026-05-10:
+        # 11/299 historical fires leaked this way (fill=0.50, ask=0.49)
+        # for net -$15.01 / 36.4% WR — exactly the structural drag v2
+        # was designed to prevent. The cap at `lo - 0.001` keeps the
+        # worst-case fill (taker OR maker) one fractional tick below
+        # the band; for ask comfortably below `lo` this is a no-op.
+        price_limit_uncapped = min(0.99, ask + self._limit_buffer)
+        price_limit = price_limit_uncapped
+        for lo, _hi in self._rejected_tiers:
+            if ask < lo <= price_limit_uncapped:
+                price_limit = lo - 0.001
+                break
         ev = p_win - (price_limit + self._fee_pct)
 
         # v2: re-enforced EV gate (no aggressive bypass).

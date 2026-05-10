@@ -121,6 +121,47 @@ async def test_v2_rejects_tier_50_70_explicitly() -> None:
     assert decision is None
 
 
+async def test_v2_caps_price_limit_below_reject_band_when_buffer_would_breach() -> None:
+    """Audit 2026-05-10 found 11/299 historical fires leaked into the
+    50-70% reject band: ask=0.49 + buffer 0.02 → uncapped limit 0.51 →
+    taker effective_ask up to 0.50 (impact cap 1¢) AND maker fill at
+    limit=0.51 — both BREACH the band the strategy claimed to reject.
+    Net -$15.01 / 36.4% WR. The fix caps price_limit one tick below the
+    band's lower bound so neither fill path can land inside.
+
+    With ask=0.49 and the default 50-70% reject band: uncapped limit
+    would be 0.51, capped limit must be 0.499. The fire still happens
+    (this is a 30-50% tier fire by the ask) but with a tighter limit.
+    Asserts the cap is in effect."""
+    strat = SpotAwareStrategyV2(priors=_priors())
+    decision = await _run_window_to_decision(
+        strat, open_spot=80_000.0, end_spot=80_080.0, ask_up=0.49
+    )
+    assert decision is not None, "ask=0.49 + 10bps move should still fire (tier 30-50)"
+    assert decision.price_limit < 0.50, (
+        f"price_limit must be capped below the 50-70% reject band lower bound; "
+        f"got {decision.price_limit}"
+    )
+    assert decision.price_limit >= 0.49, (
+        f"cap should be just below the band, not below the ask; " f"got {decision.price_limit}"
+    )
+
+
+async def test_v2_does_not_cap_price_limit_when_safely_below_band() -> None:
+    """Sanity: when ask=0.45 + buffer 0.02 yields uncapped limit 0.47,
+    well below the 50-70% band, the cap is a no-op and the original
+    price_limit is preserved."""
+    strat = SpotAwareStrategyV2(priors=_priors())
+    decision = await _run_window_to_decision(
+        strat, open_spot=80_000.0, end_spot=80_080.0, ask_up=0.45
+    )
+    assert decision is not None
+    # ask 0.45 + default limit_buffer 0.02 = 0.47, not near the band.
+    assert (
+        abs(decision.price_limit - 0.47) < 0.001
+    ), f"price_limit should equal ask+buffer (0.47); got {decision.price_limit}"
+
+
 async def test_v2_rejects_tier_85_plus_via_belt_and_braces() -> None:
     """ask=0.90 falls in [0.85, 1.01) → rejected by v2's explicit list
     (also already excluded by the priors table itself, hence
