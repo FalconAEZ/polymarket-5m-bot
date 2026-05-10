@@ -1,0 +1,305 @@
+Subject: Phase 15.5 — PnL truth pass + meta telemetry + bankroll display
+        (bundled-stop deploy: stop bot, ship 3 things, restart, verify)
+
+> Operator framing (2026-05-12): "The reported $2,504 PnL is not real —
+> it's phantom-fill corrupted. Actual is ~$75. Stop the bot for proper
+> development, ship the changes that need a restart, resume."
+
+The operator is correct. The deep-dive audit (state/sessions/2026-05-12-
+deep-dive-audit.md) and Phase 13 revisit (state/sessions/2026-05-12-
+phase-13-revisit.md) BOTH used the $2,504 number as the bot's baseline
+PnL. **The Phase 14 per-tier audit shows $2,450 of that $2,504 lives in
+the <15% tier (25 "settled" records that the May 9 oracle-resolver-
+mismatch postmortem identified as phantom fills).** Every audit that
+quoted the +$2,504 number is anchored on data the v4 dashboard
+correctly filters out. We can't optimize what we can't measure.
+
+This phase is therefore a TRIAGE bundle, not a strategy improvement:
+1. Reconcile PnL accounting (find out WHICH numbers are real)
+2. Land Phase 18B meta-decide telemetry (already designed) so the next
+   audit cycle has the data needed for Phase 19 design
+3. Land Phase 16 bankroll display (already prompted; dashboard-only,
+   zero risk)
+
+The bundled restart is operator-authorized (this prompt). Bot stays
+stopped from the start of Item 1 through the end of Item 4.
+
+================================================================================
+READ FIRST (vault context, in order — do NOT skip)
+================================================================================
+
+1. /Users/hamad/Desktop/PolyMarket-5m/pdfs/PHASE_12_MASTER_PLAN.pdf
+   — §4 Phase 15 + 16 + 18 + 19. Anchor doc per anti-vibe #1.
+2. /Users/hamad/.claude/projects/-Users-hamad-Desktop-PolyMarket-5m/memory/MEMORY.md
+   — index. Top items: checkpoint_phase_15_regime_gate,
+     checkpoint_phase_14_tier_gate, checkpoint_phase_11_a (the
+     phantom-fill postmortem is here).
+3. ~/.claude/projects/.../memory/checkpoint_phase_11_a_x_b_dashboard_v3.md
+   — phantom-fill incident + resolve_decisions ban + atomic-rename
+     writer rules. THIS is the doc that explains why $2,504 is wrong.
+4. state/sessions/2026-05-12-deep-dive-audit.md
+   — found ensemble_wrapper.py:498 fix (done in commit fa586bb).
+5. state/sessions/2026-05-12-phase-13-revisit.md
+   — found pre-gate mixed/trending 1-2c W=57-60% on n=5-7 (too small
+     to ship today; do NOT touch unfilled-lift in this phase).
+6. state/sessions/2026-05-12-phase-15-regime-gate.md
+   — deploy chain of fbcd38a + dashboard track restoration.
+7. phase-prompts/phase-18b-meta-observability-2026-05-13.txt
+   — drafted last session; the meta_outcome tag work. Item 2 here.
+8. phase-prompts/phase-16-bankroll-display-2026-05-13.txt
+   — drafted last session. Item 3 here.
+9. /Users/hamad/Desktop/PolyMarket-5m/CLAUDE.md
+   — anti-vibe rules + locked decisions index. Decision #10 (paper
+     bankroll $1,000) is NOT changing.
+
+================================================================================
+STATE AT HAND-OFF (verify before driving)
+================================================================================
+
+Branch:  claude/thirsty-poincare-2046a0 (latest worktree branch this session)
+HEAD:    fc35da6 audit(phase-13-revisit) — Phase 13 regime+gate slice
+         (also pushed to claude/jovial-hermann-7e103f via FF)
+
+VPS:
+  bot-staging.service active since 2026-05-10 21:58:44 UTC
+  HEAD on VPS = fbcd38a (audit-pass commits fa586bb + 5d575f1 + 9d169fe
+  + fc35da6 are pushed to GitHub but VPS hasn't pulled — by design)
+  STRATEGY=ensemble  ENSEMBLE_MODE=gate  ENSEMBLE_BASE_STRATEGY=wide_fire
+  TIER_GATE_ENABLED=false  REGIME_GATE_ENABLED=false
+  ANTHROPIC_DAILY_BUDGET_USD=10
+  Dashboard track was restored on VPS via git stash pop + auto-merge.
+  Operator may or may not have completed the Mac-side commit of
+  dashboard/loaders.py + dashboard/theme.py (read-only key on VPS).
+
+Quick state check (run BEFORE driving):
+  ssh -i $HOME/Downloads/LightsailDefaultKey-eu-west-1.pem -p 2222 \
+      ops@108.132.51.116 'systemctl is-active bot-staging.service && \
+      cd /home/ops/polymarket-5m-bot && git rev-parse HEAD && \
+      git log --oneline -5 && git status -s | head -10'
+
+If anything looks wrong, STOP and re-read the latest checkpoint memory.
+
+================================================================================
+THE WORK — four items in strict order
+================================================================================
+
+------------------------------------------------------------------------
+ITEM 0 — Stop the bot (operator authorized THIS PROMPT)
+------------------------------------------------------------------------
+
+  ssh ... 'sudo systemctl stop bot-staging.service'
+
+Verify stop:
+  ssh ... 'systemctl is-active bot-staging.service'
+  # expected: "inactive"
+
+Capture final pre-stop stats for reconciliation:
+  ssh ... 'cd /home/ops/polymarket-5m-bot && wc -l state/decisions/*.jsonl && \
+      python3 -c "<count fired/filled/settled and total pnl from the
+      decision log>"'
+
+Save the snapshot to state/sessions/2026-05-13-phase-15.5-prestop.txt
+for diff after restart.
+
+------------------------------------------------------------------------
+ITEM 1 — PnL truth pass (~60 min)
+------------------------------------------------------------------------
+
+Goal: identify ALL sources of phantom PnL in `state/decisions/*.jsonl`
+and decide what the bot's TRUE PnL is.
+
+Step-by-step:
+
+  a. Build scripts/audit_pnl_truth.py — for each settled record, classify
+     PnL source:
+       - real_taker_fill: fired.fill is set; pnl matches (price_filled, side, resolution, size)
+       - real_maker_fill_at_settle: settled.fill_at_settle is set; pnl matches
+       - phantom_taker: fired.fill is set but the price_filled is < 0.06 AND
+         ask_size_top was null at fire time (phantom-fill class from Phase 11.A)
+       - phantom_oracle: resolution_source = "polymarket" but
+         resolution_oracle_local != resolution (Chainlink-vs-Polymarket
+         mismatch class)
+       - reconciliation_mismatch: pnl_usd doesn't equal computed pnl from
+         (side, resolution, fill_price, size)
+       - clean: none of the above
+     Per Phase 14 audit: ~25 records in <15% tier (~$2450 of $2504 PnL)
+     are expected to flag as phantom_taker.
+
+  b. Output: per-class n, sum pnl, top-3 example decision_ids per class.
+
+  c. Reconcile against v4 dashboard's "+$75.80" — explicit answer to
+     "where is the gap of $2,500 vs $75 coming from?".
+
+  d. Write the reconciliation table to
+     state/sessions/2026-05-13-phase-15.5.md.
+
+  e. Decide whether the BOT's accounting needs a fix (i.e., the
+     decision-log writer is producing fills it shouldn't) OR whether
+     the AUDIT scripts need a phantom-fill filter (i.e., the decisions
+     are correct but our reads of them are wrong).
+
+OPERATOR SIGN-OFF GATE: post the reconciliation table to chat. Wait
+for "go" before Item 2.
+
+If Item 1 reveals a code bug in the decision-log writer or shadow-book
+or instant-settle path, STOP and write a phase-15.5 NULL result.
+Phantom-fill at the decision-log layer is a higher-priority bug than
+anything else in this phase.
+
+------------------------------------------------------------------------
+ITEM 2 — Phase 18B meta-decide telemetry (~30 min)
+------------------------------------------------------------------------
+
+Per phase-prompts/phase-18b-meta-observability-2026-05-13.txt:
+
+Goal: tag every meta=None outcome with a reason
+(api_error / refusal / no_text / validation_failed / budget) so the
+next deep-dive can attribute the 22.1% meta=None rate.
+
+Files (see the 18B prompt for full details):
+  - design/phase-18b-meta-observability.md (NEW)
+  - src/polymarket_bot/agents/anthropic_client.py
+  - src/polymarket_bot/agents/meta.py
+  - src/polymarket_bot/agents/protocol.py
+  - src/polymarket_bot/strategies/ensemble_wrapper.py
+  - tests/agents/test_anthropic_client.py
+  - tests/strategies/test_ensemble_wrapper.py
+
+Gates: ruff + mypy --strict + pytest + lint-imports all green.
+
+This is purely additive observability — NO behavior change. Anti-vibe-
+exempt under "logging/observability" interpretation IF the design doc
+makes the additive-only claim explicit.
+
+Commit: feat(phase-18b): meta_outcome telemetry on ensemble_vote log
+
+------------------------------------------------------------------------
+ITEM 3 — Phase 16 bankroll display (~60 min)
+------------------------------------------------------------------------
+
+Per phase-prompts/phase-16-bankroll-display-2026-05-13.txt:
+
+Goal: scenarios panel showing today's PnL projected onto $500/$1k/$2k/
+$5k/$10k starting bankrolls. Decision #10 ($1k bankroll) is NOT
+changing — this is display-only.
+
+CRITICAL: do NOT use the phantom-fill-corrupted PnL number. Item 1's
+reconciliation will produce a TRUE PnL accessor — use that. If Item 1
+finds the decision log is corrupted, this Item is BLOCKED until the
+decision-log fix lands.
+
+Files (see the 16 prompt for full details):
+  - design/phase-16-bankroll-display.md (NEW)
+  - src/polymarket_bot/dashboard_server/loaders.py OR
+    src/polymarket_bot/dashboard/loaders.py
+  - src/polymarket_bot/dashboard_server/state.py
+  - tests/dashboard/test_scenarios.py
+
+Gates: ruff + mypy --strict + pytest + lint-imports all green.
+
+Commit: feat(phase-16): bankroll-display scenarios panel
+
+------------------------------------------------------------------------
+ITEM 4 — Restart + verify chain (~30 min)
+------------------------------------------------------------------------
+
+After Items 1-3 land + are pushed to claude/jovial-hermann-7e103f:
+
+  a. SSH to VPS. Pull --ff-only.
+  b. Restart bot-staging.service.
+  c. systemctl is-active → "active".
+  d. Tail journal: only expected WARN is the wide_fire base-strategy
+     notice.
+  e. Wait 5 min, re-check (per feedback_vps_deploy_verify_late):
+     - systemctl is-active still "active"
+     - ActiveEnterTimestamp unchanged since restart
+     - 1 ensemble_vote in state/ensemble/<today>.jsonl with the new
+       meta_outcome field populated
+  f. Wait 30 min, re-check the same set.
+  g. Compare post-restart bot state vs the prestop snapshot from
+     Item 0. Confirm restart did NOT lose state (orphan-recovery
+     primes correctly).
+
+Per feedback_vps_deploy_verify_late: re-poll the live endpoint at
++5 min AND +30 min. Schedule a wakeup loop if context allows.
+
+================================================================================
+WHAT THIS PHASE EXPLICITLY DOES NOT DO
+================================================================================
+
+- Does NOT ship the regime-conditional lift (Phase 13B). Sample size is
+  too small per the 2026-05-12 audit. Wait 5-7 more days.
+- Does NOT change ENSEMBLE_MODE, the LLM timeout, the wide_fire base,
+  or any strategy threshold.
+- Does NOT touch decision #10 ($1k paper bankroll).
+- Does NOT flip TIER_GATE_ENABLED or REGIME_GATE_ENABLED.
+- Does NOT ship Phase 19 (async LLM pre-compute) — that depends on
+  Phase 18B telemetry data we don't have yet.
+- Does NOT ship Phase 17 (sizing modes) — that requires explicit
+  operator approval to revisit decision #9.
+
+================================================================================
+ANTI-VIBE RULES — relevant this session
+================================================================================
+
+- Design doc before code (#1): Items 2 + 3 need their own design docs.
+  Item 1's audit script doesn't count as "src code" but its findings
+  WILL anchor any decision-log writer fix.
+- Bug → failing test → fix → green (#2): if Item 1 finds a writer bug,
+  the regression test goes with the fix.
+- 3-fix rule (#3): if Item 1's audit doesn't converge after three
+  attempts at reconciling the $2,504 vs $75 gap, STOP and write
+  runbooks/incidents/2026-05-13-pnl-reconciliation-stuck.md.
+- Test under load (`feedback_test_under_load`): meta_outcome telemetry
+  must not slow the hot path. 100 evals < 500ms guard, same as
+  Phase 14/15.
+- Honest pushback (`feedback_honest_pushback`): if Item 1 finds the
+  v4 dashboard is the one that's wrong (e.g., $75 excludes legitimate
+  PnL), say so. Don't anchor on what the operator believes.
+
+================================================================================
+HARD LIMITS
+================================================================================
+
+- Bankroll: $1,000 paper (locked decision #10). Phase 15.5 does NOT touch.
+- bot.service stays DISABLED. Only bot-staging.service is in scope.
+- Funder key NEVER on VPS.
+- Anthropic spend ~$1-3/day. Hard cap $10/day.
+- Bot is STOPPED for the duration of Items 1-3. Resume only after
+  Item 4's +5min verify passes.
+- If Item 1's reconciliation takes >90 min, STOP and reassess —
+  it shouldn't be that hard if the writer is clean.
+
+================================================================================
+SESSION BOUNDARY — ENDS WHEN ONE OF
+================================================================================
+
+(a) Items 0-4 shipped, soak underway with new meta_outcome data
+    flowing + scenarios panel live + reconciled-PnL accessor in use.
+    ✅ full
+(b) Items 0-2 shipped (PnL truth + 18B), Item 3 (bankroll display)
+    deferred to next session because the dashboard_server module
+    surface isn't clean enough. ✅ partial.
+(c) Item 1 reveals a decision-log writer bug → STOP, write the fix,
+    re-prioritize. The other items wait. 🛑
+(d) Context ≥60% before Item 3 done → close out, restart with what
+    landed. ⏸
+
+================================================================================
+WHAT THIS PHASE UNLOCKS
+================================================================================
+
+- Phase 19 (async pre-compute) can be designed using REAL meta-outcome
+  data instead of guesses.
+- Phase 17 (sizing modes) can use a TRUE bankroll number instead of a
+  phantom-inflated one.
+- The dashboard's scenarios panel lets the operator make informed
+  Phase 6 / Phase 17 sizing decisions.
+- Any future audit (Phase 13 re-run, regime-gate re-evaluation, etc.)
+  can use real numbers.
+
+After Phase 15.5 green: re-run scripts/audit_unfilled_by_regime_v3.py
+on the longer window (Phase 13B feasibility check). Re-run
+scripts/audit_regime_wr.py (Phase 15 abstain-set decision support).
+Both audits will have ~14 days of data which is the real "ship-or-
+not-ship" threshold.
