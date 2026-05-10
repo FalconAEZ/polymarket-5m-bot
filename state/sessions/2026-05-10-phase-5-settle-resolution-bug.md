@@ -1,8 +1,8 @@
-# 2026-05-10 — Phase 5 settle-resolution bug session
+# 2026-05-10 — Phase 5 settle-resolution bug session (extended)
 
-**Closed at:** ~2026-05-10 05:30 UTC
-**Branch / HEAD:** `claude/jovial-hermann-7e103f` @ `6464541` (also `claude/youthful-margulis-964d00`)
-**Bot status at close:** active on VPS, restarted 05:24:54 UTC, instant-settle SUCCESS confirmed live
+**Closed at:** ~2026-05-10 13:00 UTC (after a long continuation)
+**Branch / HEAD:** `claude/jovial-hermann-7e103f` @ `46b3ce6` (also `claude/youthful-margulis-964d00`)
+**Bot status at close:** active on VPS, last restart 12:30 UTC; 380 settled, 52.6% WR, +$97.91 real edge
 
 ## What we set out to do
 
@@ -87,3 +87,133 @@ Per the prompt: needs n ≥ 30 settled trades on clean data; today only has 24 s
 ## Hand-off signature
 
 This session closed at HEAD `6464541` on `claude/jovial-hermann-7e103f`. Pushed to GitHub. Bot active in shadow mode at the new code. Bullish: the data integrity issues that contaminated all WR/PnL metrics are now fixed forward AND backward. Bearish: the dashboard view still shows the 2 phantom $449 wins until followup #1 lands. The operator needs to know that "dashboard total PnL" today is overstated by ~$899 vs the corrected JSONL truth.
+
+---
+
+## Continuation (2026-05-10 06:00 - 13:00 UTC) — three phantom-fill bug variants found and fixed
+
+After the 05:30 UTC close (HEAD `6464541`), the bot kept running and the operator
+flagged escalating phantom PnLs through the day. What looked like one bug
+(taker-side phantom at $0.011) turned out to be FOUR distinct variants of
+the same root cause (simulator over-fills when `ask_size_top` is unknown).
+Six commits + one VPS-only dashboard patch shipped during the continuation.
+
+### Variant A — taker phantom (already fixed earlier this session at `6464541`)
+- Bot fires UP/DOWN at low price; best_ask at the floor ($0.01); `ask_size_top=None`
+- Taker fills $5 stake at $0.011 → 454.5 shares → +$449 phantom win
+- Fix: `_refuse_for_no_depth()` guard on taker path (then `floor=0.02`)
+- 2 windows neutralized: 1778388600, 1778389500
+
+### Variant B — maker-side phantom (`10e08e8` on this continuation)
+- Bot fires DOWN at price_limit=$0.03; taker guard correctly refuses (fill=None)
+- Order rests; book later crashes to ask=$0.03; maker path fills full $5 at the limit
+- 166.67 shares × $1 payout (when DOWN wins) = +$161.67 phantom maker win
+- Fix: extended `_refuse_for_no_depth()` to maker path
+- Discovered after the bot ran for a few hours and the dashboard PnL
+  silently inflated from ~$50 → $1,109. 12 windows + 1 (1778390700)
+  caught and neutralized.
+
+### Variant C — POST-HOC RETRY creating phantom WINS (`f8da51f`)
+- This was the most insidious. The bot's own post-hoc gamma retry —
+  added earlier in this session to fix the chainlink/gamma resolution
+  divergence — was generating phantom positives.
+- Mechanism:
+  1. Phantom maker fill produces 166.67 shares × $0.03
+  2. Chainlink says wrong side → -$5 loss recorded
+  3. Post-hoc retry runs 5 min later; gamma confirms the OTHER side won
+  4. Retry **recomputes pnl on the inflated fill**: `166.67 × $1 - $5 - fee = +$161.67`
+  5. Writes a `polymarket-post-hoc` correction with positive pnl that the
+     dashboard's overlay (last-write-wins) picks up
+- Operator-flagged windows 1778409000 (+$161) and 1778409900 (+$120) hit this
+- Fix: post-hoc retry now calls `_fill_matches_phantom_pattern(fill)` BEFORE
+  recomputing pnl; if the fill matches the phantom pattern, write
+  `corrected_pnl_usd=0` + `phantom_fill=True` (a `phantom-fill-neutralized`
+  source) instead of the inflated value
+- Backfill auto-detect was also updated to OVERRIDE existing
+  non-phantom corrections that match the phantom pattern (last-write-wins)
+- 4 windows had the phantom-flip already on disk; all overridden
+
+### Variant D — fills at $0.03+ slipping through the 0.02 floor (`46b3ce6`)
+- Operator flagged window 1778415300 (+$161) — same maker pattern at $0.03
+- Root cause: `DEFAULT_FLOOR_BEST_ASK = 0.02` only catches fills at-or-below
+  $0.02; fills at $0.03 (where the bot fires its loose-start price_limit)
+  were uncaught
+- Plus: `polymarket` instant-settle succeeded for these → no chainlink-fallback
+  → no post-hoc retry was scheduled → variant C's safeguard never fired
+- Fix:
+  - `DEFAULT_FLOOR_BEST_ASK: 0.02 → 0.05` (catches $0.03 maker pattern)
+  - new `DEFAULT_MAX_FILL_SIZE_NO_DEPTH = 50` (refuses any fill > 50 shares
+    when ask_size_top is None — defense in depth across all price levels)
+  - new `_refuse_for_no_depth(price, size, book)` helper called by BOTH paths
+- 2 more windows neutralized (1778415000, 1778415300)
+
+### Backfill script evolution
+- v1: explicit `PHANTOM_WINDOWS` dict (3 windows)
+- v2 (`da5b246`): + auto-detect by pattern (no fill at fired + low price + large size at settle)
+- v3 (`f8da51f`): auto-detect now overrides non-phantom corrections that match the pattern
+- This was essential because each new variant had its own existing-correction state to override
+
+### VPS dashboard patches (out-of-tree, saved in `runbooks/patches/`)
+- `dashboard/loaders.py`: new `apply_settled_corrections(rows, raw_dir)` overlays
+  `kind=settled_correction` records on top of `decisions-resolved/` rows
+- `dashboard_server/state.py`: calls `apply_settled_corrections` after `load_decisions`
+- These were SCP'd to the VPS (the dashboard files originate from a parallel
+  `claude/dashboard-pm-truth-fix-7e103f` branch that was never merged into
+  `jovial-hermann-7e103f`); copies committed under `runbooks/patches/` for
+  traceability
+
+## Final numbers (operator-confirmed, 2026-05-10 13:00 UTC)
+
+| Metric | Result |
+|--------|--------|
+| **HEAD (worktree, main, GitHub, VPS)** | `46b3ce6` |
+| **Bot status** | active, last restart 12:30 UTC |
+| **Bankroll** | $1,086.96 (+8.7%) |
+| **Total PnL today (real edge)** | +$86.96 / 430 fired |
+| **Win rate** | **52.3%** (operator validated this as a real edge) |
+| **n_settled** | 380 |
+| **avg PnL / trade** | +$0.225 |
+| **Phantom inflation removed** | $2,470.74 across 21 corrections |
+| **Tests** | 450 passing; mypy strict + ruff clean |
+
+**The 52.3% WR is REAL** — this is on PM-truth corrected data with all
+phantom fills neutralized. Pre-fix dashboard showed +$1,286 PnL inflated by
+~$1,200 of phantom wins.
+
+## Commits shipped this session (in order)
+
+| HEAD | Subject |
+|------|---------|
+| `28c01cf` | post-hoc gamma re-resolution + bump instant-settle defaults 30s → 300s |
+| `6464541` | refuse fill at price floor when ask depth unknown + neutralize 2 phantom wins (TAKER) |
+| `3fa5b97` | docs: vault closeout — session note + next-session prompt |
+| `12c7f02` | docs: maker-side phantom-fill followup discovery |
+| `10e08e8` | maker-side guard + dashboard correction overlay (VPS-only patches) |
+| `da5b246` | backfill: auto-detect phantom-maker fills by pattern |
+| `f8da51f` | post-hoc detects phantom-floor fills and writes pnl=0 |
+| `46b3ce6` | bump floor 0.02 → 0.05 + size-based depth guard |
+
+## What's NEXT
+
+The operator is happy with the LLM ensemble approach (running with
+ENSEMBLE_MODE=shadow + wide_fire base). Recommendation: continue Items 5-6
+from `phase-prompts/phase-5-ensemble-evaluation-2026-05-12.txt`:
+
+1. **Re-run ensemble shadow rollup on the now-clean PM-truth data**
+   (n=380 settled is plenty)
+2. **Decide gate-mode promotion**: if LLM gate beats deterministic by ≥+5pp WR,
+   flip ENSEMBLE_MODE=gate. Per Phase 5 design (decision #16) — keep
+   ensemble only if uplift ≥3pp.
+3. **Document the simulator phantom-fill bug class** in
+   `runbooks/incidents/2026-05-10-phantom-floor-fill.md` (currently only
+   covered by inline comments + this session note)
+
+Operator also said "we're going to proceed with something interesting after
+this" — TBD next session.
+
+## Memory updates
+
+- `~/.claude/projects/.../memory/MEMORY.md` — checkpoint pointer updated
+- `~/.claude/projects/.../memory/checkpoint_phase_5_settle_resolution_bug.md` —
+  followup #6 (maker-side) marked done; new followups documented for the
+  three additional variants we discovered + the dashboard overlay
