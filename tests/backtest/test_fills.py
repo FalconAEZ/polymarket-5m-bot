@@ -225,3 +225,55 @@ def test_realised_pnl_losing_side_loses_cost_plus_fee() -> None:
     )
     pnl = realised_pnl_usd(fill, resolution_side_winning=False)
     assert pnl == pytest.approx(-5.001, abs=1e-9)
+
+
+def test_taker_refuses_at_0_03_when_depth_unknown() -> None:
+    """Audit 2026-05-10: phantom maker fills happened at $0.03 (just
+    above the original 0.02 floor). Bumped DEFAULT_FLOOR_BEST_ASK to
+    0.05 to catch the $0.03 case. A taker fill at 0.03 with no depth
+    must now be refused."""
+    sim = FillSimulator()  # default floor_best_ask=0.05
+    book = _book(best_ask=0.03, ask_size_top=None)
+    fill = sim.attempt_fill(_decision(price_limit=0.05), book, is_taker=True)
+    assert fill is None
+
+
+def test_maker_refuses_at_0_03_when_depth_unknown() -> None:
+    """Window 1778415300 case: bot fired DOWN at price_limit=$0.03;
+    taker guard refused at fired-time; order rested; later book at
+    ask=$0.03 with ask_size_top=None should now refuse the maker fill
+    too (with the bumped 0.05 floor)."""
+    sim = FillSimulator()
+    later_book = _book(best_ask=0.03, ask_size_top=None)
+    fill = sim.attempt_fill(_decision(price_limit=0.03), later_book, is_taker=False)
+    assert fill is None
+
+
+def test_size_guard_refuses_overfill_when_depth_unknown() -> None:
+    """Even if best_ask is above the price floor, refuse when the
+    would-be fill size exceeds the depth-less max. A $5 stake at
+    $0.08 would produce 62.5 shares — over the 50-share cap."""
+    sim = FillSimulator()
+    book = _book(best_ask=0.08, ask_size_top=None)
+    fill = sim.attempt_fill(_decision(price_limit=0.10, size=5.0), book, is_taker=True)
+    assert fill is None
+
+
+def test_size_guard_allows_when_depth_known() -> None:
+    """Size guard ONLY engages when ask_size_top is None. With known
+    depth the impact model handles it (and the guard does nothing)."""
+    sim = FillSimulator()
+    book = _book(best_ask=0.08, ask_size_top=200.0)  # $16 of depth
+    fill = sim.attempt_fill(_decision(price_limit=0.10, size=5.0), book, is_taker=True)
+    assert fill is not None
+
+
+def test_size_guard_allows_normal_trade_above_floor() -> None:
+    """Normal trade ($5 stake at $0.20 ask = 25 shares) with no depth
+    info should still fill — under both the price floor and the size cap."""
+    sim = FillSimulator()
+    book = _book(best_ask=0.20, ask_size_top=None)
+    fill = sim.attempt_fill(_decision(price_limit=0.25, size=5.0), book, is_taker=True)
+    assert fill is not None
+    # Sanity-check the size came out as expected (cost / fill_price).
+    assert 24 < fill.size_filled < 26
