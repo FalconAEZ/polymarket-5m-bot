@@ -216,6 +216,12 @@ def _build_strategy(name: str) -> Strategy:
         limit_buf = _env_float("SPOT_AWARE_LIMIT_BUFFER_USD", None)
         if limit_buf is not None:
             v2_kwargs["limit_buffer_usd"] = limit_buf
+        # ORACLE_GAP_MIN_BPS — audit 2026-05-10 found aligned spot-vs-
+        # oracle gap >= 1 bps gives 62.5% WR vs 49.7% baseline. Default
+        # 0 = filter disabled (kill-switch); set to e.g. 1.0 to enable.
+        oracle_gap = _env_float("ORACLE_GAP_MIN_BPS", None)
+        if oracle_gap is not None and oracle_gap > 0:
+            v2_kwargs["oracle_gap_min_bps"] = oracle_gap
         if v2_kwargs:
             LOG.warning("spot_aware_v2 overrides: %s", v2_kwargs)
         return SpotAwareStrategyV2(priors=load_priors(), **v2_kwargs)

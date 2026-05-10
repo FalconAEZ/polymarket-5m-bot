@@ -85,6 +85,14 @@ class SpotAwareStrategyV2:
         ttl_low_s: int = DEFAULT_TTL_LOW_S,
         ttl_high_s: int = DEFAULT_TTL_HIGH_S,
         limit_buffer_usd: float = DEFAULT_LIMIT_BUFFER_USD,
+        # Oracle-gap filter (audit 2026-05-10): when |spot - oracle_last|
+        # is at least this many bps AND the gap direction aligns with the
+        # bet side, fire is allowed; otherwise abstain. The 292-fire
+        # historical audit found aligned + |gap| >= 1 bps gives 62.5% WR
+        # and +$1.51/trade vs the dataset's 49.7% / +$0.02 baseline.
+        # Default 0.0 = disabled (kill-switch); production wires the
+        # ORACLE_GAP_MIN_BPS env var in run_paper.py.
+        oracle_gap_min_bps: float = 0.0,
     ) -> None:
         if delta_min_bps <= 0:
             raise ValueError(f"delta_min_bps must be > 0, got {delta_min_bps}")
@@ -113,8 +121,12 @@ class SpotAwareStrategyV2:
         self._ttl_low_s = ttl_low_s
         self._ttl_high_s = ttl_high_s
         self._limit_buffer = max(0.0, limit_buffer_usd)
+        if oracle_gap_min_bps < 0:
+            raise ValueError(f"oracle_gap_min_bps must be >= 0; got {oracle_gap_min_bps}")
+        self._oracle_gap_min_bps = oracle_gap_min_bps
 
         self._spot_now: float | None = None
+        self._oracle_last: float | None = None
         self._window_ts: int | None = None
         self._window_open_spot: float | None = None
         self._fired_for_window: int | None = None
@@ -123,6 +135,7 @@ class SpotAwareStrategyV2:
 
     def reset(self) -> None:
         self._spot_now = None
+        self._oracle_last = None
         self._window_ts = None
         self._window_open_spot = None
         self._fired_for_window = None
@@ -141,6 +154,7 @@ class SpotAwareStrategyV2:
                 self._best_ask_for_side[event.side] = event.best_ask
             return self._maybe_fire(event.ts_utc_ns)
         if isinstance(event, OracleUpdate):
+            self._oracle_last = event.price
             return None
         if isinstance(event, WindowBoundary):
             return self._on_boundary(event)
@@ -184,6 +198,22 @@ class SpotAwareStrategyV2:
         ask = self._best_ask_for_side.get(side)
         if ask is None:
             return None
+
+        # Oracle-gap filter (audit 2026-05-10). When enabled
+        # (oracle_gap_min_bps > 0) AND we have an oracle reading,
+        # require the spot-vs-oracle gap to (a) align with the bet side
+        # and (b) be at least `oracle_gap_min_bps` bps in magnitude.
+        # Disabled (default 0) preserves legacy v2 behavior. The audit
+        # showed aligned + |gap| >= 1 bps gives 62.5% WR on the 292-fire
+        # historical dataset vs 49.7% baseline. No oracle reading = let
+        # v2 fall through unchanged (don't penalise cold-start).
+        if self._oracle_gap_min_bps > 0 and self._oracle_last is not None:
+            if self._oracle_last <= 0:
+                return None
+            gap_bps_value = (self._spot_now - self._oracle_last) / self._oracle_last * 10_000.0
+            aligned = (gap_bps_value > 0 and side == "UP") or (gap_bps_value < 0 and side == "DOWN")
+            if not aligned or abs(gap_bps_value) < self._oracle_gap_min_bps:
+                return None
 
         # v2: explicit tier rejection BEFORE the priors lookup. Rejected
         # tiers (e.g. 50-70%) are never fired regardless of priors data --

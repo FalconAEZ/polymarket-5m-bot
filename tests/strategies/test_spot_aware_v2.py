@@ -16,6 +16,7 @@ import pytest
 from polymarket_bot.backtest.types import (
     BookUpdate,
     Decision,
+    OracleUpdate,
     SpotTick,
     WindowBoundary,
 )
@@ -145,6 +146,120 @@ async def test_v2_caps_price_limit_below_reject_band_when_buffer_would_breach() 
     assert decision.price_limit >= 0.49, (
         f"cap should be just below the band, not below the ask; " f"got {decision.price_limit}"
     )
+
+
+def _oracle(price: float, ts_offset_s: int = 1) -> OracleUpdate:
+    return OracleUpdate(
+        ts_utc_ns=WINDOW_OPEN_NS + ts_offset_s * 1_000_000_000,
+        price=price,
+        round_id=ts_offset_s,
+        updated_at_s=WINDOW_TS + ts_offset_s,
+    )
+
+
+async def _drive_with_oracle(
+    strat: SpotAwareStrategyV2,
+    *,
+    open_spot: float,
+    end_spot: float,
+    oracle_at_fire: float | None,
+    ask_up: float = 0.45,
+    ask_down: float = 0.45,
+) -> Decision | None:
+    """Drive a window where an OracleUpdate (price=oracle_at_fire) is
+    delivered before the firing spot tick. Used to exercise the
+    spot-vs-oracle gap filter."""
+    await strat.on_event(_open())
+    await strat.on_event(_spot(open_spot, ts_offset_s=1))
+    await strat.on_event(_book("UP", TOKEN_UP, ask=ask_up, ts_offset_s=2))
+    await strat.on_event(_book("DOWN", TOKEN_DOWN, ask=ask_down, ts_offset_s=2))
+    if oracle_at_fire is not None:
+        await strat.on_event(_oracle(oracle_at_fire, ts_offset_s=10))
+    return await strat.on_event(_spot(end_spot, ts_offset_s=30))
+
+
+async def test_v2_oracle_gap_disabled_by_default_preserves_legacy_behavior() -> None:
+    """Default oracle_gap_min_bps=0 → filter is off. Even with a wildly
+    misaligned oracle reading, the fire still happens (legacy v2)."""
+    strat = SpotAwareStrategyV2(priors=_priors())  # default oracle_gap_min_bps=0
+    # Spot rises (UP-aligned) but oracle is way ABOVE spot, so gap is
+    # negative (misaligned for an UP fire). With the filter ON this
+    # would abstain; with the default-OFF, it fires.
+    decision = await _drive_with_oracle(
+        strat,
+        open_spot=80_000.0,
+        end_spot=80_080.0,  # UP fire
+        oracle_at_fire=80_500.0,  # oracle far above spot → gap negative
+        ask_up=0.45,
+    )
+    assert decision is not None
+    assert "side=UP" in decision.rationale
+
+
+async def test_v2_oracle_gap_aligned_passes_when_enabled() -> None:
+    """Enable the filter at min=1 bps. Spot 80_120, oracle 80_080 →
+    gap = +5 bps, aligned with UP fire. Pass."""
+    strat = SpotAwareStrategyV2(priors=_priors(), oracle_gap_min_bps=1.0)
+    decision = await _drive_with_oracle(
+        strat,
+        open_spot=80_000.0,
+        end_spot=80_120.0,  # +15bps UP move
+        oracle_at_fire=80_080.0,  # spot is +5bps above oracle → aligned with UP
+        ask_up=0.45,
+    )
+    assert decision is not None
+    assert "side=UP" in decision.rationale
+
+
+async def test_v2_oracle_gap_misaligned_blocks_when_enabled() -> None:
+    """Filter on; spot rose (UP fire) but oracle is ABOVE spot at fire
+    time → gap is negative (oracle expects downward correction). Filter
+    blocks the fire."""
+    strat = SpotAwareStrategyV2(priors=_priors(), oracle_gap_min_bps=1.0)
+    decision = await _drive_with_oracle(
+        strat,
+        open_spot=80_000.0,
+        end_spot=80_080.0,  # UP fire
+        oracle_at_fire=80_500.0,  # oracle above spot → gap is negative
+        ask_up=0.45,
+    )
+    assert decision is None
+
+
+async def test_v2_oracle_gap_aligned_but_too_small_blocks() -> None:
+    """Aligned but |gap| < threshold → block. Strategy fires on a 10bps
+    delta (open=80_000, end=80_080) but the oracle is at 80_079 → gap
+    at fire time is (80_080-80_079)/80_079*10_000 ≈ 0.125 bps. Filter
+    set at 1 bps → blocks."""
+    strat = SpotAwareStrategyV2(priors=_priors(), oracle_gap_min_bps=1.0)
+    decision = await _drive_with_oracle(
+        strat,
+        open_spot=80_000.0,
+        end_spot=80_080.0,  # UP fire (10bps delta vs open)
+        oracle_at_fire=80_079.0,  # spot is +0.125 bps above oracle
+        ask_up=0.45,
+    )
+    assert decision is None
+
+
+async def test_v2_oracle_gap_no_oracle_reading_falls_through() -> None:
+    """Cold-start: filter is enabled but no OracleUpdate has arrived
+    yet. Strategy must fall through to v2's normal logic (don't penalise
+    the bot for not having an oracle reading yet)."""
+    strat = SpotAwareStrategyV2(priors=_priors(), oracle_gap_min_bps=1.0)
+    decision = await _drive_with_oracle(
+        strat,
+        open_spot=80_000.0,
+        end_spot=80_080.0,
+        oracle_at_fire=None,  # no OracleUpdate emitted
+        ask_up=0.45,
+    )
+    assert decision is not None
+
+
+async def test_v2_oracle_gap_constructor_rejects_negative() -> None:
+    with pytest.raises(ValueError, match="oracle_gap_min_bps"):
+        SpotAwareStrategyV2(priors=_priors(), oracle_gap_min_bps=-1.0)
 
 
 async def test_v2_does_not_cap_price_limit_when_safely_below_band() -> None:
