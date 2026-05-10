@@ -164,6 +164,8 @@ class DecisionLog:
         corrected_pnl_usd: float,
         corrected_ts_ns: int,
         fill_at_settle: Fill | None,
+        phantom_fill: bool = False,
+        phantom_reason: str | None = None,
     ) -> None:
         """Append a `settled_correction` record after a chainlink-local-fallback
         was later proven wrong by Polymarket Gamma.
@@ -172,6 +174,12 @@ class DecisionLog:
         correction is a separate append-only line keyed by the same
         decision_id. Downstream consumers (rollup, dashboard, analytics)
         prefer the correction when present.
+
+        ``phantom_fill=True`` flags the record as a simulator-bug
+        neutralization (corrected_pnl_usd should be 0) — the dashboard's
+        overlay + the rollup script honor this flag. Used when the
+        post-hoc retry detects an over-filled near-floor fill that would
+        otherwise produce a phantom positive pnl.
         """
         if self._closed:
             raise RuntimeError("DecisionLog is closed")
@@ -186,8 +194,14 @@ class DecisionLog:
             "corrected_pnl_usd": corrected_pnl_usd,
             "corrected_ts_ns": corrected_ts_ns,
             "fill_at_settle": _fill_to_dict(fill_at_settle),
-            "resolution_source": "polymarket-post-hoc",
+            "resolution_source": (
+                "phantom-fill-neutralized" if phantom_fill else "polymarket-post-hoc"
+            ),
         }
+        if phantom_fill:
+            line["phantom_fill"] = True
+            if phantom_reason:
+                line["phantom_reason"] = phantom_reason
         self._write(corrected_ts_ns, line)
 
     def close(self) -> None:

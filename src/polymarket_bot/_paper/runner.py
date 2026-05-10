@@ -76,6 +76,31 @@ DEFAULT_POST_HOC_RETRY_INITIAL_DELAY_S = 300.0
 DEFAULT_POST_HOC_RETRY_INTERVAL_S = 30.0
 DEFAULT_POST_HOC_RETRY_MAX_ATTEMPTS = 50
 
+# Post-hoc retry phantom-detection thresholds — mirror
+# scripts/backfill_phantom_floor_fills.py AUTO_FILL_PRICE_MAX /
+# AUTO_FILL_SIZE_MIN. When the existing fill matches the phantom pattern
+# (near-floor price + large size), the post-hoc gamma retry must NOT
+# recompute pnl from `size * payout - cost - fee` — that turns a
+# phantom -$5 loss into a phantom +$161 win when gamma flips the side.
+# Instead, write corrected_pnl_usd=0 + phantom_fill=true so the
+# dashboard / rollup neutralize it.
+POST_HOC_PHANTOM_PRICE_MAX = 0.05
+POST_HOC_PHANTOM_SIZE_MIN = 50.0
+
+
+def _fill_matches_phantom_pattern(fill: Fill | None) -> bool:
+    """A fill at <= POST_HOC_PHANTOM_PRICE_MAX and >= POST_HOC_PHANTOM_SIZE_MIN
+    is the simulator-bug signature: depth was unknown, size was over-filled
+    at the floor. Pnl-from-fill cannot be trusted for these — the user-
+    visible truth is "no realistic trade actually happened, pnl=$0".
+    """
+    if fill is None:
+        return False
+    return (
+        fill.price_filled <= POST_HOC_PHANTOM_PRICE_MAX
+        and fill.size_filled >= POST_HOC_PHANTOM_SIZE_MIN
+    )
+
 
 class PaperRunner:
     """Drive a Strategy over live feeds, simulating fills + writing decision_log."""
@@ -814,11 +839,21 @@ class PaperRunner:
                         return
                     # Truths disagree — write a correction.
                     fill = snap.settled_fill
-                    corrected_pnl = (
-                        _realised_pnl(fill, truth == snap.side)
-                        if (fill is not None and snap.side is not None)
-                        else 0.0
-                    )
+                    is_phantom = _fill_matches_phantom_pattern(fill)
+                    if is_phantom:
+                        # The fill was over-filled at the floor (depth
+                        # unknown). Recomputing pnl as size * payout - cost
+                        # would produce a phantom positive — turning a
+                        # phantom -$5 loss into a phantom +$161 win. Refuse:
+                        # write corrected_pnl_usd=0 + phantom_fill=true so
+                        # the dashboard / rollup neutralize it.
+                        corrected_pnl = 0.0
+                    else:
+                        corrected_pnl = (
+                            _realised_pnl(fill, truth == snap.side)
+                            if (fill is not None and snap.side is not None)
+                            else 0.0
+                        )
                     try:
                         self._log.record_settled_correction(
                             decision_id=snap.decision_id,
@@ -830,6 +865,15 @@ class PaperRunner:
                             corrected_pnl_usd=corrected_pnl,
                             corrected_ts_ns=self._clock_ns(),
                             fill_at_settle=fill,
+                            phantom_fill=is_phantom,
+                            phantom_reason=(
+                                "post-hoc retry detected near-floor over-fill "
+                                f"(price={fill.price_filled if fill else None}, "
+                                f"size={fill.size_filled if fill else None}); "
+                                "neutralizing pnl"
+                                if is_phantom
+                                else None
+                            ),
                         )
                     except OSError as exc:
                         LOG.critical("decision_log.record_settled_correction OSError: %s", exc)

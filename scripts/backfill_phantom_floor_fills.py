@@ -136,7 +136,13 @@ def backfill(path: Path, *, dry_run: bool = False) -> int:
     fired_by_id: dict[str, dict[str, object]] = {}
     settled_by_id: dict[str, dict[str, object]] = {}
     settled_by_window: dict[int, dict[str, object]] = {}
-    corrected_decision_ids: set[str] = set()
+    # Track LATEST correction per decision_id (last-write-wins, matches the
+    # dashboard overlay semantics). We need to know not just IF a correction
+    # exists but WHAT it says — a non-phantom correction with positive pnl
+    # may itself be phantom-inflated (the bot's post-hoc gamma retry recomputes
+    # pnl from the original phantom fill, flipping a phantom -$5 loss into a
+    # phantom +$161 win when gamma later corrects the side).
+    correction_by_id: dict[str, dict[str, object]] = {}
     for rec in records:
         kind = rec.get("kind")
         did = rec.get("decision_id")
@@ -148,7 +154,8 @@ def backfill(path: Path, *, dry_run: bool = False) -> int:
             if isinstance(w, int):
                 settled_by_window[w] = rec
         elif kind == "settled_correction" and isinstance(did, str):
-            corrected_decision_ids.add(did)
+            correction_by_id[did] = rec  # last-write-wins
+    corrected_decision_ids = set(correction_by_id.keys())
 
     new_lines: list[str] = []
     now_ns = time.time_ns()
@@ -199,13 +206,30 @@ def backfill(path: Path, *, dry_run: bool = False) -> int:
             corrected_decision_ids.add(did)
 
     # Pass 2 — auto-detect by pattern.
+    # IMPORTANT: we do NOT skip already-corrected records here. The bot's
+    # post-hoc gamma retry can write an INFLATED-positive correction
+    # (audit windows 1778409000 +$161, 1778409900 +$120): it sees the
+    # phantom-inflated fill from snap.settled_fill, flips the resolution
+    # via gamma, and recomputes pnl as `size * payout - cost - fee` —
+    # which on a phantom 166.67-share fill gives +$161 instead of $0.
+    # When the existing correction is itself phantom-inflated, we
+    # OVERWRITE it via a new last-wins phantom-fill correction.
     for did, settled in settled_by_id.items():
-        if did in corrected_decision_ids:
+        existing = correction_by_id.get(did)
+        if existing is not None and existing.get("phantom_fill") is True:
+            # Already neutralized; nothing to do.
             continue
         fired = fired_by_id.get(did)
         is_phantom, fill_px = _is_phantom_pattern(fired, settled)
         if not is_phantom:
             continue
+        # If a non-phantom correction exists, log that we're overriding.
+        if existing is not None:
+            print(
+                f"  window {settled.get('window_ts')} (auto-override): "
+                f"existing correction had pnl={existing.get('corrected_pnl_usd')} "
+                f"src={existing.get('resolution_source')}; overriding with phantom neutralization"
+            )
         original_pnl = float(settled.get("pnl_usd") or 0.0)  # type: ignore[arg-type]
         original_res = settled.get("resolution")
         w = settled.get("window_ts")

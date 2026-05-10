@@ -493,3 +493,42 @@ async def test_shutdown_awaits_in_flight_post_hoc_retry(tmp_path: Path) -> None:
     corrections = [e for e in events if e["kind"] == "settled_correction"]
     assert len(corrections) == 1
     assert corrections[0]["corrected_resolution"] == "DOWN"
+
+
+# ----------------------------------------------------------------------
+# Test 7 — post-hoc phantom-detection: when the existing fill matches
+# the phantom-floor pattern, the correction must be pnl=0 +
+# phantom_fill=true, NOT a recomputed positive pnl. Audit 2026-05-10
+# windows 1778409000 / 1778409900 hit this bug — the post-hoc retry
+# flipped the resolution and recomputed pnl from the inflated 166.67-share
+# fill, turning a phantom -$5 loss into a phantom +$161 win.
+# ----------------------------------------------------------------------
+
+
+from polymarket_bot._paper.runner import _fill_matches_phantom_pattern  # noqa: E402
+from polymarket_bot.backtest.types import Fill  # noqa: E402
+
+
+def test_fill_matches_phantom_pattern_detects_floor_fill() -> None:
+    # Audit window 1778409000: 166.67 shares at $0.03 — phantom maker fill.
+    f = Fill(ts_utc_ns=0, asset_id="x", size_filled=166.67, price_filled=0.03, fee_usd=0.001)
+    assert _fill_matches_phantom_pattern(f) is True
+
+
+def test_fill_matches_phantom_pattern_does_not_flag_legitimate() -> None:
+    # Real edge trade: 16 shares at $0.30 — legitimate.
+    f = Fill(ts_utc_ns=0, asset_id="x", size_filled=16.0, price_filled=0.30, fee_usd=0.001)
+    assert _fill_matches_phantom_pattern(f) is False
+
+
+def test_fill_matches_phantom_pattern_handles_none() -> None:
+    assert _fill_matches_phantom_pattern(None) is False
+
+
+def test_fill_matches_phantom_pattern_requires_both_size_and_price() -> None:
+    # Small size but low price (e.g. real trade at the lower edge) — not phantom.
+    f = Fill(ts_utc_ns=0, asset_id="x", size_filled=10.0, price_filled=0.04, fee_usd=0.001)
+    assert _fill_matches_phantom_pattern(f) is False
+    # Big size at higher price (e.g. a $50 trade at $0.30 = 167 shares) — not phantom.
+    f = Fill(ts_utc_ns=0, asset_id="x", size_filled=167.0, price_filled=0.30, fee_usd=0.001)
+    assert _fill_matches_phantom_pattern(f) is False
