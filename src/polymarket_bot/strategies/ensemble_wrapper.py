@@ -53,6 +53,7 @@ from polymarket_bot.backtest.types import (
     WindowBoundary,
 )
 from polymarket_bot.strategies.protocol import Strategy
+from polymarket_bot.tiers import TIER_LABELS, tier_label_for_price
 
 LOG = logging.getLogger("polymarket_bot.strategies.ensemble_wrapper")
 
@@ -111,6 +112,7 @@ class EnsembleWrapper:
         recent_buffer_len: int = DEFAULT_RECENT_BUFFER_LEN,
         recent_window_s: int = DEFAULT_RECENT_WINDOW_S,
         gate_llm_timeout_s: float = DEFAULT_GATE_LLM_TIMEOUT_S,
+        tier_blocklist: Iterable[str] = (),
     ) -> None:
         self._base = base
         self._specialists = list(specialists)
@@ -122,6 +124,16 @@ class EnsembleWrapper:
         self._log_root: Path | None = Path(log_root) if log_root is not None else None
         if self._log_root is not None:
             self._log_root.mkdir(parents=True, exist_ok=True)
+        # Phase 14: optional entry-price tier blocklist. Empty = no tier
+        # filtering; zero overhead. Populated = check candidate.price_limit
+        # tier against the set before LLM dispatch and refuse on match.
+        unknown = {t for t in tier_blocklist if t not in TIER_LABELS}
+        if unknown:
+            raise ValueError(
+                f"tier_blocklist contains unknown tier labels {sorted(unknown)}; "
+                f"valid labels are {sorted(TIER_LABELS)}"
+            )
+        self._tier_blocklist: frozenset[str] = frozenset(tier_blocklist)
 
         # Per-window context state — refreshed on every event so when the
         # base strategy emits a Decision we can build a complete AgentContext
@@ -173,6 +185,28 @@ class EnsembleWrapper:
 
         # 2. Forward the event to the base strategy and capture its verdict.
         candidate = await self._base.on_event(event)
+
+        # 2b. Phase 14 — entry-price tier blocklist. Applied BEFORE the
+        # off/shadow/gate mode dispatch so it works regardless of whether
+        # the LLM ensemble is engaged, AND before any LLM call so a
+        # blocked tier never costs a Haiku/Sonnet round-trip. Empty
+        # blocklist short-circuits with no overhead.
+        if candidate is not None and self._tier_blocklist:
+            tier = tier_label_for_price(candidate.price_limit)
+            if tier in self._tier_blocklist:
+                self._log_ensemble_event(
+                    {
+                        "kind": "tier_abstained",
+                        "ts_ns": event.ts_utc_ns,
+                        "window_ts": self._window_ts,
+                        "decision_id_hint": _decision_hint(candidate),
+                        "price_limit": candidate.price_limit,
+                        "tier": tier,
+                        "blocklist": sorted(self._tier_blocklist),
+                        "base_rationale": candidate.rationale,
+                    }
+                )
+                return None
 
         # 3. If base abstained OR ensemble is off, return base's verdict.
         if candidate is None or self._mode == "off":

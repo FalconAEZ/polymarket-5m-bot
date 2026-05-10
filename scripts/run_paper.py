@@ -370,6 +370,25 @@ def _build_strategy(name: str) -> Strategy:
         # and the wrapper falls through to base verdict + alert.
         daily_budget = _env_float("ANTHROPIC_DAILY_BUDGET_USD", 5.0) or 5.0
         budget = BudgetTracker(hard_limit_usd=daily_budget)
+        # Phase 14: optional tier blocklist. Default behavior unchanged
+        # (env unset OR TIER_GATE_ENABLED=false → empty blocklist → no
+        # filtering). When enabled, comma-separated tier labels are
+        # validated by EnsembleWrapper against the canonical PRICE_TIER_
+        # BUCKETS set at startup; unknown labels raise ValueError.
+        tier_gate_enabled = _env_bool("TIER_GATE_ENABLED", False)
+        tier_blocklist_raw = os.environ.get("TIER_GATE_BLOCKLIST", "").strip()
+        tier_blocklist: tuple[str, ...] = ()
+        if tier_gate_enabled and tier_blocklist_raw:
+            tier_blocklist = tuple(
+                label.strip() for label in tier_blocklist_raw.split(",") if label.strip()
+            )
+            LOG.warning(
+                "TIER_GATE_ENABLED=true with blocklist=%s — refused fires "
+                "will emit kind=tier_abstained to state/ensemble/<date>.jsonl",
+                tier_blocklist,
+            )
+        elif tier_gate_enabled:
+            LOG.info("TIER_GATE_ENABLED=true but blocklist empty; gate is a no-op")
         if mode != "off":
             adapter = AnthropicAdapter(budget=budget, api_key=api_key)
             specialists = [
@@ -391,6 +410,13 @@ def _build_strategy(name: str) -> Strategy:
                 meta=meta,
                 mode=mode,
                 log_root=log_root,
+                tier_blocklist=tier_blocklist,
+            )
+        if tier_blocklist:
+            LOG.warning(
+                "TIER_GATE_BLOCKLIST=%s ignored — ENSEMBLE_MODE=off bypasses "
+                "the wrapper entirely. Set ENSEMBLE_MODE=shadow|gate to enable.",
+                tier_blocklist,
             )
         LOG.info("STRATEGY=ensemble but ENSEMBLE_MODE=off; running base only")
         return base

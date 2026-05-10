@@ -55,9 +55,10 @@ class _StubBaseStrategy:
 
     name = "stub-base"
 
-    def __init__(self, side: str = "UP") -> None:
+    def __init__(self, side: str = "UP", price_limit: float = 0.55) -> None:
         self._fired = False
         self._side = side
+        self._price_limit = price_limit
 
     def reset(self) -> None:
         self._fired = False
@@ -72,7 +73,7 @@ class _StubBaseStrategy:
                 asset_id=TOKEN_UP if self._side == "UP" else TOKEN_DOWN,
                 side="BUY",
                 size_usd=5.0,
-                price_limit=0.55,
+                price_limit=self._price_limit,
                 ttl_s=60,
                 rationale=f"strategy=stub side={self._side} delta_bps=+10.0",
             )
@@ -593,3 +594,184 @@ async def test_gate_timeout_falls_back_to_base(tmp_path: Path) -> None:
     assert len(timeout_logs) == 1
     assert timeout_logs[0]["meta"] is None
     assert timeout_logs[0]["timeout_s"] == 0.1
+
+
+# ----------------------------------------------------------------------
+# Phase 14 — entry-price tier blocklist
+# ----------------------------------------------------------------------
+
+
+class _CallTrackingAgent:
+    """Counts vote() invocations to prove the LLM is short-circuited by the tier gate."""
+
+    def __init__(self, name: str, vote: AgentVote | None) -> None:
+        self.name = name
+        self.model = "stub"
+        self._vote = vote
+        self.call_count = 0
+
+    async def vote(self, ctx: AgentContext) -> AgentVote | None:
+        self.call_count += 1
+        return self._vote
+
+
+class _CallTrackingMeta:
+    def __init__(self, decision: MetaDecision | None) -> None:
+        self.name = "meta-stub"
+        self.model = "sonnet-stub"
+        self._decision = decision
+        self.call_count = 0
+
+    async def decide(self, ctx: AgentContext, votes: dict[str, AgentVote]) -> MetaDecision | None:
+        self.call_count += 1
+        return self._decision
+
+
+@pytest.mark.asyncio
+async def test_tier_gate_empty_blocklist_is_regression_safe(tmp_path: Path) -> None:
+    """Default behavior: empty tier_blocklist is a no-op; gate-mode flow unchanged."""
+    wrapper = EnsembleWrapper(
+        base=_StubBaseStrategy(side="UP", price_limit=0.42),  # 30-50% tier
+        specialists=[
+            _StubAgent("orderbook", AgentVote(side="UP", confidence=0.8, rationale="o")),
+            _StubAgent("oracle_gap", AgentVote(side="UP", confidence=0.7, rationale="og")),
+            _StubAgent("momentum", AgentVote(side="UP", confidence=0.6, rationale="m")),
+        ],
+        meta=_StubMeta(MetaDecision(action="FIRE", side="UP", confidence=0.9, rationale="meta-up")),
+        mode="gate",
+        log_root=tmp_path,
+        tier_blocklist=(),
+    )
+    decision = await _drive(wrapper)
+    assert decision is not None
+    assert decision.price_limit == 0.42
+    # No tier_abstained record was emitted.
+    log_lines = _read_jsonl_lines(_list_jsonl(tmp_path)[0])
+    assert all(log.get("kind") != "tier_abstained" for log in log_lines)
+
+
+@pytest.mark.asyncio
+async def test_tier_gate_blocks_listed_tier_in_gate_mode(tmp_path: Path) -> None:
+    """blocklist={'30-50%'} + candidate.price_limit=0.42 → refusal, no LLM call."""
+    specialist = _CallTrackingAgent(
+        "orderbook", AgentVote(side="UP", confidence=0.9, rationale="o")
+    )
+    meta = _CallTrackingMeta(MetaDecision(action="FIRE", side="UP", confidence=0.9, rationale="m"))
+    wrapper = EnsembleWrapper(
+        base=_StubBaseStrategy(side="UP", price_limit=0.42),
+        specialists=[specialist],
+        meta=meta,
+        mode="gate",
+        log_root=tmp_path,
+        tier_blocklist=("30-50%",),
+    )
+    decision = await _drive(wrapper)
+    assert decision is None
+    # The tier gate refused BEFORE invoking the LLM — saves Haiku/Sonnet spend.
+    assert specialist.call_count == 0
+    assert meta.call_count == 0
+    # Refusal emits a single tier_abstained record with all expected fields.
+    log_lines = _read_jsonl_lines(_list_jsonl(tmp_path)[0])
+    refusals = [log for log in log_lines if log.get("kind") == "tier_abstained"]
+    assert len(refusals) == 1
+    refusal = refusals[0]
+    assert refusal["tier"] == "30-50%"
+    assert refusal["price_limit"] == 0.42
+    assert refusal["blocklist"] == ["30-50%"]
+    assert "base_rationale" in refusal
+    assert refusal["window_ts"] == WINDOW_TS
+
+
+@pytest.mark.asyncio
+async def test_tier_gate_blocks_in_shadow_mode_too(tmp_path: Path) -> None:
+    """Tier gate is mode-independent — blocks fire in shadow mode regardless of LLM vote."""
+    wrapper = EnsembleWrapper(
+        base=_StubBaseStrategy(side="UP", price_limit=0.42),
+        specialists=[_StubAgent("orderbook", AgentVote(side="UP", confidence=0.9, rationale="o"))],
+        meta=_StubMeta(MetaDecision(action="FIRE", side="UP", confidence=0.9, rationale="m")),
+        mode="shadow",
+        log_root=tmp_path,
+        tier_blocklist=("30-50%",),
+    )
+    decision = await _drive(wrapper)
+    # Shadow mode normally never blocks fires — but tier gate is a hard filter.
+    assert decision is None
+
+
+@pytest.mark.asyncio
+async def test_tier_gate_passes_unlisted_tier(tmp_path: Path) -> None:
+    """price_limit=0.65 (50-70% tier) is NOT in blocklist={'30-50%'} → normal flow."""
+    specialist = _CallTrackingAgent(
+        "orderbook", AgentVote(side="UP", confidence=0.9, rationale="o")
+    )
+    meta = _CallTrackingMeta(MetaDecision(action="FIRE", side="UP", confidence=0.9, rationale="m"))
+    wrapper = EnsembleWrapper(
+        base=_StubBaseStrategy(side="UP", price_limit=0.65),  # 50-70% tier
+        specialists=[
+            specialist,
+            _StubAgent("oracle_gap", AgentVote(side="UP", confidence=0.7, rationale="og")),
+        ],
+        meta=meta,
+        mode="gate",
+        log_root=tmp_path,
+        tier_blocklist=("30-50%",),
+    )
+    decision = await _drive(wrapper)
+    assert decision is not None
+    assert decision.price_limit == 0.65
+    # LLM was consulted (tier not blocked).
+    assert specialist.call_count == 1
+    assert meta.call_count == 1
+    # No tier_abstained record.
+    log_lines = _read_jsonl_lines(_list_jsonl(tmp_path)[0])
+    assert all(log.get("kind") != "tier_abstained" for log in log_lines)
+
+
+def test_tier_gate_constructor_rejects_unknown_label() -> None:
+    """Startup validation: unknown tier labels in blocklist raise ValueError."""
+    with pytest.raises(ValueError, match="unknown tier labels"):
+        EnsembleWrapper(
+            base=_StubBaseStrategy(),
+            specialists=[_StubAgent("orderbook", None)],
+            meta=_StubMeta(None),
+            mode="off",
+            tier_blocklist=("not-a-tier", "30-50%"),
+        )
+
+
+@pytest.mark.asyncio
+async def test_tier_gate_under_load_no_overhead(tmp_path: Path) -> None:
+    """100 candidate evaluations with tier-gate enabled finish quickly.
+
+    Defends against queue-overflow regression class: any new pre-fire filter
+    must complete near-instantly per call. The tier check is O(1) dict
+    lookup; this test asserts 100 wrapper.on_event() calls (each producing
+    a candidate that hits the blocklist) complete in well under 500ms.
+    """
+    wrapper = EnsembleWrapper(
+        base=_StubBaseStrategy(side="UP", price_limit=0.42),
+        specialists=[_StubAgent("orderbook", None)],  # would slow if invoked
+        meta=_StubMeta(None),
+        mode="off",  # off-mode irrelevant — tier gate runs before mode dispatch
+        log_root=tmp_path,
+        tier_blocklist=("30-50%",),
+    )
+    # Warm context.
+    await wrapper.on_event(_open())
+    await wrapper.on_event(_spot(80_000.0, 1))
+
+    loop = asyncio.get_event_loop()
+    start = loop.time()
+    refused = 0
+    for i in range(100):
+        # Reset the one-shot stub so each iteration emits a fresh candidate.
+        wrapper._base.reset()  # type: ignore[attr-defined]
+        decision = await wrapper.on_event(
+            _spot(80_080.0 + i, 30 + i)  # spread events across the window
+        )
+        if decision is None:
+            refused += 1
+    elapsed = loop.time() - start
+    await wrapper.aclose()
+    assert refused == 100, f"expected 100 refusals, got {refused}"
+    assert elapsed < 0.5, f"100 tier-gated evaluations took {elapsed:.3f}s — overhead too high"

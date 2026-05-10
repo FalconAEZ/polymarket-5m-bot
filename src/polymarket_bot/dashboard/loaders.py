@@ -21,6 +21,11 @@ import psutil
 
 from polymarket_bot._paper.decision_log import join_fired_settled, read_jsonl
 from polymarket_bot.backtest.types import Side
+from polymarket_bot.tiers import (
+    PRICE_TIER_BUCKETS,
+    UNKNOWN_TIER_LABEL,
+    tier_label_for_price,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -338,23 +343,13 @@ def tail_log(path: Path | str, *, n_lines: int = 60, max_bytes: int = 65536) -> 
     return lines[-n_lines:]
 
 
-PRICE_TIER_BUCKETS: tuple[tuple[float, float, str], ...] = (
-    (0.00, 0.15, "<15%"),
-    (0.15, 0.30, "15-30%"),
-    (0.30, 0.50, "30-50%"),
-    (0.50, 0.70, "50-70%"),
-    (0.70, 0.85, "70-85%"),
-    (0.85, 1.01, "85-100%"),
-)
-
-
+# PRICE_TIER_BUCKETS + tier_label_for_price live in
+# polymarket_bot.strategies.tiers so the dashboard and the ensemble
+# tier-gate stay in lockstep. Local _tier_label is kept as a thin alias
+# for legacy callers within this module; new callers should import
+# tier_label_for_price directly.
 def _tier_label(price: float | None) -> str:
-    if price is None:
-        return "—"
-    for lo, hi, label in PRICE_TIER_BUCKETS:
-        if lo <= price < hi:
-            return label
-    return "—"
+    return tier_label_for_price(price)
 
 
 @dataclass(frozen=True, slots=True)
@@ -395,7 +390,7 @@ def per_tier_stats(rows: Iterable[DecisionRow]) -> list[TierStat]:
                 pnl_usd=pnl,
             )
         )
-    other_label = "—"
+    other_label = UNKNOWN_TIER_LABEL
     if other_label in groups:
         bucket = groups[other_label]
         if bucket:
