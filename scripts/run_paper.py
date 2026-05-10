@@ -219,8 +219,66 @@ def _build_strategy(name: str) -> Strategy:
         if v2_kwargs:
             LOG.warning("spot_aware_v2 overrides: %s", v2_kwargs)
         return SpotAwareStrategyV2(priors=load_priors(), **v2_kwargs)
+    if name == "spot_aware_v3":
+        # v3 = v2 + regime-detector gate. Locked spec:
+        # design/regime_detector.md. Validation evidence at
+        # runbooks/gate-evidence/regime-classifier-validation.txt
+        # (2026-05-10): trending bucket WR 70.59% vs chop 47.40%
+        # (+23.19pp); per-trade pnl +$1.75 trending vs -$0.22 chop.
+        # Same env overrides as v2 plus REGIME_TRENDING_THRESHOLD,
+        # REGIME_CHOP_THRESHOLD, REGIME_WINDOW_5M_S, REGIME_WINDOW_10M_S
+        # for tuning. v3 fires much less frequently than v2 (~6% of
+        # windows qualify as trending) but each fire is much more
+        # likely to win.
+        from polymarket_bot.strategies.regime_detector import (
+            DEFAULT_CHOP_THRESHOLD,
+            DEFAULT_TRENDING_THRESHOLD,
+            DEFAULT_WINDOW_5M_S,
+            DEFAULT_WINDOW_10M_S,
+            RegimeDetector,
+        )
+        from polymarket_bot.strategies.spot_aware_v3 import SpotAwareStrategyV3
+
+        v3_kwargs: dict[str, float] = {}
+        d_min = _env_float("SPOT_AWARE_DELTA_MIN_BPS", None)
+        if d_min is not None:
+            v3_kwargs["delta_min_bps"] = d_min
+        d_max = _env_float("SPOT_AWARE_DELTA_MAX_BPS", None)
+        if d_max is not None:
+            v3_kwargs["delta_max_bps"] = d_max
+        ev_min = _env_float("SPOT_AWARE_EV_MIN_DOLLARS", None)
+        if ev_min is not None:
+            v3_kwargs["ev_min_dollars_per_share"] = ev_min
+        limit_buf = _env_float("SPOT_AWARE_LIMIT_BUFFER_USD", None)
+        if limit_buf is not None:
+            v3_kwargs["limit_buffer_usd"] = limit_buf
+        trending_th = _env_float("REGIME_TRENDING_THRESHOLD", DEFAULT_TRENDING_THRESHOLD)
+        chop_th = _env_float("REGIME_CHOP_THRESHOLD", DEFAULT_CHOP_THRESHOLD)
+        win_5m_raw = _env_float("REGIME_WINDOW_5M_S", float(DEFAULT_WINDOW_5M_S))
+        win_10m_raw = _env_float("REGIME_WINDOW_10M_S", float(DEFAULT_WINDOW_10M_S))
+        win_5m = int(win_5m_raw if win_5m_raw is not None else DEFAULT_WINDOW_5M_S)
+        win_10m = int(win_10m_raw if win_10m_raw is not None else DEFAULT_WINDOW_10M_S)
+        trending_th_v = trending_th if trending_th is not None else DEFAULT_TRENDING_THRESHOLD
+        chop_th_v = chop_th if chop_th is not None else DEFAULT_CHOP_THRESHOLD
+        regime = RegimeDetector(
+            window_5m_s=win_5m,
+            window_10m_s=win_10m,
+            trending_threshold=trending_th_v,
+            chop_threshold=chop_th_v,
+        )
+        if v3_kwargs:
+            LOG.warning("spot_aware_v3 overrides: %s", v3_kwargs)
+        LOG.info(
+            "regime detector: 5m=%ss / 10m=%ss thresholds trending>%s chop<%s",
+            win_5m,
+            win_10m,
+            trending_th_v,
+            chop_th_v,
+        )
+        return SpotAwareStrategyV3(priors=load_priors(), regime_detector=regime, **v3_kwargs)
     raise ValueError(
-        f"unknown STRATEGY env value {name!r}; pick deterministic | spot_aware | spot_aware_v2"
+        f"unknown STRATEGY env value {name!r}; "
+        "pick deterministic | spot_aware | spot_aware_v2 | spot_aware_v3"
     )
 
 
