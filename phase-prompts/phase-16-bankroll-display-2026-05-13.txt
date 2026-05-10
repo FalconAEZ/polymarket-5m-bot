@@ -1,0 +1,238 @@
+Subject: Phase 16 — bankroll display experiment (read-only scenarios panel)
+       (next session after Phase 14 + 15 bundled deploy)
+
+Bot LIVE on STRATEGY=ensemble + ENSEMBLE_MODE=gate +
+ENSEMBLE_BASE_STRATEGY=wide_fire on bot-staging since 2026-05-10
+21:58:44 UTC at HEAD fbcd38a (Phase 14 + 15 deployed bundle). Six
+defense layers live. Both kill-switches dark — TIER_GATE_ENABLED=false,
+REGIME_GATE_ENABLED=false.
+
+Phase 16 is the LOWEST-RISK phase in the master plan: dashboard-only,
+fully additive, read-only. No bot restart needed. Operator wants to
+model alternative starting bankrolls for Phase 17/18 sizing planning.
+Locked decision #10 ($1,000 paper) is NOT changing — this just adds a
+scenarios panel that re-projects today's PnL onto $500/$1k/$2k/$5k/$10k
+starting amounts at the current fixed $5 stake.
+
+================================================================================
+READ FIRST (vault context, in order)
+================================================================================
+
+1. /Users/hamad/Desktop/PolyMarket-5m/pdfs/PHASE_12_MASTER_PLAN.pdf
+   — page §4 → "PHASE 16" deep dive. Design doc anchor per anti-vibe #1.
+2. /Users/hamad/.claude/projects/-Users-hamad-Desktop-PolyMarket-5m/memory/MEMORY.md
+   — index. Top item: checkpoint_phase_15_regime_gate.
+3. ~/.claude/projects/.../memory/checkpoint_phase_15_regime_gate.md
+   — Phase 15 closeout + bundled deploy log.
+4. state/sessions/2026-05-12-phase-15-regime-gate.md
+   — Phase 15 audit + deploy narrative.
+5. state/phases/phase-15-regime-gate.md
+   — Phase 15 ledger.
+6. /Users/hamad/Desktop/PolyMarket-5m/CLAUDE.md
+   — durable preferences + anti-vibe + locked decisions index.
+   Note locked decision #10: $1,000 starting bankroll — DO NOT
+   relitigate. Phase 16 does NOT change this.
+
+================================================================================
+STATE AT HAND-OFF (verify before driving)
+================================================================================
+
+Branch:  claude/jovial-hermann-7e103f
+HEAD:    fbcd38a feat(phase-15): REGIME_GATE_ENABLED + REGIME_GATE_ABSTAIN_REGIMES
+         (+ possibly one more commit if operator pushed dashboard
+         MainPID work from their Mac after Phase 15 deploy)
+
+VPS:
+  bot-staging.service active since 2026-05-10 21:58:44 UTC
+  HEAD on VPS = fbcd38a (or one commit ahead if dashboard commit
+  landed)
+  STRATEGY=ensemble  ENSEMBLE_MODE=gate  ENSEMBLE_BASE_STRATEGY=wide_fire
+  TIER_GATE_ENABLED=false  REGIME_GATE_ENABLED=false
+  ANTHROPIC_DAILY_BUDGET_USD=10
+
+Quick state check (run BEFORE any work):
+  ssh -i $HOME/Downloads/LightsailDefaultKey-eu-west-1.pem -p 2222 \
+      ops@108.132.51.116 'systemctl is-active bot-staging.service && \
+      cd /home/ops/polymarket-5m-bot && git rev-parse HEAD && \
+      git log --oneline -3 && git status -s | head -10'
+
+  Expected: active; HEAD=fbcd38a (or one above); state/decisions/
+  + state/token_side_index.json modifications are fine (bot-written
+  state).
+
+================================================================================
+OPERATOR HOUSEKEEPING — surface to operator at session start
+================================================================================
+
+One item carries over from Phase 15 close-out:
+
+1. **3 untracked session notes on Mac main** at
+   /Users/hamad/Desktop/PolyMarket-5m/:
+     - state/sessions/2026-05-09-dashboard-v2-v3-vps-deploy.md
+     - state/sessions/2026-05-10-phase-12-planning.md
+     - state/sessions/2026-05-11-phase-12-master-plan.md
+   These pre-date the worktree commits and likely duplicate already-
+   committed copies. Diff against worktree versions before committing.
+
+2. **Push origin/main forward (operator's call).** Local Mac main may
+   still lag GitHub origin/main per the "lagging-canonical pattern"
+   documented in feedback_pragmatic_gate_revision. Leave unless
+   operator wants to sync.
+
+Phase 15's prior housekeeping items (VPS dashboard track, dashboard
+MainPID commit) are RESOLVED this session if operator completed the
+Mac-side `scp + git add + git push` flow shown at Phase 15 close.
+Verify by checking if `claude/jovial-hermann-7e103f` HEAD has advanced
+past fbcd38a on GitHub.
+
+================================================================================
+THE WORK — three items in strict order
+================================================================================
+
+------------------------------------------------------------------------
+ITEM 1 — Design doc + scope confirmation (~30 min)
+------------------------------------------------------------------------
+
+Goal: write design/phase-16-bankroll-display.md per anti-vibe #1
+BEFORE any code.
+
+The master plan §4 → Phase 16 specifies:
+  - SCENARIOS = [500, 1000, 2000, 5000, 10000]
+  - compute_scenarios(decisions, fixed_stake_usd=5.0) helper
+  - dashboard scenarios panel rendering side-by-side PnL trajectory
+  - tests: at-$1k matches actual; scaling linear at fixed stake;
+    no-negative-bankroll edge case
+
+Open design questions to settle in the doc:
+  a. Where does compute_scenarios live? `dashboard_server/loaders.py`
+     (operator's new dashboard v4 module) or `dashboard/loaders.py`
+     (existing path)? Check what `dashboard_server/` exposes now after
+     the MainPID work landed.
+  b. Frontend: is there an actual Svelte/React frontend, or does the
+     panel render through Streamlit's `scripts/dashboard.py`? The
+     master plan mentions "ScenariosPanel.svelte (or equivalent)" —
+     check what's actually there.
+  c. The master plan's scaling is naive (PnL × scale). At fixed $5
+     stake this is mathematically correct ONLY because every trade
+     has the same stake. Document the assumption explicitly in the
+     panel + design doc.
+
+OPERATOR SIGN-OFF GATE: post design doc to chat. Wait for "go".
+
+------------------------------------------------------------------------
+ITEM 2 — Implement + test (~60 min)
+------------------------------------------------------------------------
+
+Files to touch (path may vary based on what dashboard_server/ exposes):
+  - src/polymarket_bot/dashboard_server/loaders.py OR
+    src/polymarket_bot/dashboard/loaders.py — new compute_scenarios()
+    helper.
+  - src/polymarket_bot/dashboard_server/state.py — add `scenario_pnl`
+    field to /api/state response (if dashboard_server is the API
+    layer).
+  - dashboard frontend file — render the scenarios panel. Annotate
+    "fixed-stake projection — Phase 17 enables fractional" so operator
+    doesn't misread.
+  - tests/dashboard/test_scenarios.py — NEW, 3+ tests:
+      * test_scenarios_at_1k_matches_actual
+      * test_scenarios_scale_linearly (assert $2k = 2× $1k delta at
+        fixed stake)
+      * test_scenarios_no_negative_bankroll (assert correct end value
+        when total PnL < 0)
+  - design/phase-16-bankroll-display.md (NEW) — locked design.
+
+Run gate before commit:
+  uv run ruff check src/ tests/ scripts/
+  uv run mypy --strict src/
+  uv run pytest -q
+  uv run lint-imports
+
+ALL FOUR must be green.
+
+Commit message format (mirror Phase 15):
+  feat(phase-16): bankroll-display scenarios panel
+                  + compute_scenarios helper
+
+Push to origin.
+
+------------------------------------------------------------------------
+ITEM 3 — Deploy + verify (NO bot restart needed)
+------------------------------------------------------------------------
+
+Phase 16 is dashboard-only. Bot trading is unaffected. Deploy can be
+done WITHOUT touching bot-staging.service.
+
+If dashboard runs as its own systemd unit (dashboard.service or
+dashboard-server.service via the new dashboard_server/ module):
+  ssh ops@108.132.51.116 'cd /home/ops/polymarket-5m-bot && \
+      git pull --ff-only'
+  ssh ops@108.132.51.116 'sudo systemctl restart dashboard-server.service'
+    (substitute actual dashboard unit name — discover with
+     systemctl list-units | grep dashboard)
+  curl -s http://<dashboard-host>/api/state | jq '.scenario_pnl'
+    — should now return the 5-bucket scenarios object
+
+If no dashboard service (Streamlit operator-launched), just verify the
+panel renders on next manual launch:
+  PMB_DASH_STATE_DIR=state/staging uv run streamlit run scripts/dashboard.py
+
+NO bot-staging.service restart required. Bot keeps running.
+
+================================================================================
+ANTI-VIBE RULES — relevant this session
+================================================================================
+
+- Design doc before code (#1): write design/phase-16-bankroll-display.md
+  first.
+- Bug → failing test → fix → green (#2): every loader change ships
+  with the tests above; existing 487-pass suite stays green.
+- Display-only: this phase has NO behavior risk on the bot trading
+  path. Even if the panel breaks, bot keeps trading. But the dashboard
+  IS what operator uses to monitor — broken dashboard = blind operator.
+  Treat with care.
+- Decision #10 NOT relitigated: paper bankroll stays $1,000. Phase 16
+  shows alternatives WITHOUT enabling them. Phase 17 enables sizing
+  modes; Phase 18 enables Kelly.
+- Honest pushback: if the dashboard_server/ module doesn't have a
+  natural place for compute_scenarios, OR if the frontend can't
+  render without significant rebuild, STOP and propose alternatives
+  before coding.
+
+================================================================================
+HARD LIMITS
+================================================================================
+
+- Bankroll: $1,000 paper (locked decision #10). Phase 16 does NOT change.
+- bot.service stays DISABLED.
+- Funder key NEVER on VPS.
+- Anthropic spend ~$1-3/day. Hard cap $10/day.
+- Don't bundle Phase 17/18 in this session.
+- Don't touch the bot trading path. If dashboard panel rendering
+  requires touching strategy code or run_paper.py, STOP — that's a
+  scope creep and Phase 16 is supposed to be dashboard-isolated.
+
+================================================================================
+SESSION BOUNDARY — ENDS WHEN ONE OF
+================================================================================
+
+(a) Items 1-3 shipped, scenarios panel renders on VPS dashboard. ✅ full
+(b) Items 1-2 shipped (code + tests committed + pushed); deploy
+    deferred to next dashboard restart. ✅ partial.
+(c) Item 1 reveals dashboard_server/ doesn't have the surface area
+    needed → write a Phase-16 null result + advance to Phase 17. 🛑
+(d) Context ≥60% before Item 2 done → close out design + plan only. ⏸
+
+================================================================================
+WHAT THIS PHASE UNLOCKS
+================================================================================
+
+- Operator can model Phase 17/18 sizing decisions against alternative
+  bankrolls without flipping decision #10.
+- Establishes the dashboard_server/ extension pattern for Phases 21+
+  (additional read-only panels).
+
+After green: draft phase-prompts/phase-17-position-sizing-2026-05-14.txt
+(NOTE: Phase 17 enables sizing modes WITHOUT Kelly — Kelly is Phase 18.
+The flat-vs-fractional split is the operator's first chance to walk
+away from decision #9's "$5 flat for first 100 trades" since we're at
+~400+ settled).

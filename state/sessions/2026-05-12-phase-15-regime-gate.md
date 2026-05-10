@@ -97,19 +97,53 @@ Operator confirmed: "do what is recommended" → infra-only ship, abstain set em
 - `pytest -q` — **487 passed** (was 481 at session start → +6 = 5 new Phase 15 tests + 1 elsewhere)
 - `lint-imports` — 3/3 contracts kept
 
-### Deploy plan
+### Item 3 — Deploy SHIPPED 2026-05-10 21:58:44 UTC
 
-DEFERRED per operator-housekeeping item 1: VPS still has uncommitted dashboard track on `claude/jovial-hermann-7e103f`. Phase 15 bundles with the dashboard merge + next natural restart, same as Phase 14. Bot continues running c66fc07 with both gates dark.
+Operator authorized bundled deploy ("execute all yourself"). Full sequence:
 
-When operator is ready:
+1. **Local FF push:** `git push origin claude/thirsty-poincare-2046a0:claude/jovial-hermann-7e103f` — Phase 15 commit `fbcd38a` advances `claude/jovial-hermann-7e103f` over the Phase 14 tip (was at `f7b5dec`). Fast-forward; no merge commit.
+2. **VPS dashboard track preserved (NOT discarded):**
+   - Tarball backup: `/home/ops/dashboard-track-backup-2026-05-12/dashboard-track-20260510T215745Z.tar.gz` (27 files — `dashboard/{loaders,theme,bankroll,components,gamma_resolver,markets,pipeline_latency,polymarket_orderbook,profit_pace,provider_rtt,rtt_collector,rtt_loader,streaks}.py` + `dashboard_server/` package).
+   - `git stash@{0}: phase-15-deploy-2026-05-12: WIP dashboard track preserved; tarball at /home/ops/dashboard-track-backup-2026-05-12/` — holds the 3 tracked mods (`dashboard/loaders.py`, `dashboard/theme.py`, `state/token_side_index.json`).
+   - Pre-deploy `git status` snapshot saved to `/home/ops/dashboard-track-backup-2026-05-12/git-status-before-stash.txt`.
+3. **VPS pull:** `git pull --ff-only origin claude/jovial-hermann-7e103f` advanced HEAD `c66fc07` → `fbcd38a`. Fast-forward only.
+4. **`.envrc` appended** (with `.envrc.bak.phase-15-deploy-*` snapshot first):
+   ```bash
+   export TIER_GATE_ENABLED=false
+   export TIER_GATE_BLOCKLIST=
+   export REGIME_GATE_ENABLED=false
+   export REGIME_GATE_ABSTAIN_REGIMES=
+   ```
+5. **`sudo systemctl restart bot-staging.service`** — service `active` since `2026-05-10 21:58:44 UTC`. Clean boot journal:
+   - "ensemble ENABLED mode=gate daily_budget=$10.00 log_root=state/ensemble"
+   - "ensemble base=wide_fire — NO tier/priors/EV gates; LLM is the only filter"
+   - "active window 1778450100 already has unsettled fire 9d8024a9 — priming _state to block double-fire" (orphan-recovery worked across restart)
+   - No `TIER_GATE_ENABLED=true` warning (gate dark — as intended)
+   - No `REGIME_GATE_ENABLED=true` warning (gate dark — as intended)
+6. **Prior-run shutdown counted dropped_records=119722** over ~5.5h gate-mode — consistent with 12s LLM blocking envelope; no regression class.
+
+### Dashboard-track restoration (operator's task post-deploy)
+
+The dashboard track is preserved but NOT restored — `loaders.py` modifications (systemd MainPID integration) likely conflict with Phase 14's `loaders.py` refactor (tier-constants re-export). When operator is ready:
+
 ```bash
-ssh ops@108.132.51.116 'cd /home/ops/polymarket-5m-bot && git pull --ff-only'
-# Append to .envrc (both default OFF — safe to set permanently):
-#   export REGIME_GATE_ENABLED=false
-#   export REGIME_GATE_ABSTAIN_REGIMES=
-sudo systemctl restart bot-staging.service
+# On VPS:
+cd /home/ops/polymarket-5m-bot
+# Option A — git stash pop (may conflict on loaders.py):
+git stash pop  # then resolve conflicts in loaders.py
+# Option B — restore from tarball + manually merge:
+tar xzf /home/ops/dashboard-track-backup-2026-05-12/dashboard-track-20260510T215745Z.tar.gz
 ```
-Per `feedback_vps_deploy_verify_late`: re-check journal + decisions at +5min AND +30min.
+
+### +5min / +30min re-verify (feedback_vps_deploy_verify_late)
+
+**+5min verify @ 2026-05-10 22:03 UTC — CLEAN:**
+- (a) service `active`, ActiveEnterTimestamp = `Sun 2026-05-10 21:58:44 UTC` — unchanged (no parallel-SSH reset)
+- (b) HEAD = `fbcd38a`
+- (c) Only WARN since restart = the expected `wide_fire — NO tier/priors/EV gates` notice. No ERROR / Traceback / CRITICAL. Periodic orphan-recovery firing normally (last: 22:03:46 "0 orphans found")
+- (d) Firing healthy — 3 recent windows fired (1778449500/1778450100/1778450400), 2/3 filled (3rd had ask=0.01 phantom-fill class → expected no-fill). 179 settled today.
+
+**+30min verify** scheduled (~22:28 UTC).
 
 ## Honest pushback recorded (for the vault)
 

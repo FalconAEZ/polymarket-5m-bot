@@ -24,13 +24,14 @@ tags: [moc, index, vault-root]
 | [[phases/phase-11-spot-aware\|Phase 11.A — SpotAware paper soak]] | ✅ superseded by ensemble experiment |
 | Phase 12 — Master plan drafted | ✅ planning artifact 2026-05-10; 36-page PDF, 12-phase optimization roadmap |
 | [[phases/phase-13-fill-rate\|Phase 13 — Fill-rate lift]] | 🛑 **NULL result** 2026-05-10. Audit showed 1-2¢ unfilled subset W=46.2% (below bot's 52% WR); 0-1¢ bucket empty. No code shipped. Commit `d4f3fde` |
-| [[phases/phase-14-tier-gate\|Phase 14 — Entry-price tier blocklist]] | 🟢 **infra dark-shipped** 2026-05-10 at `b6b3599`. `TIER_GATE_ENABLED=false` default. **VPS deploy DEFERRED** — parallel dashboard track uncommitted on VPS |
-| Phase 15 — Regime gate | ⏳ next session. Prompt at `phase-prompts/phase-15-regime-gate-2026-05-12.txt` |
-| Phases 16-25 | ⏳ per master plan §4; one phase per session |
+| [[phases/phase-14-tier-gate\|Phase 14 — Entry-price tier blocklist]] | 🟢 **infra DEPLOYED dark** 2026-05-10 at `b6b3599`. `TIER_GATE_ENABLED=false` default; live on VPS since 21:58:44 UTC bundle restart |
+| [[phases/phase-15-regime-gate\|Phase 15 — Regime gate wired to ensemble]] | 🟢 **infra DEPLOYED dark** 2026-05-10 at `fbcd38a`. `REGIME_GATE_ENABLED=false` default; bundled with Phase 14 deploy. Audit found chop MARGINAL (51.4% WR) but +$1725 PnL dominant — operator-approved infra-only ship, abstain set empty |
+| Phase 16 — Bankroll display experiment | ⏳ next session. Prompt at `phase-prompts/phase-16-bankroll-display-2026-05-13.txt` |
+| Phases 17-25 | ⏳ per master plan §4; one phase per session |
 
-**Bot live:** bot-staging.service active since 2026-05-10 16:31:15 UTC on VPS at `c66fc07`. Strategy = ensemble + ENSEMBLE_MODE=gate + ENSEMBLE_BASE_STRATEGY=wide_fire. Real edge as of 2026-05-10: 52.0% WR / +$76.79 / 402 settled / 12.5% LLM timeout rate / 62.5% effective fire rate. (Phase 14 dark-shipped but not yet pulled to VPS due to parallel dashboard track.)
+**Bot live:** bot-staging.service active since **2026-05-10 21:58:44 UTC** on VPS at `fbcd38a` (Phase 14 + 15 bundled). Strategy = ensemble + ENSEMBLE_MODE=gate + ENSEMBLE_BASE_STRATEGY=wide_fire. Both kill-switches dark (`TIER_GATE_ENABLED=false`, `REGIME_GATE_ENABLED=false`). Six defense layers live (background-settle, instant-settle, periodic-orphan-recovery, post-hoc gamma retry, ensemble timeout, regime/tier dark-ship infra ready).
 
-Latest commit on `claude/jovial-hermann-7e103f`: `d0fea5c`. Tags: `phase-0-pass`, `phase-1a-pass`, `phase-3-pass`, `phase-5-pass`, `study-A-final`, `study-A-abort`. (Master-plan optimization phases 13-25 don't carry git tags by design — only structural milestones do.)
+Latest commit on `claude/jovial-hermann-7e103f`: `fbcd38a` (Phase 15). Tags: `phase-0-pass`, `phase-1a-pass`, `phase-3-pass`, `phase-5-pass`, `study-A-final`, `study-A-abort`. (Master-plan optimization phases 13-25 don't carry git tags by design — only structural milestones do.)
 
 Funder address: `0x512DA3825E69A8c19d2e0D00b66dd23d3ec95d22`. Signer address: `0x8d9759A73D65aD32cd858eb3AdE46ce56F5F2B4A`. Both public; keys live in age-encrypted backups + (Signer only) gitignored `.envrc`.
 
