@@ -44,6 +44,7 @@ from polymarket_bot.strategies.deterministic import (  # noqa: E402
     DeterministicStrategy,
 )
 from polymarket_bot.strategies.protocol import Strategy  # noqa: E402
+from polymarket_bot.strategies.regime_detector import RegimeDetector  # noqa: E402
 from polymarket_bot.strategies.spot_aware import SpotAwareStrategy  # noqa: E402
 from polymarket_bot.strategies.spot_aware_priors import load_priors  # noqa: E402
 from polymarket_bot.strategies.spot_aware_v2 import SpotAwareStrategyV2  # noqa: E402
@@ -241,7 +242,6 @@ def _build_strategy(name: str) -> Strategy:
             DEFAULT_TRENDING_THRESHOLD,
             DEFAULT_WINDOW_5M_S,
             DEFAULT_WINDOW_10M_S,
-            RegimeDetector,
         )
         from polymarket_bot.strategies.spot_aware_v3 import SpotAwareStrategyV3
 
@@ -389,6 +389,35 @@ def _build_strategy(name: str) -> Strategy:
             )
         elif tier_gate_enabled:
             LOG.info("TIER_GATE_ENABLED=true but blocklist empty; gate is a no-op")
+        # Phase 15: optional regime classifier gate. Same dark-ship
+        # pattern as tier gate: defaults to false/empty so the live
+        # wrapper has zero-overhead pass-through. When enabled, the
+        # wrapper instantiates a separate RegimeDetector (NOT shared with
+        # spot_aware_v3 — strategies are runtime-exclusive, but the
+        # detector is logically per-strategy state) and consults
+        # abstain_regimes on every candidate. Validation against the
+        # canonical regime labels happens inside EnsembleWrapper
+        # (mirrors tier gate); unknown labels raise at startup.
+        regime_gate_enabled = _env_bool("REGIME_GATE_ENABLED", False)
+        regime_abstain_raw = os.environ.get("REGIME_GATE_ABSTAIN_REGIMES", "").strip()
+        regime_abstain: tuple[str, ...] = ()
+        regime_detector: RegimeDetector | None = None
+        if regime_gate_enabled:
+            regime_detector = RegimeDetector()
+            if regime_abstain_raw:
+                regime_abstain = tuple(
+                    label.strip() for label in regime_abstain_raw.split(",") if label.strip()
+                )
+                LOG.warning(
+                    "REGIME_GATE_ENABLED=true with abstain_regimes=%s — refused "
+                    "fires will emit kind=regime_abstained to state/ensemble/<date>.jsonl",
+                    regime_abstain,
+                )
+            else:
+                LOG.info(
+                    "REGIME_GATE_ENABLED=true but abstain_regimes empty; "
+                    "detector observes spot ticks but gate is a no-op"
+                )
         if mode != "off":
             adapter = AnthropicAdapter(budget=budget, api_key=api_key)
             specialists = [
@@ -411,12 +440,20 @@ def _build_strategy(name: str) -> Strategy:
                 mode=mode,
                 log_root=log_root,
                 tier_blocklist=tier_blocklist,
+                regime_detector=regime_detector,
+                abstain_regimes=regime_abstain,
             )
         if tier_blocklist:
             LOG.warning(
                 "TIER_GATE_BLOCKLIST=%s ignored — ENSEMBLE_MODE=off bypasses "
                 "the wrapper entirely. Set ENSEMBLE_MODE=shadow|gate to enable.",
                 tier_blocklist,
+            )
+        if regime_abstain:
+            LOG.warning(
+                "REGIME_GATE_ABSTAIN_REGIMES=%s ignored — ENSEMBLE_MODE=off "
+                "bypasses the wrapper entirely. Set ENSEMBLE_MODE=shadow|gate to enable.",
+                regime_abstain,
             )
         LOG.info("STRATEGY=ensemble but ENSEMBLE_MODE=off; running base only")
         return base

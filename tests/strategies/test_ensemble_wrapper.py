@@ -38,6 +38,7 @@ from polymarket_bot.backtest.types import (
     WindowBoundary,
 )
 from polymarket_bot.strategies.ensemble_wrapper import EnsembleWrapper
+from polymarket_bot.strategies.regime_detector import RegimeDetector
 
 WINDOW_TS = 1_715_000_100
 WINDOW_OPEN_NS = WINDOW_TS * 1_000_000_000
@@ -775,3 +776,205 @@ async def test_tier_gate_under_load_no_overhead(tmp_path: Path) -> None:
     await wrapper.aclose()
     assert refused == 100, f"expected 100 refusals, got {refused}"
     assert elapsed < 0.5, f"100 tier-gated evaluations took {elapsed:.3f}s — overhead too high"
+
+
+# ----------------------------------------------------------------------
+# Phase 15 — regime classifier gate
+# ----------------------------------------------------------------------
+
+
+class _StubRegimeDetector(RegimeDetector):
+    """A RegimeDetector subclass that returns a canned regime on every
+    classify() call. observe_spot() is still invoked by the wrapper (so
+    integration with _update_context stays exercised) but its writes
+    are discarded — the canned label is what classify() returns."""
+
+    def __init__(self, regime: str = "chop") -> None:
+        super().__init__(min_samples=2)
+        self._canned_regime = regime
+        self.observe_count = 0
+        self.classify_count = 0
+
+    def observe_spot(self, ts_ns: int, price: float) -> None:
+        self.observe_count += 1
+        # Drop the tick — classify() is canned anyway. Avoids polluting
+        # the parent's buffer with synthetic test prices that would shift
+        # subclass-internal state we don't care about.
+
+    def classify(self, now_ns: int) -> str:  # type: ignore[override]
+        self.classify_count += 1
+        return self._canned_regime
+
+
+@pytest.mark.asyncio
+async def test_regime_gate_empty_abstain_set_is_regression_safe(tmp_path: Path) -> None:
+    """Default behavior: empty abstain_regimes is a no-op even with a
+    detector wired in; gate-mode flow unchanged. Detector still observes
+    ticks so flipping ABSTAIN_REGIMES via env restart works immediately."""
+    detector = _StubRegimeDetector(regime="chop")  # would block IF abstain set populated
+    wrapper = EnsembleWrapper(
+        base=_StubBaseStrategy(side="UP"),
+        specialists=[
+            _StubAgent("orderbook", AgentVote(side="UP", confidence=0.8, rationale="o")),
+            _StubAgent("oracle_gap", AgentVote(side="UP", confidence=0.7, rationale="og")),
+            _StubAgent("momentum", AgentVote(side="UP", confidence=0.6, rationale="m")),
+        ],
+        meta=_StubMeta(MetaDecision(action="FIRE", side="UP", confidence=0.9, rationale="meta-up")),
+        mode="gate",
+        log_root=tmp_path,
+        regime_detector=detector,
+        abstain_regimes=(),
+    )
+    decision = await _drive(wrapper)
+    assert decision is not None
+    assert "side=UP" in decision.rationale
+    # observe_spot was called on every SpotTick (kept warm).
+    assert detector.observe_count >= 2
+    # classify NEVER ran because abstain set was empty (short-circuit).
+    assert detector.classify_count == 0
+    # No regime_abstained record was emitted.
+    log_lines = _read_jsonl_lines(_list_jsonl(tmp_path)[0])
+    assert all(log.get("kind") != "regime_abstained" for log in log_lines)
+
+
+@pytest.mark.asyncio
+async def test_regime_gate_blocks_chop_regime_in_gate_mode(tmp_path: Path) -> None:
+    """abstain_regimes={'chop'} + classifier returns 'chop' → refusal, no LLM call."""
+    detector = _StubRegimeDetector(regime="chop")
+    specialist = _CallTrackingAgent(
+        "orderbook", AgentVote(side="UP", confidence=0.9, rationale="o")
+    )
+    meta = _CallTrackingMeta(MetaDecision(action="FIRE", side="UP", confidence=0.9, rationale="m"))
+    wrapper = EnsembleWrapper(
+        base=_StubBaseStrategy(side="UP"),
+        specialists=[specialist],
+        meta=meta,
+        mode="gate",
+        log_root=tmp_path,
+        regime_detector=detector,
+        abstain_regimes=("chop",),
+    )
+    decision = await _drive(wrapper)
+    assert decision is None
+    # Regime gate refused BEFORE invoking the LLM — saves Haiku/Sonnet spend.
+    assert specialist.call_count == 0
+    assert meta.call_count == 0
+    assert detector.classify_count == 1
+
+
+@pytest.mark.asyncio
+async def test_regime_gate_passes_trending_regime(tmp_path: Path) -> None:
+    """abstain_regimes={'chop'} + classifier returns 'trending' → normal LLM flow."""
+    detector = _StubRegimeDetector(regime="trending")
+    specialist = _CallTrackingAgent(
+        "orderbook", AgentVote(side="UP", confidence=0.9, rationale="o")
+    )
+    meta = _CallTrackingMeta(MetaDecision(action="FIRE", side="UP", confidence=0.9, rationale="m"))
+    wrapper = EnsembleWrapper(
+        base=_StubBaseStrategy(side="UP"),
+        specialists=[
+            specialist,
+            _StubAgent("oracle_gap", AgentVote(side="UP", confidence=0.7, rationale="og")),
+        ],
+        meta=meta,
+        mode="gate",
+        log_root=tmp_path,
+        regime_detector=detector,
+        abstain_regimes=("chop",),
+    )
+    decision = await _drive(wrapper)
+    assert decision is not None
+    assert "side=UP" in decision.rationale
+    # LLM was consulted (regime not in abstain set).
+    assert specialist.call_count == 1
+    assert meta.call_count == 1
+    # No regime_abstained record.
+    log_lines = _read_jsonl_lines(_list_jsonl(tmp_path)[0])
+    assert all(log.get("kind") != "regime_abstained" for log in log_lines)
+
+
+@pytest.mark.asyncio
+async def test_regime_gate_logs_record_on_refusal(tmp_path: Path) -> None:
+    """Refusal emits exactly one kind=regime_abstained JSONL line with all expected fields."""
+    detector = _StubRegimeDetector(regime="chop")
+    wrapper = EnsembleWrapper(
+        base=_StubBaseStrategy(side="UP", price_limit=0.55),
+        specialists=[_StubAgent("orderbook", AgentVote(side="UP", confidence=0.9, rationale="o"))],
+        meta=_StubMeta(MetaDecision(action="FIRE", side="UP", confidence=0.9, rationale="m")),
+        mode="gate",
+        log_root=tmp_path,
+        regime_detector=detector,
+        abstain_regimes=("chop", "mixed"),  # multi-element set
+    )
+    decision = await _drive(wrapper)
+    assert decision is None
+    log_lines = _read_jsonl_lines(_list_jsonl(tmp_path)[0])
+    refusals = [log for log in log_lines if log.get("kind") == "regime_abstained"]
+    assert len(refusals) == 1
+    refusal = refusals[0]
+    assert refusal["regime"] == "chop"
+    assert refusal["abstain_regimes"] == ["chop", "mixed"]
+    assert refusal["window_ts"] == WINDOW_TS
+    assert "base_rationale" in refusal
+    assert "decision_id_hint" in refusal
+
+
+def test_regime_gate_constructor_rejects_unknown_label() -> None:
+    """Startup validation: unknown regime labels in abstain_regimes raise ValueError.
+    'unknown' is also rejected since it would block cold-start fires."""
+    with pytest.raises(ValueError, match="unknown regime labels"):
+        EnsembleWrapper(
+            base=_StubBaseStrategy(),
+            specialists=[_StubAgent("orderbook", None)],
+            meta=_StubMeta(None),
+            mode="off",
+            regime_detector=_StubRegimeDetector(),
+            abstain_regimes=("not-a-regime", "chop"),
+        )
+    # 'unknown' is technically a regime literal but explicitly disallowed.
+    with pytest.raises(ValueError, match="unknown regime labels"):
+        EnsembleWrapper(
+            base=_StubBaseStrategy(),
+            specialists=[_StubAgent("orderbook", None)],
+            meta=_StubMeta(None),
+            mode="off",
+            regime_detector=_StubRegimeDetector(),
+            abstain_regimes=("unknown",),
+        )
+
+
+@pytest.mark.asyncio
+async def test_regime_gate_under_load_no_overhead(tmp_path: Path) -> None:
+    """100 candidate evaluations with regime-gate enabled finish quickly.
+
+    Same queue-overflow regression guard as the Phase 14 tier-gate
+    counterpart. classify() is O(buffer) on ~600 floats max; this test
+    asserts 100 wrapper.on_event() calls (each producing a candidate
+    that hits the chop abstain set) complete in well under 500ms.
+    """
+    detector = _StubRegimeDetector(regime="chop")
+    wrapper = EnsembleWrapper(
+        base=_StubBaseStrategy(side="UP"),
+        specialists=[_StubAgent("orderbook", None)],  # would slow if invoked
+        meta=_StubMeta(None),
+        mode="off",  # off-mode irrelevant — regime gate runs before mode dispatch
+        log_root=tmp_path,
+        regime_detector=detector,
+        abstain_regimes=("chop",),
+    )
+    # Warm context.
+    await wrapper.on_event(_open())
+    await wrapper.on_event(_spot(80_000.0, 1))
+
+    loop = asyncio.get_event_loop()
+    start = loop.time()
+    refused = 0
+    for i in range(100):
+        wrapper._base.reset()  # type: ignore[attr-defined]
+        decision = await wrapper.on_event(_spot(80_080.0 + i, 30 + i))
+        if decision is None:
+            refused += 1
+    elapsed = loop.time() - start
+    await wrapper.aclose()
+    assert refused == 100, f"expected 100 refusals, got {refused}"
+    assert elapsed < 0.5, f"100 regime-gated evaluations took {elapsed:.3f}s — overhead too high"

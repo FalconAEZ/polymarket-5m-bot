@@ -53,7 +53,14 @@ from polymarket_bot.backtest.types import (
     WindowBoundary,
 )
 from polymarket_bot.strategies.protocol import Strategy
+from polymarket_bot.strategies.regime_detector import RegimeDetector
 from polymarket_bot.tiers import TIER_LABELS, tier_label_for_price
+
+# Regime labels valid as abstain targets. "unknown" is intentionally
+# excluded: classify() returns it during cold-start (first ~10s after
+# bot restart), so blocking it would refuse every fire in the early
+# window. Operator-typo defense; see design/phase-15-regime-gate.md §3.4.
+REGIME_GATE_LABELS: frozenset[str] = frozenset({"trending", "chop", "mixed"})
 
 LOG = logging.getLogger("polymarket_bot.strategies.ensemble_wrapper")
 
@@ -113,6 +120,8 @@ class EnsembleWrapper:
         recent_window_s: int = DEFAULT_RECENT_WINDOW_S,
         gate_llm_timeout_s: float = DEFAULT_GATE_LLM_TIMEOUT_S,
         tier_blocklist: Iterable[str] = (),
+        regime_detector: RegimeDetector | None = None,
+        abstain_regimes: Iterable[str] = (),
     ) -> None:
         self._base = base
         self._specialists = list(specialists)
@@ -134,6 +143,27 @@ class EnsembleWrapper:
                 f"valid labels are {sorted(TIER_LABELS)}"
             )
         self._tier_blocklist: frozenset[str] = frozenset(tier_blocklist)
+
+        # Phase 15: optional regime-classifier gate. Empty abstain set =
+        # zero-overhead pass-through (no spot-tick observation, no
+        # classify() call). When populated, the wrapper observes every
+        # SpotTick on the supplied detector and calls classify() before
+        # the LLM ensemble runs — refuses on match. `unknown` is rejected
+        # at startup to prevent operator-typo cold-start blackout.
+        abstain_set = frozenset(abstain_regimes)
+        unknown_regimes = abstain_set - REGIME_GATE_LABELS
+        if unknown_regimes:
+            raise ValueError(
+                f"abstain_regimes contains unknown regime labels {sorted(unknown_regimes)}; "
+                f"valid labels are {sorted(REGIME_GATE_LABELS)} "
+                "('unknown' is intentionally excluded — would block cold-start fires)"
+            )
+        self._abstain_regimes: frozenset[str] = abstain_set
+        # If the detector is supplied, we observe every SpotTick so its
+        # buffer warms during the natural ~10-min cold-start. Whether
+        # the abstain set is populated or not is independent — operator
+        # may want to populate the set later without re-instantiating.
+        self._regime_detector: RegimeDetector | None = regime_detector
 
         # Per-window context state — refreshed on every event so when the
         # base strategy emits a Decision we can build a complete AgentContext
@@ -203,6 +233,28 @@ class EnsembleWrapper:
                         "price_limit": candidate.price_limit,
                         "tier": tier,
                         "blocklist": sorted(self._tier_blocklist),
+                        "base_rationale": candidate.rationale,
+                    }
+                )
+                return None
+
+        # 2c. Phase 15 — regime gate. Slots immediately AFTER the tier
+        # gate so the cheaper O(1) tier check refuses first; runs BEFORE
+        # the LLM dispatch so a chop/mixed regime never costs a Haiku +
+        # Sonnet round-trip. Empty abstain set OR no detector
+        # short-circuits with no overhead. The classify() call is O(N)
+        # on the ~600-tick rolling buffer (<1ms in practice).
+        if candidate is not None and self._regime_detector is not None and self._abstain_regimes:
+            regime = self._regime_detector.classify(event.ts_utc_ns)
+            if regime in self._abstain_regimes:
+                self._log_ensemble_event(
+                    {
+                        "kind": "regime_abstained",
+                        "ts_ns": event.ts_utc_ns,
+                        "window_ts": self._window_ts,
+                        "decision_id_hint": _decision_hint(candidate),
+                        "regime": regime,
+                        "abstain_regimes": sorted(self._abstain_regimes),
                         "base_rationale": candidate.rationale,
                     }
                 )
@@ -391,6 +443,11 @@ class EnsembleWrapper:
             if self._window_ts is not None and self._window_open_spot is None:
                 self._window_open_spot = event.price
             self._recent_spot.append((event.ts_utc_ns, event.price))
+            # Phase 15: feed the regime classifier's rolling buffer if
+            # one is configured. observe_spot is O(1) amortised (deque
+            # append + age-trim).
+            if self._regime_detector is not None:
+                self._regime_detector.observe_spot(event.ts_utc_ns, event.price)
         elif isinstance(event, OracleUpdate):
             self._oracle_last = event.price
             self._oracle_last_ns = event.ts_utc_ns
