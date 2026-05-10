@@ -217,3 +217,79 @@ this" — TBD next session.
 - `~/.claude/projects/.../memory/checkpoint_phase_5_settle_resolution_bug.md` —
   followup #6 (maker-side) marked done; new followups documented for the
   three additional variants we discovered + the dashboard overlay
+
+---
+
+## Continuation 2 (2026-05-10 14:00 UTC) — ENSEMBLE_MODE shadow → gate (Phase 5 promotion)
+
+After the 13:00 close, operator asked why so many trades weren't filling.
+Audit revealed:
+* 134 fired today; 98 filled, 36 unfilled (74% fill rate)
+* Of the 36 unfilled: 32 were because price_limit was below the ask (market
+  moved past bot's limit); 3 were the new floor guard correctly refusing
+  near-floor no-depth fills
+* These aren't simulator bugs — they're trades the bot's price_limit
+  filtered out as bad EV; forcing them in would have HURT WR (47.1% on
+  unfilled vs 52.3% on filled)
+
+**Critical follow-on audit**: matched ensemble shadow-mode votes vs actual
+fires on today's data:
+
+| Bucket | WR (gamma truth) | Notes |
+|--------|------------------|-------|
+| wide_fire + filled (current) | 52.3% | Today's actual |
+| LLM FIRE + filled | **56.4%** | +4.1pp uplift |
+| LLM ABSTAIN + filled | 40.0% | LLM correctly flagged these as losers |
+| LLM FIRE rate | 36.8% of windows | Selective |
+| LLM ABSTAIN rate | 40.0% | Filters bad bets |
+| LLM null/error rate | 23.2% | Schema failures, budget, etc. |
+
+**Locked decision #16** specifies: "keep ensemble only if uplift ≥3pp".
+Today's data shows +4.1pp gate-mode uplift → meets the bar.
+
+**Action taken (operator-approved)**: flipped `ENSEMBLE_MODE=shadow → gate`
+in `.envrc` on VPS, restarted bot at 14:06:55 UTC. Verified live:
+* startup log: `ensemble ENABLED mode=gate`
+* runtime env: `ENSEMBLE_MODE=gate`
+* first post-restart vote (window 1778422200) logged with `mode=gate`
+* meta=null on that vote → bot correctly DID NOT fire (gate-mode honoring
+  null-as-not-FIRE)
+
+### Concern: meta=null rate is 23%
+
+In gate-mode, 23% of windows produce `meta=null` and are silently skipped.
+Causes: anthropic schema validation failures (seen in journal), budget cap
+hits, network errors. These trades are LOST — not because the LLM said
+no, but because the LLM didn't answer.
+
+**Open decision for next session**: how to handle `meta=null`:
+* (a) keep current behavior (skip — conservative, current state)
+* (b) fall back to base strategy (use wide_fire's decision when LLM fails;
+      gate ONLY when LLM actually voted)
+* (c) specialist majority (fire if 3 specialists agree)
+
+Option (b) is most practical — restores ~23% of "lost" trades. To fix:
+modify `EnsembleWrapper.on_event` line 217 to differentiate `meta is None`
+(LLM failure → fall back to base) from `meta.action != "FIRE"` (LLM
+explicitly abstained → skip).
+
+### Trade volume change
+
+Pre-flip: ~134 fires/day (wide_fire passes everything through).
+Post-flip: ~50 fires/day expected (only LLM-FIRE windows). Operator
+should monitor for 24-48h before deciding if option (b) is needed.
+
+### Files touched
+
+* VPS: `/home/ops/polymarket-5m-bot/.envrc` — ENSEMBLE_MODE=gate
+* Backup: `.envrc.bak.gate-promote.<timestamp>` (preserves prior state
+  for one-line revert)
+
+### Revert plan
+
+If gate-mode shows worse PnL after 24h:
+```
+ssh ops@VPS 'cd /home/ops/polymarket-5m-bot && \
+  sed -i "s/^export ENSEMBLE_MODE=gate.*/export ENSEMBLE_MODE=shadow/" .envrc && \
+  sudo systemctl restart bot-staging.service'
+```
