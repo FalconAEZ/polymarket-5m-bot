@@ -62,6 +62,17 @@ DEFAULT_RECENT_BUFFER_LEN = 64
 DEFAULT_RECENT_WINDOW_S = 60
 MIN_VOTES_FOR_META = 2
 
+# Gate-mode LLM timeout. The runner's main loop awaits strategy.on_event;
+# when the strategy is the ensemble in gate mode, this await IS the LLM
+# round-trip (Haiku specialists in parallel + Sonnet meta serially). If
+# the LLM hangs/slows, the runner can't drain its feed queue and drops
+# market records (audit 2026-05-10 14:24 UTC: 13,172 records dropped in
+# the first ~17min of gate-mode). 2.5s is generous enough that healthy
+# Haiku-parallel + Sonnet-medium completes (typical ~1-2s) but tight
+# enough that a single slow-LLM tail event doesn't cascade. On timeout,
+# we fall back to base candidate (same policy as meta=None).
+DEFAULT_GATE_LLM_TIMEOUT_S = 2.5
+
 
 class EnsembleWrapper:
     """A Strategy that runs `base` first and optionally gates its fires
@@ -89,6 +100,7 @@ class EnsembleWrapper:
         log_root: str | Path | None = None,
         recent_buffer_len: int = DEFAULT_RECENT_BUFFER_LEN,
         recent_window_s: int = DEFAULT_RECENT_WINDOW_S,
+        gate_llm_timeout_s: float = DEFAULT_GATE_LLM_TIMEOUT_S,
     ) -> None:
         self._base = base
         self._specialists = list(specialists)
@@ -96,6 +108,7 @@ class EnsembleWrapper:
             raise ValueError("EnsembleWrapper needs at least one specialist agent")
         self._meta = meta
         self._mode: EnsembleMode = mode
+        self._gate_llm_timeout_s = max(0.1, gate_llm_timeout_s)
         self._log_root: Path | None = Path(log_root) if log_root is not None else None
         if self._log_root is not None:
             self._log_root.mkdir(parents=True, exist_ok=True)
@@ -196,8 +209,41 @@ class EnsembleWrapper:
             self._spawn_shadow_vote(ctx=ctx, candidate=candidate, event_ts_ns=event.ts_utc_ns)
             return candidate
 
-        # gate mode — inline await
-        votes, meta_decision = await self._run_ensemble(ctx)
+        # gate mode — inline await with hard timeout. The runner's main
+        # loop awaits strategy.on_event so a slow LLM call here blocks
+        # the feed-record consumer; per audit 2026-05-10 14:24 UTC, the
+        # uncapped await dropped 13,172 records in ~17min when the LLM
+        # round-trip exceeded the queue-drain budget. Wait_for() bounds
+        # the worst case to gate_llm_timeout_s; on timeout we fall
+        # through to base (same policy as meta=None).
+        votes: dict[str, AgentVote | None]
+        meta_decision: MetaDecision | None
+        try:
+            votes, meta_decision = await asyncio.wait_for(
+                self._run_ensemble(ctx), timeout=self._gate_llm_timeout_s
+            )
+        except TimeoutError:
+            LOG.warning(
+                "ensemble gate LLM timed out at %.1fs for window %s — "
+                "falling back to base candidate (queue-overflow defense)",
+                self._gate_llm_timeout_s,
+                self._window_ts,
+            )
+            self._log_ensemble_event(
+                {
+                    "kind": "ensemble_vote",
+                    "ts_ns": event.ts_utc_ns,
+                    "window_ts": self._window_ts,
+                    "mode": self._mode,
+                    "decision_id_hint": _decision_hint(candidate),
+                    "candidate_side": _side_from_rationale(candidate.rationale),
+                    "candidate_rationale": candidate.rationale,
+                    "votes": {},
+                    "meta": None,
+                    "timeout_s": self._gate_llm_timeout_s,
+                }
+            )
+            return candidate
         self._log_ensemble_event(
             {
                 "kind": "ensemble_vote",

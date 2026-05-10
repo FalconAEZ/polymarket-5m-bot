@@ -16,6 +16,7 @@ tests/agents/conftest.py.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -541,3 +542,54 @@ async def test_shadow_mode_does_not_block_main_loop_under_slow_llm(tmp_path: Pat
 # completeness for downstream readers.
 _: type = AsyncIterator
 __: type = Any  # type: ignore[assignment]
+
+
+class _SleepyStubMeta:
+    """Meta that sleeps before returning, simulating an LLM that's too slow."""
+
+    def __init__(self, decision: MetaDecision | None, sleep_s: float) -> None:
+        self.name = "meta-sleepy"
+        self.model = "sonnet-stub"
+        self._decision = decision
+        self._sleep_s = sleep_s
+
+    async def decide(self, ctx: AgentContext, votes: dict[str, AgentVote]) -> MetaDecision | None:
+        await asyncio.sleep(self._sleep_s)
+        return self._decision
+
+
+@pytest.mark.asyncio
+async def test_gate_timeout_falls_back_to_base(tmp_path: Path) -> None:
+    """When the LLM round-trip exceeds gate_llm_timeout_s, the wrapper
+    must NOT block forever — it falls back to base candidate. Per audit
+    2026-05-10 14:24 UTC: uncapped await dropped 13,172 records in 17min
+    when LLM was slow. Bounded await fixes the queue-overflow regression."""
+    wrapper = EnsembleWrapper(
+        base=_StubBaseStrategy(side="UP"),
+        specialists=[
+            _StubAgent("orderbook", AgentVote(side="UP", confidence=0.8, rationale="o")),
+            _StubAgent("oracle_gap", AgentVote(side="UP", confidence=0.7, rationale="og")),
+            _StubAgent("momentum", AgentVote(side="UP", confidence=0.6, rationale="m")),
+        ],
+        # Meta sleeps 1s but timeout is 0.1s → wrapper times out + base fires
+        meta=_SleepyStubMeta(
+            MetaDecision(action="ABSTAIN", side=None, confidence=0.9, rationale="m"),
+            sleep_s=1.0,
+        ),
+        mode="gate",
+        log_root=tmp_path,
+        gate_llm_timeout_s=0.1,
+    )
+    decision = await _drive(wrapper)
+    # Base verdict passes through despite the slow LLM that would have ABSTAINed.
+    assert decision is not None
+    assert "side=UP" in decision.rationale
+
+    # Log records the timeout so operators can spot LLM degradation.
+    log_lines = _read_jsonl_lines(_list_jsonl(tmp_path)[0])
+    timeout_logs = [
+        log for log in log_lines if "timeout_s" in log and log.get("kind") == "ensemble_vote"
+    ]
+    assert len(timeout_logs) == 1
+    assert timeout_logs[0]["meta"] is None
+    assert timeout_logs[0]["timeout_s"] == 0.1
