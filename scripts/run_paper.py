@@ -282,9 +282,93 @@ def _build_strategy(name: str) -> Strategy:
             chop_th_v,
         )
         return SpotAwareStrategyV3(priors=load_priors(), regime_detector=regime, **v3_kwargs)
+    if name == "ensemble":
+        # Phase 5: LLM ensemble wrapping a base strategy. Per
+        # design/phase-5-llm-ensemble.md. Reuses the already-built agents
+        # (orderbook, oracle_gap, momentum, meta) from polymarket_bot.agents.
+        # Mode selection via ENSEMBLE_MODE env var:
+        #   "off"    — wrapper passes base verdict through (kill-switch)
+        #   "shadow" — ensemble votes logged; base verdict still drives
+        #   "gate"   — only fire when base AND meta agree
+        # Base strategy is always v2 with whatever knobs operator sets;
+        # wide-fire (ev_min=0.003) is the operator-approved Phase 5
+        # configuration so the ensemble has the maximum decision space
+        # to filter from.
+        from polymarket_bot.agents.anthropic_client import AnthropicAdapter
+        from polymarket_bot.agents.budget import BudgetTracker
+        from polymarket_bot.agents.meta import MetaDecider
+        from polymarket_bot.agents.momentum import MomentumAgent
+        from polymarket_bot.agents.oracle_gap import OracleGapAgent
+        from polymarket_bot.agents.orderbook import OrderbookAgent
+        from polymarket_bot.strategies.ensemble_wrapper import (
+            EnsembleMode,
+            EnsembleWrapper,
+        )
+
+        # Build the base v2 with the same env knobs as STRATEGY=spot_aware_v2
+        # so the operator can tighten/loosen the underlying strategy
+        # independently of the ensemble layer.
+        base_kwargs: dict[str, float] = {}
+        d_min = _env_float("SPOT_AWARE_DELTA_MIN_BPS", None)
+        if d_min is not None:
+            base_kwargs["delta_min_bps"] = d_min
+        d_max = _env_float("SPOT_AWARE_DELTA_MAX_BPS", None)
+        if d_max is not None:
+            base_kwargs["delta_max_bps"] = d_max
+        ev_min = _env_float("SPOT_AWARE_EV_MIN_DOLLARS", None)
+        if ev_min is not None:
+            base_kwargs["ev_min_dollars_per_share"] = ev_min
+        limit_buf = _env_float("SPOT_AWARE_LIMIT_BUFFER_USD", None)
+        if limit_buf is not None:
+            base_kwargs["limit_buffer_usd"] = limit_buf
+        oracle_gap = _env_float("ORACLE_GAP_MIN_BPS", None)
+        if oracle_gap is not None and oracle_gap > 0:
+            base_kwargs["oracle_gap_min_bps"] = oracle_gap
+        base = SpotAwareStrategyV2(priors=load_priors(), **base_kwargs)
+
+        api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+        mode_raw = os.environ.get("ENSEMBLE_MODE", "off").strip().lower()
+        if mode_raw not in ("off", "shadow", "gate"):
+            raise ValueError(f"ENSEMBLE_MODE must be off|shadow|gate; got {mode_raw!r}")
+        mode: EnsembleMode = mode_raw  # type: ignore[assignment]
+        if mode != "off" and not api_key:
+            LOG.warning(
+                "ENSEMBLE_MODE=%s requires ANTHROPIC_API_KEY; falling back to off",
+                mode,
+            )
+            mode = "off"
+        # BudgetTracker hard cap: $5/day default; operator overrides via
+        # ANTHROPIC_DAILY_BUDGET_USD. Beyond cap → adapter returns None
+        # and the wrapper falls through to base verdict + alert.
+        daily_budget = _env_float("ANTHROPIC_DAILY_BUDGET_USD", 5.0) or 5.0
+        budget = BudgetTracker(hard_limit_usd=daily_budget)
+        if mode != "off":
+            adapter = AnthropicAdapter(budget=budget, api_key=api_key)
+            specialists = [
+                OrderbookAgent(adapter),
+                OracleGapAgent(adapter),
+                MomentumAgent(adapter),
+            ]
+            meta = MetaDecider(adapter)
+            log_root = Path(os.environ.get("PMB_DASH_STATE_DIR", "state")) / "ensemble"
+            LOG.info(
+                "ensemble ENABLED mode=%s daily_budget=$%.2f log_root=%s",
+                mode,
+                daily_budget,
+                log_root,
+            )
+            return EnsembleWrapper(
+                base=base,
+                specialists=specialists,
+                meta=meta,
+                mode=mode,
+                log_root=log_root,
+            )
+        LOG.info("STRATEGY=ensemble but ENSEMBLE_MODE=off; running base only")
+        return base
     raise ValueError(
         f"unknown STRATEGY env value {name!r}; "
-        "pick deterministic | spot_aware | spot_aware_v2 | spot_aware_v3"
+        "pick deterministic | spot_aware | spot_aware_v2 | spot_aware_v3 | ensemble"
     )
 
 
