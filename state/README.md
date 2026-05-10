@@ -1,6 +1,6 @@
 ---
 title: Polymarket BTC 5-Min Bot — Vault MOC
-date: 2026-05-07
+date: 2026-05-11
 tags: [moc, index, vault-root]
 ---
 
@@ -13,14 +13,24 @@ tags: [moc, index, vault-root]
 | Item | State |
 |---|---|
 | Bootstrap | ✅ done |
-| [[phases/phase-A-bonereaper\|Phase A — Bonereaper study]] | ✅ closed, **ABORT** |
-| [[phases/phase-0-foundations\|Phase 0 — Foundations]] | ✅ closed, gate green |
-| [[phases/phase-1-wallet-auth\|Phase 1A — Wallet & Auth (no-money)]] | ✅ closed, gate green at `1537a18`, tag `phase-1a-pass` |
+| [[phases/phase-A-bonereaper\|Phase A — Bonereaper study]] | ✅ closed, **ABORT** at 60% gate |
+| [[phases/phase-0-foundations\|Phase 0 — Foundations]] | ✅ closed, tag `phase-0-pass` |
+| [[phases/phase-1-wallet-auth\|Phase 1A — Wallet & Auth (no-money)]] | ✅ closed, tag `phase-1a-pass` at `1537a18` |
 | Phase 1B — Wallet funding + first $5 order | ⏸ deferred to head of Phase 6 per [[decisions/README#decision-20\|decision #20]] |
-| [[phases/phase-2-data-plane\|Phase 2 — Read-only data plane]] | 🟡 in design (prompt staged at `~/Desktop/phase-2-prompt.txt`) |
-| Phase 3-8 | ⏳ not started |
+| [[phases/phase-2-data-plane\|Phase 2 — Data plane]] | ✅ closed |
+| Phase 3 — LLM A/B | ✅ closed at `3cd4a70`, tag `phase-3-pass`. Verdict CUT (latency + cost fail decision #16); ensemble retained for Phase 4 re-run |
+| Phase 4 + 4.5 — Paper runtime + dashboard | ✅ closed at `c1ff257` |
+| [[phases/phase-5-vps\|Phase 5 — VPS + LLM ensemble]] | ✅ closed 2026-05-08, tag `phase-5-pass`. ENSEMBLE_MODE=gate promoted 2026-05-10 16:31:15 UTC after shadow-mode validation. Five defense layers live |
+| [[phases/phase-11-spot-aware\|Phase 11.A — SpotAware paper soak]] | ✅ superseded by ensemble experiment |
+| Phase 12 — Master plan drafted | ✅ planning artifact 2026-05-10; 36-page PDF, 12-phase optimization roadmap |
+| [[phases/phase-13-fill-rate\|Phase 13 — Fill-rate lift]] | 🛑 **NULL result** 2026-05-10. Audit showed 1-2¢ unfilled subset W=46.2% (below bot's 52% WR); 0-1¢ bucket empty. No code shipped. Commit `d4f3fde` |
+| [[phases/phase-14-tier-gate\|Phase 14 — Entry-price tier blocklist]] | 🟢 **infra dark-shipped** 2026-05-10 at `b6b3599`. `TIER_GATE_ENABLED=false` default. **VPS deploy DEFERRED** — parallel dashboard track uncommitted on VPS |
+| Phase 15 — Regime gate | ⏳ next session. Prompt at `phase-prompts/phase-15-regime-gate-2026-05-12.txt` |
+| Phases 16-25 | ⏳ per master plan §4; one phase per session |
 
-Latest commit: `1537a18`. Tags: `phase-0-pass`, `phase-1a-pass`, `study-A-final`, `study-A-abort`.
+**Bot live:** bot-staging.service active since 2026-05-10 16:31:15 UTC on VPS at `c66fc07`. Strategy = ensemble + ENSEMBLE_MODE=gate + ENSEMBLE_BASE_STRATEGY=wide_fire. Real edge as of 2026-05-10: 52.0% WR / +$76.79 / 402 settled / 12.5% LLM timeout rate / 62.5% effective fire rate. (Phase 14 dark-shipped but not yet pulled to VPS due to parallel dashboard track.)
+
+Latest commit on `claude/jovial-hermann-7e103f`: `d0fea5c`. Tags: `phase-0-pass`, `phase-1a-pass`, `phase-3-pass`, `phase-5-pass`, `study-A-final`, `study-A-abort`. (Master-plan optimization phases 13-25 don't carry git tags by design — only structural milestones do.)
 
 Funder address: `0x512DA3825E69A8c19d2e0D00b66dd23d3ec95d22`. Signer address: `0x8d9759A73D65aD32cd858eb3AdE46ce56F5F2B4A`. Both public; keys live in age-encrypted backups + (Signer only) gitignored `.envrc`.
 
