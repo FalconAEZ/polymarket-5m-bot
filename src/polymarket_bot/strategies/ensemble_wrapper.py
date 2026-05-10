@@ -114,6 +114,13 @@ class EnsembleWrapper:
         self._top_size_for_side: dict[Side, tuple[float, float]] = {}
         self._recent_spot: deque[tuple[int, float]] = deque(maxlen=recent_buffer_len)
         self._recent_window_s = recent_window_s
+        # Background-task bookkeeping for shadow-mode LLM votes. Per the
+        # 2026-05-10 04:20 UTC queue-overflow incident: inline-awaiting
+        # the LLM ensemble in the runner main loop blocked record
+        # consumption, queue overflowed, 16,223 records dropped. Shadow
+        # mode now schedules votes as fire-and-forget tasks tracked
+        # here. Shutdown awaits this set via aclose().
+        self._pending_shadow_votes: set[asyncio.Task[None]] = set()
 
     @property
     def mode(self) -> EnsembleMode:
@@ -164,9 +171,33 @@ class EnsembleWrapper:
             )
             return candidate
 
-        votes, meta_decision = await self._run_ensemble(ctx)
+        # 5. Mode-specific dispatch.
+        #
+        # SHADOW mode: the LLM verdict is observation-only — the base's
+        # candidate IS the fire either way. We MUST NOT block the main
+        # runner loop on the LLM call (300-2000ms per call x 4 calls in
+        # the worst case). Per the 2026-05-10 04:20 UTC incident
+        # (16,223 dropped records), inline-awaiting the ensemble in the
+        # main loop reproduces the exact queue-overflow class the
+        # background-settle fix already addressed for gamma polls.
+        # Solution: schedule the ensemble vote as a fire-and-forget
+        # asyncio.Task, return the candidate immediately. The task
+        # captures snapshot-style state (ctx, candidate, ts_ns) so the
+        # runner's continued mutation of self._state can't corrupt the
+        # in-flight vote.
+        #
+        # GATE mode: the LLM verdict gates the fire — we MUST await it.
+        # Mitigation here is operator-side (ensure budget caps and
+        # short timeouts) rather than architectural. Default behavior
+        # is to keep the inline await for now; if production gate mode
+        # ever causes overflow, that's a separate redesign (e.g., run
+        # ensemble continuously and gate against last-known verdict).
+        if self._mode == "shadow":
+            self._spawn_shadow_vote(ctx=ctx, candidate=candidate, event_ts_ns=event.ts_utc_ns)
+            return candidate
 
-        # 5. Always log ensemble verdict — shadow OR gate.
+        # gate mode — inline await
+        votes, meta_decision = await self._run_ensemble(ctx)
         self._log_ensemble_event(
             {
                 "kind": "ensemble_vote",
@@ -183,19 +214,63 @@ class EnsembleWrapper:
                 "meta": meta_decision.model_dump() if meta_decision is not None else None,
             }
         )
-
-        # 6. Mode-specific gating.
-        if self._mode == "shadow":
-            return candidate  # base verdict wins; ensemble is observers only
-        # gate mode: only fire if meta says FIRE on the same side
         if meta_decision is None or meta_decision.action != "FIRE":
             return None
         candidate_side = _side_from_rationale(candidate.rationale)
         if candidate_side is not None and meta_decision.side != candidate_side:
-            # Meta wants to fire the OPPOSITE side. The base committed to
-            # one direction; we don't override the side, we abstain.
             return None
         return candidate
+
+    def _spawn_shadow_vote(
+        self, *, ctx: AgentContext, candidate: Decision, event_ts_ns: int
+    ) -> None:
+        # Background-task launcher for shadow-mode LLM votes. Mirrors
+        # the background-settle pattern in PaperRunner: snapshot all
+        # state needed by the task, schedule via asyncio.create_task,
+        # track in `_pending_shadow_votes` so shutdown can await
+        # in-flight votes (avoids losing the last batch on stop).
+        # Errors inside the task are caught at the top-level so a
+        # single bad LLM call never propagates to the main loop.
+        task = asyncio.create_task(
+            self._run_shadow_vote_task(ctx=ctx, candidate=candidate, event_ts_ns=event_ts_ns),
+            name=f"ensemble-shadow-vote-{event_ts_ns}",
+        )
+        self._pending_shadow_votes.add(task)
+        task.add_done_callback(self._pending_shadow_votes.discard)
+
+    async def _run_shadow_vote_task(
+        self, *, ctx: AgentContext, candidate: Decision, event_ts_ns: int
+    ) -> None:
+        try:
+            votes, meta_decision = await self._run_ensemble(ctx)
+            self._log_ensemble_event(
+                {
+                    "kind": "ensemble_vote",
+                    "ts_ns": event_ts_ns,
+                    "window_ts": ctx.window_ts,
+                    "mode": "shadow",
+                    "decision_id_hint": _decision_hint(candidate),
+                    "candidate_side": _side_from_rationale(candidate.rationale),
+                    "candidate_rationale": candidate.rationale,
+                    "votes": {
+                        name: vote.model_dump() if vote is not None else None
+                        for name, vote in votes.items()
+                    },
+                    "meta": meta_decision.model_dump() if meta_decision is not None else None,
+                }
+            )
+        except Exception as exc:
+            LOG.exception("shadow vote task failed: %s", exc)
+
+    async def aclose(self) -> None:
+        """Await all pending shadow-vote tasks. Idempotent. Called by
+        the runner during graceful shutdown so the last batch of votes
+        finishes writing to disk before the log file closes."""
+        if not self._pending_shadow_votes:
+            return
+        pending = list(self._pending_shadow_votes)
+        LOG.info("awaiting %d in-flight shadow votes", len(pending))
+        await asyncio.gather(*pending, return_exceptions=True)
 
     # ------------------------------------------------------------------
     # Internal: context tracking + ensemble call

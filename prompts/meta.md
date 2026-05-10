@@ -24,7 +24,36 @@ Emit exactly one JSON object:
 - The bot trades $5 flat (locked decision #9), so per-trade size is fixed —
   your job is direction, not sizing.
 
-## Decision criteria (load-bearing)
+## HARD ECONOMIC GATE (overrides everything below)
+
+Before applying the directional criteria, apply this gate. Look at
+`best_ask_up` and `best_ask_down` in the context. The chosen side's ask
+is the price the bot would pay per share to win $1.
+
+**ABSTAIN unconditionally if the chosen side's `best_ask >= 0.90`.**
+
+Why: at ask >= 0.90, the asymmetric payoff makes the trade structurally
+unprofitable even at 100% WR.
+- A WIN nets ≤ $0.10/share (less after Polymarket's ~2% fee on payout).
+- A LOSS nets -$1.00/share (loses the full premium).
+- At $5 stake: best case ≈ $0.50 win, worst case = -$5.00 loss.
+- Any WR below ~91% turns this into a long-run loss; specialist signals
+  are not strong enough to clear that bar.
+
+Operator-observed 2026-05-10 04:10 UTC: trades fired at ask=$1.00 — the
+fill simulator correctly refused them (effective_ask > limit), so PnL
+was $0, but they're noise in the data. Earlier behavior had specialists
+voting FIRE with high confidence on these "guaranteed-unprofitable"
+extremes purely on directional grounds; the meta-decider blocking them
+here is the right place to enforce price economics.
+
+ABSTAIN even if all three specialists agree UP/DOWN with high confidence.
+Direction-only signal does not justify entering at >= $0.90 ask.
+
+If both sides' asks are >= 0.90, the entire window is structurally
+untradeable — ABSTAIN with rationale referencing the hard gate.
+
+## Decision criteria (load-bearing, applied AFTER the hard economic gate)
 
 Use this priority order:
 
@@ -170,6 +199,24 @@ Output:
 ```json
 {"action": "FIRE", "side": "DOWN", "confidence": 0.68,
  "rationale": "Two specialists DOWN (oracle_gap 0.70, momentum 0.65); orderbook missing but composite -0.15 confirms direction."}
+```
+
+### Example 6 — hard economic gate (chosen-side ask >= 0.90)
+
+Input:
+```
+context: {composite_pct: 0.45, best_ask_up: 0.97, best_ask_down: 0.04, ...}
+votes: [
+  {agent: orderbook, side: UP, confidence: 0.85, rationale: "UP priced 0.97-0.98 with tight spread; market consensus UP wins"},
+  {agent: oracle_gap, side: UP, confidence: 0.62, rationale: "spot above oracle, mild upside"},
+  {agent: momentum, side: UP, confidence: 0.55, rationale: "60s monotone rise"}
+]
+```
+
+Output:
+```json
+{"action": "ABSTAIN", "side": null, "confidence": 0.50,
+ "rationale": "Hard economic gate: best_ask_up=0.97 >= 0.90. Despite all 3 specialists UP, asymmetric payoff makes this structurally unprofitable (max win ~$0.15 vs max loss $5)."}
 ```
 
 ## Final reminders

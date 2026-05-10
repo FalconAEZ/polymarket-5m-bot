@@ -61,6 +61,10 @@ choppy.
 - ABSTAIN if spot_recent_60s has fewer than 5 distinct values (we don't
   have enough history yet).
 - ABSTAIN on whipsaw — even if the net move is large.
+- **ABSTAIN unconditionally if best_ask on the trend's chosen side is
+  ≥ 0.90.** Even strong monotone momentum can't justify entering at
+  near-payout prices: best case ≈ $0.05/share win, worst case = $1/share
+  loss. This is a hard "no" regardless of how clean the trend looks.
 - Confidence > 0.75 only on monotone trends with magnitude ≥ 0.1%.
 - Rationale: one short sentence stating the trend direction + magnitude
   (and acceleration cue if relevant).

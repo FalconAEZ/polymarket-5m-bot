@@ -76,6 +76,13 @@ in a way you can't read.
 ## Output discipline
 
 - ABSTAIN if absolute gap < 0.02% (gap_frac < 0.0002).
+- ABSTAIN if oracle_age_s ≥ 999 (sentinel: no real oracle reading
+  available — usually first ~30s after a bot restart). Don't pretend
+  to have a gap signal when you don't.
+- **ABSTAIN unconditionally if best_ask on the gap's implied side is
+  ≥ 0.90.** A meaningful spot-vs-oracle gap is real signal but can't
+  overcome an ask near payout: best case ≈ $0.10/share win, worst case
+  = $1/share loss. Even a 90% WR makes this long-run negative.
 - Confidence ≤ 0.5 if oracle_age_s < 5s (fresh oracle; marginal info).
 - Confidence > 0.75 only when gap is large AND oracle_age_s > 20s.
 - Rationale: one short sentence with the gap-direction reasoning.

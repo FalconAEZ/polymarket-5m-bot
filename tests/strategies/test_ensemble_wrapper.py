@@ -147,13 +147,22 @@ def _read_jsonl_lines(path: Path) -> list[dict[str, Any]]:
 
 async def _drive(wrapper: EnsembleWrapper) -> Decision | None:
     """Feed the wrapper a complete window's worth of events. Returns the
-    Decision (if any) emitted at the firing SpotTick at T+30s."""
+    Decision (if any) emitted at the firing SpotTick at T+30s.
+
+    Awaits aclose() so any background shadow-vote tasks the wrapper
+    spawned during the drive complete + their JSONL writes finish
+    before the test asserts on the log file. (Per the 2026-05-10
+    queue-overflow fix: shadow mode runs the LLM as a fire-and-forget
+    asyncio.Task; without aclose() the test races the background
+    task and the log file may not exist yet.)"""
     await wrapper.on_event(_open())
     await wrapper.on_event(_spot(80_000.0, 1))
     await wrapper.on_event(_oracle(79_990.0, 2))
     await wrapper.on_event(_book(TOKEN_UP, "UP", 0.55, 3))
     await wrapper.on_event(_book(TOKEN_DOWN, "DOWN", 0.47, 3))
-    return await wrapper.on_event(_spot(80_080.0, 30))
+    decision = await wrapper.on_event(_spot(80_080.0, 30))
+    await wrapper.aclose()
+    return decision
 
 
 # ----------------------------------------------------------------------
@@ -397,6 +406,131 @@ async def test_constructor_rejects_empty_specialists() -> None:
             specialists=[],
             meta=_StubMeta(None),
         )
+
+
+# ----------------------------------------------------------------------
+# Queue-doesn't-block test (the lesson from
+# ~/.claude/projects/.../memory/feedback_test_under_load.md applied a
+# THIRD time — first incident: instant-settle gamma poll. Second incident
+# would have been: this one, the LLM ensemble. Without this test the
+# 2026-05-10 04:20 UTC queue-overflow could happen again on any future
+# refactor that re-introduces an inline-await of slow async I/O in the
+# main loop's _on_event chain.)
+# ----------------------------------------------------------------------
+
+
+class _SlowStubAgent:
+    """Agent whose .vote() takes a configurable amount of wallclock
+    seconds (via real asyncio.sleep) before returning. Used to simulate
+    LLM API latency (typical Anthropic call: 0.3-2s)."""
+
+    def __init__(self, name: str, vote: AgentVote, *, delay_s: float = 0.5) -> None:
+        self.name = name
+        self.model = "stub-slow"
+        self._vote = vote
+        self._delay_s = delay_s
+
+    async def vote(self, ctx: AgentContext) -> AgentVote:
+        import asyncio as _asyncio
+
+        await _asyncio.sleep(self._delay_s)
+        return self._vote
+
+
+class _SlowStubMeta:
+    def __init__(self, decision: MetaDecision, *, delay_s: float = 1.0) -> None:
+        self.name = "stub-slow-meta"
+        self.model = "stub-slow"
+        self._decision = decision
+        self._delay_s = delay_s
+
+    async def decide(self, ctx: AgentContext, votes: dict[str, AgentVote]) -> MetaDecision:
+        import asyncio as _asyncio
+
+        await _asyncio.sleep(self._delay_s)
+        return self._decision
+
+
+@pytest.mark.asyncio
+async def test_shadow_mode_does_not_block_main_loop_under_slow_llm(tmp_path: Path) -> None:
+    """The 2026-05-10 04:20 UTC incident regression test. With the
+    OLD code path (inline await self._run_ensemble), one fire-time
+    LLM call blocked the main loop for ~1-2s, the upstream feed
+    queue overflowed, and 16,223 records dropped before mitigation.
+
+    The fix is fire-and-forget: shadow mode schedules the LLM vote
+    as a background task and returns the candidate immediately. This
+    test wraps a base strategy that fires once, simulates ~1.5s of
+    LLM latency in the specialists+meta, and asserts that on_event
+    returns FAST (<200ms wall) — proof the main loop wouldn't block.
+
+    Without the fix this test fails: on_event would take ~1.5s.
+    """
+    import asyncio as _asyncio
+    import time as _time
+
+    wrapper = EnsembleWrapper(
+        base=_StubBaseStrategy(side="UP"),
+        specialists=[
+            _SlowStubAgent(
+                "orderbook",
+                AgentVote(side="UP", confidence=0.7, rationale="slow"),
+                delay_s=0.5,
+            ),
+            _SlowStubAgent(
+                "oracle_gap",
+                AgentVote(side="UP", confidence=0.6, rationale="slow"),
+                delay_s=0.5,
+            ),
+            _SlowStubAgent(
+                "momentum",
+                AgentVote(side="UP", confidence=0.5, rationale="slow"),
+                delay_s=0.5,
+            ),
+        ],
+        meta=_SlowStubMeta(
+            MetaDecision(action="FIRE", side="UP", confidence=0.7, rationale="slow"),
+            delay_s=1.0,
+        ),
+        mode="shadow",
+        log_root=tmp_path,
+    )
+
+    # Drive the wrapper through one fire. Time JUST the firing event,
+    # not the full window. With the fix the on_event call returns as
+    # soon as the candidate is built; the LLM work runs in the
+    # background.
+    await wrapper.on_event(_open())
+    await wrapper.on_event(_spot(80_000.0, 1))
+    await wrapper.on_event(_oracle(79_990.0, 2))
+    await wrapper.on_event(_book(TOKEN_UP, "UP", 0.55, 3))
+    await wrapper.on_event(_book(TOKEN_DOWN, "DOWN", 0.47, 3))
+
+    t0 = _time.perf_counter()
+    decision = await wrapper.on_event(_spot(80_080.0, 30))
+    elapsed = _time.perf_counter() - t0
+
+    assert decision is not None
+    # Shadow mode → ensemble runs in background; on_event must return
+    # well before the 1.5s aggregate LLM latency completes. Tolerance
+    # generous (200ms) for CI variance.
+    assert elapsed < 0.2, (
+        f"on_event took {elapsed*1000:.0f}ms — should be <200ms in shadow mode. "
+        "The LLM call is blocking the main loop, which means the queue-overflow "
+        "regression from 2026-05-10 04:20 UTC has returned."
+    )
+
+    # Now verify the background vote DID complete after we awaited
+    # aclose() — this proves the work isn't lost, just deferred.
+    await wrapper.aclose()
+    payloads = _read_jsonl_lines(_list_jsonl(tmp_path)[0])
+    assert any(
+        p["kind"] == "ensemble_vote" for p in payloads
+    ), "background vote task didn't write a verdict to JSONL"
+
+    # Touch _asyncio to suppress unused-import warnings on platforms
+    # that strip them.
+    _ = _asyncio
 
 
 # Suppress "unused import" — these are referenced via the helper signatures

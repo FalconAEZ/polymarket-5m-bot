@@ -69,6 +69,12 @@ job, not yours. Stay focused on the order book.
 
 - ABSTAIN whenever the order book is balanced (|book_imbalance| < 0.1 AND
   prices are near 0.5 on both sides).
+- **ABSTAIN unconditionally if the book shows one side at extreme price**
+  (best_ask of either side ≥ 0.90 or ≤ 0.10). The market's already
+  declared the winner; you can't profitably enter — at ask 0.95 a winning
+  trade nets ≤ $0.05/share and a losing trade loses $1/share, which is
+  long-run negative even at very high WR. Operator-observed 2026-05-10:
+  specialists firing UP at ask=$1.00 are noise, not signal.
 - Confidence ≤ 0.5 if you're guessing from one signal alone.
 - Confidence > 0.7 only when at least two of {imbalance, spread asymmetry,
   price level} agree.

@@ -241,6 +241,17 @@ class PaperRunner:
                 pending = list(self._pending_settles)
                 LOG.info("awaiting %d in-flight settle tasks", len(pending))
                 await asyncio.gather(*pending, return_exceptions=True)
+            # Strategies that own background tasks (e.g., EnsembleWrapper's
+            # shadow-mode LLM votes) get an aclose() callout so their
+            # work finishes writing to disk before we close the decision
+            # log. Optional protocol — if the strategy has no aclose,
+            # skip silently.
+            aclose = getattr(self._strategy, "aclose", None)
+            if callable(aclose):
+                try:
+                    await aclose()
+                except Exception:
+                    LOG.exception("strategy.aclose() raised; ignoring on shutdown")
             self._log.close()
 
     async def _on_record(self, record: Record) -> None:
