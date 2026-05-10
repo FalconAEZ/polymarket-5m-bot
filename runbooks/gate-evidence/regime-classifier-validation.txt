@@ -1,0 +1,23 @@
+==============================================================================
+REGIME CLASSIFIER VALIDATION (5m/10m vol ratio)
+  generated:        2026-05-09T23:59:17.419471+00:00
+  fires examined:   299
+  thresholds:       trending > 1.2 · chop < 0.8
+==============================================================================
+
+BUCKET           N  SETTLED   WIN-RATE   TOTAL-PNL   AVG/TRADE
+trending        19       17     70.59%   $+29.7191   $ +1.7482
+mixed          102      102     50.00%   $+13.0938   $ +0.1284
+chop           178      173     47.40%   $-38.0921   $ -0.2202
+no-data          0        0       n/a    $ +0.0000        n/a 
+
+WR delta (trending - chop): +23.19pp
+
+COUNTERFACTUAL: 'fire only in trending' vs current (all-fires)
+  current   n=292  total=$+4.7208  avg=$+0.0162
+  trending  n=17  total=$+29.7191  avg=$+1.7482
+  per-trade improvement: $+1.7320
+
+VERDICT
+  (a): HYPOTHESIS CONFIRMED — trending bucket beats chop by 23.19pp WR and counterfactual improves per-trade pnl by $+1.7320. Implement the regime detector.
+==============================================================================
