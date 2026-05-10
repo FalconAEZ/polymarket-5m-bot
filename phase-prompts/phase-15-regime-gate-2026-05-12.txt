@@ -1,0 +1,214 @@
+Subject: Phase 15 — regime gate wired to ensemble (chop-regime ABSTAIN)
+       (next session after Phase 13 null + Phase 14 tier-gate dark-ship)
+
+Bot RUNNING on STRATEGY=ensemble + ENSEMBLE_MODE=gate +
+ENSEMBLE_BASE_STRATEGY=wide_fire on bot-staging since 2026-05-10
+16:31:15 UTC at HEAD c66fc07 (until next deploy fast-forwards to b6b3599
+or later). Five defense layers live. Phase 14 infrastructure committed
++ pushed to `claude/jovial-hermann-7e103f` at b6b3599 but NOT yet
+deployed — VPS has a parallel dashboard track with ~80 lines of
+uncommitted loaders.py + 10 untracked dashboard files. Phase 14
+deploy bundles with whatever the dashboard work lands as.
+
+This session's priority: wire the existing `regime_detector.py` (used
+today by spot_aware_v3 only) into `EnsembleWrapper` as a pre-fire
+filter. Same audit → design → implement → test → ship-dark pattern as
+Phase 14.
+
+================================================================================
+READ FIRST (vault context, in order)
+================================================================================
+
+1. /Users/hamad/Desktop/PolyMarket-5m/pdfs/PHASE_12_MASTER_PLAN.pdf
+   — page §4 → "PHASE 15" deep dive. This IS the design doc anchor per
+     anti-vibe rule #1.
+2. /Users/hamad/.claude/projects/-Users-hamad-Desktop-PolyMarket-5m/memory/MEMORY.md
+   — index. Top items: checkpoint_phase_14_tier_gate +
+     checkpoint_phase_12_master_plan.
+3. ~/.claude/projects/.../memory/checkpoint_phase_14_tier_gate.md
+   — Phase 14 closeout (commits, audit, dark-ship rationale, deferred
+     deploy).
+4. state/sessions/2026-05-11-phase-14-tier-gate.md
+   — narrative session note.
+5. design/regime_detector.md + design/phase-14-tier-gate.md
+   — regime classifier locked spec + the tier-gate pattern to mirror.
+6. runbooks/gate-evidence/regime-classifier-validation.txt
+   — validation evidence: trending bucket WR 70.59% vs chop 47.40%
+     (+23.19pp); per-trade PnL +$1.75 trending vs -$0.22 chop.
+7. /Users/hamad/Desktop/PolyMarket-5m/CLAUDE.md
+   — durable preferences + anti-vibe rules + locked decisions index.
+
+================================================================================
+STATE AT HAND-OFF (verify before driving)
+================================================================================
+
+Branch:  claude/jovial-hermann-7e103f
+HEAD:    b6b3599 feat(phase-14): TIER_GATE_ENABLED + TIER_GATE_BLOCKLIST env
+         + EnsembleWrapper pre-fire filter
+Pushed:  yes (4-way alignment depends on operator merging dashboard track first)
+
+VPS:
+  bot-staging.service active since 2026-05-10 16:31:15 UTC
+  HEAD on VPS = c66fc07 (not yet pulled to b6b3599 due to uncommitted
+  dashboard work)
+  STRATEGY=ensemble  ENSEMBLE_MODE=gate  ENSEMBLE_BASE_STRATEGY=wide_fire
+  TIER_GATE_ENABLED unset (=false default) — Phase 14 dark
+  ANTHROPIC_DAILY_BUDGET_USD=10
+
+Quick state check (run BEFORE any work):
+  ssh -i $HOME/Downloads/LightsailDefaultKey-eu-west-1.pem -p 2222 \
+      ops@108.132.51.116 'systemctl is-active bot-staging.service && \
+      cd /home/ops/polymarket-5m-bot && git rev-parse HEAD && \
+      git status -s | head -20'
+
+  Expected: active; HEAD=c66fc07 (or b6b3599 if dashboard work merged);
+  may show uncommitted dashboard work still.
+
+If VPS HEAD is unexpectedly past b6b3599 or the dashboard track has
+landed, STOP and re-read the latest checkpoint.
+
+================================================================================
+THE WORK — three items in strict order
+================================================================================
+
+------------------------------------------------------------------------
+ITEM 1 — AUDIT first (no code, ~45 min)
+------------------------------------------------------------------------
+
+Goal: confirm the per-regime WR divergence on bot-staging's ACTUAL fire
+distribution (not just the historical research data), so the gate's
+expected lift is grounded in current behavior.
+
+Step-by-step:
+
+  a. Build scripts/audit_regime_wr.py — for each fired record, classify
+     the regime at fire-time (use regime_detector against the spot
+     history at that ts_utc_ns) and bucket WR + PnL per regime.
+
+  b. Run on the 3-day VPS dataset (2026-05-08..2026-05-10) — same
+     dataset Phase 13 + Phase 14 used. Aggregate + per-day breakdown.
+
+  c. Decide whether the empirical numbers support the master plan's
+     "ABSTAIN if chop" recommendation:
+     - chop WR < 50% on n≥30 → strong support
+     - chop WR 50-55% → marginal; consider trending-ONLY gate instead
+     - chop WR ≥55% → STOP — defer Phase 15, write null result
+
+  d. Write the audit summary to
+     state/sessions/2026-05-12-phase-15-regime-gate.md.
+
+OPERATOR SIGN-OFF GATE: post audit table to chat. Wait for "go".
+
+------------------------------------------------------------------------
+ITEM 2 — Implement the regime gate + tests (~90 min)
+------------------------------------------------------------------------
+
+Files to touch:
+  - src/polymarket_bot/strategies/ensemble_wrapper.py — new
+    `regime_detector` + `abstain_regimes` constructor args. Pre-fire
+    check parallels the Phase 14 tier-gate path: emit
+    kind="regime_abstained", short-circuit LLM call.
+  - scripts/run_paper.py — REGIME_GATE_ENABLED (bool, default false) +
+    REGIME_GATE_ABSTAIN_REGIMES (CSV, default "chop"). Build a fresh
+    RegimeDetector instance (already a stateful detector — confirm it's
+    safe to share with spot_aware_v3 if both are live, or instantiate a
+    separate one for the gate).
+  - tests/strategies/test_ensemble_wrapper.py — five new tests mirroring
+    Phase 14's tier-gate test set:
+      * test_regime_gate_disabled_no_change (regression)
+      * test_regime_gate_blocks_chop_regime
+      * test_regime_gate_passes_trending_regime
+      * test_regime_gate_logs_record
+      * test_regime_gate_under_load
+  - design/phase-15-regime-gate.md (NEW) — locked design.
+
+Run gate before commit:
+  uv run ruff check src/ tests/ scripts/
+  uv run mypy --strict src/
+  uv run pytest -q
+  uv run lint-imports
+
+ALL FOUR must be green.
+
+Commit message format (mirror Phase 14):
+  feat(phase-15): REGIME_GATE_ENABLED + REGIME_GATE_ABSTAIN_REGIMES env
+                  + EnsembleWrapper pre-fire filter
+
+Push to origin + GitHub.
+
+------------------------------------------------------------------------
+ITEM 3 — Deploy + verify (operator-gated; may defer)
+------------------------------------------------------------------------
+
+VPS deploy is contingent on:
+  (a) Operator has resolved the parallel dashboard track on the VPS
+      (commits or stashes the uncommitted work), OR
+  (b) Operator confirms a bundled deploy of Phases 14 + 15 + dashboard
+      at one natural restart point.
+
+When (a) or (b): proceed per Phase 14 prompt's deploy steps:
+  - VPS git pull --ff-only
+  - Add to .envrc: REGIME_GATE_ENABLED=false (default off) +
+    REGIME_GATE_ABSTAIN_REGIMES=chop (set but no-op until enabled)
+  - systemctl restart bot-staging.service
+  - tail journal + decisions for 5min + 30min (per
+    feedback_vps_deploy_verify_late)
+
+If neither (a) nor (b): defer deploy. Phase 15 ships dark by default —
+no urgency.
+
+================================================================================
+ANTI-VIBE RULES — relevant this session
+================================================================================
+
+- Design doc before code (#1): write design/phase-15-regime-gate.md
+  first.
+- Bug → failing test → fix → green (#2): every wrapper edit ships with
+  the 5 tests above; existing 481-pass suite stays green.
+- Kill-switch env: REGIME_GATE_ENABLED defaults false; empty
+  ABSTAIN_REGIMES = no-op even when enabled.
+- Test under load: include the queue-doesn't-overflow guard (100
+  evaluations <500ms).
+- Honest pushback: if the audit shows chop WR ≥55% on bot-staging
+  data, STOP and write a Phase 15 NULL result like Phase 13. The
+  master plan's evidence was on backtest data; current bot behavior
+  may differ.
+- Defer deploys to natural restart: don't restart bot-staging just
+  for Phase 15 if dashboard work still pending.
+
+================================================================================
+HARD LIMITS
+================================================================================
+
+- Bankroll: $1,000 paper (locked decision #10). Phase 15 doesn't touch
+  sizing.
+- bot.service stays DISABLED.
+- Funder key NEVER on VPS.
+- Anthropic spend ~$1-3/day. Hard cap $10/day.
+- Don't bundle Phases 16/17 in this session unless Phase 15 ships GREEN
+  before 50% context.
+
+================================================================================
+SESSION BOUNDARY — ENDS WHEN ONE OF
+================================================================================
+
+(a) Items 1-3 shipped, deployed, soak underway. ✅ full
+(b) Items 1-2 shipped (code + tests committed + pushed), deploy
+    deferred to bundle with dashboard track. ✅ partial — most likely
+    given current VPS state.
+(c) Audit shows chop WR ≥55% → null result, skip Phase 15, advance
+    to Phase 16. 🛑 (honest pushback)
+(d) Context ≥60% before Item 2 done → close out audit + plan only. ⏸
+
+================================================================================
+WHAT THIS PHASE UNLOCKS
+================================================================================
+
+- Restricts LLM ensemble to trending windows where the bot's edge is
+  largest.
+- Master plan §6 milestone: 56% WR after Phase 14+15.
+- The regime-gate pattern (pre-fire ABSTAIN by structural prior) seeds
+  Phases 19 (LLM async pre-compute filter) and 20 (fear-greed daily
+  scalar).
+
+After green: draft phase-prompts/phase-16-bankroll-display-2026-05-13.txt.
