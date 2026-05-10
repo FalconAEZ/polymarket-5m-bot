@@ -164,6 +164,38 @@ def test_taker_allows_above_floor_even_when_depth_unknown() -> None:
     assert fill is not None
 
 
+def test_maker_refuses_floor_ask_when_depth_unknown() -> None:
+    """Audit 2026-05-10 window 1778390700: bot fired DOWN at
+    price_limit=$0.03 with best_ask=$0.01 + ask_size_top=None at
+    decision time (taker guard correctly refused). Order rested. The
+    LATER book that triggered the maker fill ALSO had ask=$0.03 +
+    ask_size_top=None (a price_change event). Without the maker-side
+    guard, the simulator filled the full $5 at $0.03, producing
+    166.67 shares and a phantom $161.67 win when DOWN won."""
+    sim = FillSimulator()  # default floor_best_ask=0.02
+    later_book = _book(best_ask=0.02, ask_size_top=None)
+    fill = sim.attempt_fill(_decision(price_limit=0.03), later_book, is_taker=False)
+    assert fill is None
+
+
+def test_maker_allows_floor_ask_when_depth_is_known() -> None:
+    """When the later book carries depth info, the maker fill is
+    fine — we know the seller volume that's about to cross our bid."""
+    sim = FillSimulator()
+    later_book = _book(best_ask=0.02, ask_size_top=100.0)
+    fill = sim.attempt_fill(_decision(price_limit=0.03), later_book, is_taker=False)
+    assert fill is not None
+
+
+def test_maker_allows_above_floor_even_when_depth_unknown() -> None:
+    """Maker guard only rejects at-or-below the floor. A later book
+    with best_ask comfortably above the floor is fine."""
+    sim = FillSimulator()
+    later_book = _book(best_ask=0.40, ask_size_top=None)
+    fill = sim.attempt_fill(_decision(price_limit=0.55), later_book, is_taker=False)
+    assert fill is not None
+
+
 def test_constructor_rejects_negative_fee() -> None:
     with pytest.raises(ValueError, match="fee_bps"):
         FillSimulator(fee_bps=-0.1)

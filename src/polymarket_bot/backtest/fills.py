@@ -119,6 +119,18 @@ class FillSimulator:
             # our bid; fill at the resting limit price.
             if decision.price_limit < book.best_ask:
                 return None
+            # Same defensive depth-floor guard as the taker path — the
+            # 2026-05-10 audit found a maker-side analog: window
+            # 1778390700 fired DOWN at price_limit=$0.03 with the
+            # decision-time ask at $0.01 + ask_size_top=None (taker
+            # guard correctly refused). The order rested; the LATER
+            # book that triggered the maker fill ALSO had ask_size_top
+            # =None (a price_change event); the simulator filled the
+            # entire $5 size at $0.03, producing 166.67 shares and a
+            # phantom $161.67 win when DOWN later won. Refuse when the
+            # later book has no depth info AND its ask is at the floor.
+            if book.best_ask <= self._floor_best_ask and book.ask_size_top is None:
+                return None
             fill_price = decision.price_limit
         size_filled = decision.size_usd / fill_price
         fee_usd = decision.size_usd * (self._fee_bps / 10_000.0)

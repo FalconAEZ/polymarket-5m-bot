@@ -38,10 +38,23 @@ PHANTOM_WINDOWS: dict[int, dict[str, object]] = {
     1778388600: {
         "original_resolution": "UP",
         "best_ask_at_fill": 0.01,
+        "fill_kind": "taker",
     },
     1778389500: {
         "original_resolution": "UP",
         "best_ask_at_fill": 0.01,
+        "fill_kind": "taker",
+    },
+    # Maker-side analog (followup #6 in checkpoint_phase_5_settle_resolution_bug.md).
+    # Bot fired DOWN at price_limit=$0.03 with best_ask=$0.01 + ask_size_top=None
+    # at decision time. Taker guard correctly refused (fill=None at fired-time).
+    # Order rested; book later crashed to ask=$0.03; simulator filled the full
+    # $5 at the maker limit ($0.03 * 166.67 shares); DOWN won -> +$161.67 phantom
+    # maker win. Same root cause as the takers; different fill mechanism.
+    1778390700: {
+        "original_resolution": "DOWN",
+        "best_ask_at_fill": 0.03,
+        "fill_kind": "maker",
     },
 }
 

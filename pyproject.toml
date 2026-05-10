@@ -31,7 +31,9 @@ norecursedirs = ["references", ".venv", "state", "ticks", "runbooks", "build", "
 asyncio_mode = "auto"
 
 [tool.ruff]
-extend-exclude = ["references", "state", "ticks"]
+# runbooks/patches/ holds verbatim copies of files deployed out-of-tree on the VPS;
+# they're for traceability only and are not part of the runtime code path.
+extend-exclude = ["references", "state", "ticks", "runbooks/patches"]
 
 [tool.mypy]
 exclude = ["references/", "state/", "ticks/", "build/", "dist/"]
