@@ -45,7 +45,15 @@ WINDOW_DURATION_S: int = 300
 # orphan-fd-decisions.md. The threshold is generous enough that a
 # legitimate quiet 15-min stretch (no fires) does NOT trip it for the
 # typical aggressive-mode fire rate (~3-4/h).
-DECISIONS_STALE_THRESHOLD_S: float = 30 * 60.0
+# Decisions-stale wire threshold. The original 30 min was tuned for v1+
+# aggressive which fired ~12/day (~2h gap baseline → 30min = 4x expected,
+# legitimate "something's stuck" signal). v2 + ev_min=0.05 fires ~1/day,
+# so the same 4x-expected-gap heuristic gives 96h — too lax. Compromise:
+# 6h. Catches "bot stuck for half a day" without strobing the banner
+# every time the bot is just being patient. Operator audit 2026-05-10:
+# saw the alert fire at 1h-since-last-fire under v2-tight, which is
+# entirely normal v2 behavior — not actionable.
+DECISIONS_STALE_THRESHOLD_S: float = 6 * 60 * 60.0
 
 
 @dataclass(slots=True)
@@ -360,21 +368,22 @@ def snapshot(
         incidents.append("paper process not running")
     if capture.pid is not None and not capture.alive:
         incidents.append(f"capture process dead (pid {capture.pid})")
-    # Decisions-stale wire — orphan-FD-decisions failure mode. If the
-    # bot is alive but the most recent fired decision is older than the
-    # threshold, the bot is likely writing into an unlinked inode while
-    # the dashboard reads a frozen visible file. The Strategy can also
-    # legitimately go quiet (no edge), so we only fire this when paper
-    # IS alive AND we have any prior fires AND the gap exceeds the
-    # threshold. Operator's cue to check `lsof -p <bot_pid> | grep
-    # state/decisions` for "(deleted)" markers.
+    # Decisions-quiet wire. Fires only when the bot has been silent for
+    # significantly longer than its expected fire cadence — at the 6h
+    # threshold this could be: (a) the strategy is genuinely quiet (no
+    # edge — fine for v2-tight), (b) a journal/strategy bug, OR (c) the
+    # historical orphan-FD failure mode where the bot writes into an
+    # unlinked inode. The message lists possibilities rather than
+    # prejudging — operator audit 2026-05-10 noted the prior "check for
+    # orphan FDs" message confused triage when most quiet periods are
+    # just v2 being patient.
     if paper.alive and rows:
         last_fire = max(r.decision_dt_utc for r in rows)
         gap_s = (now - last_fire).total_seconds()
         if gap_s > DECISIONS_STALE_THRESHOLD_S:
             incidents.append(
-                f"decisions JSONL stale: last fire {_humanize_age(gap_s)} ago "
-                "while bot alive (check for orphan FDs)"
+                f"no fires in {_humanize_age(gap_s)} while bot alive — "
+                "v2-quiet or stuck? check journal/lsof for orphan FDs"
             )
     if snap is None and paper.alive:
         # Bot is alive but no feeds_health.json — soft warning, not
