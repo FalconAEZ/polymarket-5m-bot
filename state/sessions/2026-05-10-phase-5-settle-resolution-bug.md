@@ -293,3 +293,111 @@ ssh ops@VPS 'cd /home/ops/polymarket-5m-bot && \
   sed -i "s/^export ENSEMBLE_MODE=gate.*/export ENSEMBLE_MODE=shadow/" .envrc && \
   sudo systemctl restart bot-staging.service'
 ```
+
+---
+
+## Continuation 3 (2026-05-10 14:00 - 16:35 UTC) — Phase 5 ENSEMBLE_MODE promotion saga
+
+After the morning's settle-resolution + phantom-fill work, the operator
+asked the bigger question: "is the LLM ensemble actually delivering edge?"
+What followed was an ~3-hour investigation of LLM behavior + 5 progressive
+fixes that turned shadow-mode into a working gate-mode + bullet-proofed
+the orphan-recovery against mid-settle restarts.
+
+### The audit that triggered the promotion
+
+Operator asked why so many trades weren't filling. Audit revealed:
+- 134 fired today, 35 unfilled (26%)
+- 32 of those were `price_limit < best_ask` (market moved past bot's
+  limit — these are NOT simulator bugs, the bot's price_limit IS the
+  edge filter)
+- 3 were the new floor guard (correctly preventing phantom fills)
+
+But the deeper finding: matching ensemble shadow-mode votes vs actual
+fires showed:
+
+| Bucket | WR (gamma truth) |
+|--------|------------------|
+| wide_fire + filled (current) | 52.3% |
+| LLM FIRE + filled | **56.4%** (+4.1pp uplift) |
+| LLM ABSTAIN + filled | 40.0% (LLM correctly flags losers) |
+| LLM null/error | 23.2% (silent loss) |
+
+Per locked decision #16 (keep ensemble only if uplift ≥3pp), gate-mode
+promotion was justified. Operator approved the flip.
+
+### The 5 progressive fixes (commits in order)
+
+| HEAD | Fix | Trigger |
+|------|-----|---------|
+| `e2f3692` | Schema bump (240/400 → 2000) + truncate-on-validation + meta-None → base fallback + meta max_tokens 1024→512 | Promoted to gate-mode → 23% silent null-meta |
+| `5dfa901` | LLM timeout (asyncio.wait_for) with base fallback | Operator Telegram alert: 13K records dropped from gate-mode blocking |
+| `42eb305` | Bumped 4s→8s + dropped meta adaptive thinking | Verification showed 100% timeout at 4s |
+| `9b945aa` | Bumped 8s→12s after on-VPS latency probe | Direct probe: median 5.2s, p95 7.1s, max 7.7s — 8s too tight |
+| `73c8fc5` | Periodic orphan-recovery sweep (every 5min) | Window 1778428800 was permanently orphaned by mid-settle restart at 16:05:30; manually recovered +$5.61, then hardened |
+
+### The latency probe (the breakthrough)
+
+Direct probe of the production code path on the VPS, 5 trials:
+
+| Stage | median | p95 | max |
+|-------|--------|-----|-----|
+| Specialists (3x Haiku parallel) | 2.15s | — | 4.55s |
+| Meta (Sonnet medium serial) | 3.23s | — | 3.67s |
+| **Total round-trip** | **5.18s** | **7.08s** | **7.67s** |
+
+This explained: 2.5s/4s timeouts hit 100% of windows, 8s was borderline,
+12s gives ~4s safety margin. No async pre-compute redesign needed (yet)
+— a 12s blocking await is only 4% of the 5min cycle, queue (1024)
+drains comfortably between windows.
+
+### Final state at session close (2026-05-10 16:32 UTC)
+
+| Check | Result |
+|-------|--------|
+| HEAD on worktree, main local, GitHub, VPS | `73c8fc5` |
+| Bot status | active (restarted 16:31:15 UTC) |
+| **ENSEMBLE_MODE** | **gate** (promoted from shadow at 14:06 UTC) |
+| Queue overflows since 12s deploy | 0 |
+| **LLM timeout rate (post-12s)** | **12.5%** (1 of 8 votes) |
+| **LLM action breakdown** | 50% FIRE, 37.5% ABSTAIN, 12.5% timeout/null |
+| **Effective fire rate** | 62.5% (LLM-FIRE + base-fallback on null) |
+| Bankroll | $1,076.79 (+7.7% / +$76.79) |
+| Win rate | 52.0% on 402 settled |
+| **Defenses live** | 5 layers: instant-settle 300s + post-hoc gamma retry + phantom-fill detection (taker+maker) + periodic orphan-recovery + LLM timeout |
+
+### What didn't get done (deferred to next phase)
+
+1. **Fill rate <100%**: ~15-30 trades per soak window aren't filling
+   because price_limit doesn't cross the ask. Operator wants 100% fills
+   in the next phase.
+2. **Bankroll experiments**: position sizing, kelly, starting bankroll
+   variation.
+3. **Win rate verdict on gate-mode**: needs overnight soak (50-100
+   LLM-gated fires) to see if WR climbs to 56-60%.
+4. **Tightening edge**: per-tier discipline, regime-detector reactivation,
+   priors recalibration.
+
+### Commits today (full list, 12)
+
+```
+28c01cf  fix(settle): post-hoc gamma re-resolution + bump instant-settle defaults
+6464541  fix(simulator): refuse fill at price floor when ask depth unknown + neutralize 2 phantom wins
+3fa5b97  docs(phase-5-settle-resolution): vault closeout — session note + next-session prompt
+12c7f02  docs(phase-5-settle-resolution): add maker-side phantom-fill followup
+10e08e8  fix(simulator+dashboard): maker-side phantom-fill guard + dashboard honors settled_correction
+da5b246  fix(backfill): auto-detect phantom-maker fills by pattern
+f8da51f  fix(post-hoc): detect phantom-floor fills and write pnl=0 instead of recomputing inflated value
+46b3ce6  fix(simulator): bump floor 0.02 -> 0.05 + add size-based depth guard
+e42c1bd  docs(session): extend 2026-05-10 settle-resolution session note with full continuation
+e2f3692  fix(ensemble): rescue 23% of LLM-failed votes — schema bump + truncation + base fallback
+5dfa901  fix(ensemble): bound LLM await with timeout — gate-mode caused 13K dropped records
+42eb305  fix(ensemble): bump gate timeout 2.5s -> 4s + drop meta adaptive thinking
+73ebc7b  docs(session): ENSEMBLE_MODE shadow -> gate promoted (Phase 5 locked-decision-#16 met)
+9b945aa  fix(ensemble): bump gate timeout 8s -> 12s based on direct latency probe
+73c8fc5  feat(orphan-recovery): periodic sweep so restart-during-settle never permanently orphans windows
+```
+
+### Test count: 457 passing (up from 429 at session start)
+
+Next session: see `phase-prompts/phase-12-fill-rate-and-bankroll-2026-05-11.txt`.

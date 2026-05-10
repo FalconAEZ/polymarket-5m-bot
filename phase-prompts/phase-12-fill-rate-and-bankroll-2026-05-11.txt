@@ -1,0 +1,288 @@
+Subject: Phase 12 — every-window fills + bankroll experiments + edge tightening
+       (next session after the 2026-05-10 phase-5-settle-resolution + gate-mode marathon)
+
+Bot is RUNNING on STRATEGY=ensemble + ENSEMBLE_MODE=gate +
+ENSEMBLE_BASE_STRATEGY=wide_fire on bot-staging since 2026-05-10
+16:31:15 UTC at HEAD 73c8fc5. Five defense layers live. Real edge
+today: +$76.79 / 402 settled / 52.0% WR / 12.5% LLM timeout rate /
+62.5% effective fire rate.
+
+This session's priority: hit ~100% fill rate (currently ~26% of
+fired decisions don't fill), then run bankroll-sizing experiments,
+then tighten the edge with regime detection + per-tier discipline.
+
+================================================================================
+READ FIRST (vault context, in order)
+================================================================================
+
+1. /Users/hamad/.claude/projects/-Users-hamad-Desktop-PolyMarket-5m/memory/MEMORY.md
+   — index of memories. Top item: checkpoint_phase_5_settle_resolution_bug.
+2. ~/.claude/projects/.../memory/checkpoint_phase_5_settle_resolution_bug.md
+   — full session arc (settle bugs → 4 phantom-fill variants → gate-mode
+     promotion → LLM latency tuning → periodic orphan-recovery). 16 commits.
+3. state/sessions/2026-05-10-phase-5-settle-resolution-bug.md
+   — narrative session note (~400 lines, three continuations).
+4. /Users/hamad/Desktop/PolyMarket-5m/CLAUDE.md
+   — durable preferences, anti-vibe rules, locked decisions index.
+
+Optional but recommended:
+5. design/phase-5-llm-ensemble.md — Phase 5 plan with operator's wide_fire choice.
+6. runbooks/incidents/2026-05-09-instant-settle-queue-overflow.md
+   — original queue-overflow postmortem (the lesson we keep applying).
+
+================================================================================
+STATE AT HAND-OFF (verify before driving)
+================================================================================
+
+Branch:  claude/jovial-hermann-7e103f (also pushed to claude/youthful-margulis-964d00)
+HEAD:    73c8fc5 feat(orphan-recovery): periodic sweep so restart-during-settle...
+Pushed:  yes (4-way aligned: worktree, main local, github, VPS)
+
+VPS:
+  bot-staging.service active since 2026-05-10 16:31:15 UTC
+  STRATEGY=ensemble  ENSEMBLE_MODE=gate  ENSEMBLE_BASE_STRATEGY=wide_fire
+  ANTHROPIC_DAILY_BUDGET_USD=10
+  INSTANT_SETTLE_ENABLED=1  ORPHAN_RECOVERY_ENABLED=1
+  POST_HOC_GAMMA_RETRY_ENABLED=1
+  PERIODIC_ORPHAN_RECOVERY_ENABLED=1 (default; new this session)
+
+Dashboard at 127.0.0.1:8505 → SSH tunnel:
+  ssh -i ~/Downloads/LightsailDefaultKey-eu-west-1.pem -p 2222 \
+      -L 8505:127.0.0.1:8505 -N -f ops@108.132.51.116
+
+Quick state check (run BEFORE any work):
+  ssh -i $HOME/Downloads/LightsailDefaultKey-eu-west-1.pem -p 2222 \
+      ops@108.132.51.116 'systemctl is-active bot-staging.service && \
+      cd /home/ops/polymarket-5m-bot && git rev-parse HEAD && \
+      tail -1 state/decisions/$(date -u +%Y-%m-%d).jsonl 2>/dev/null'
+
+  Expected: active; HEAD=73c8fc5 (or further); JSONL present.
+
+If any check fails: STOP. Re-read the checkpoint before acting.
+
+================================================================================
+THE WORK — six items, in priority order
+================================================================================
+
+------------------------------------------------------------------------
+ITEM 1 — Audit: WHY are 26% of trades not filling? (~30 min, no code)
+------------------------------------------------------------------------
+
+Operator-flagged: "more than fifteen trades that has not been filled".
+Today's audit on `state/decisions/<today>.jsonl`:
+
+  total fired:           ~140
+  filled at fire (taker):  ~75 (~57%)
+  filled at settle (maker): ~25 (~17%)
+  NEVER FILLED:           ~35 (~26%)
+
+Of the never-filled:
+  ~32 (91%) — `price_limit < best_ask` (market moved past bot's limit)
+  ~3 (9%)   — floor guard (correct refusal)
+
+Step-by-step:
+  a. Re-run /tmp/audit_unfilled.py (already on VPS) on tomorrow's data.
+     Confirm the breakdown. Update the script if needed (e.g. if the
+     `OTHER` bucket grows, dig into those).
+  b. Categorize the 32 limit_below_ask cases:
+     - How many had price_limit just 1¢ below ask (could lift)?
+     - How many were way off (limit=0.99 ask=1.00 — saturated market)?
+     - What % of those would've won (chainlink WR was 45.7% on the
+       sample — likely lower on gamma truth)?
+  c. Decide: are these "market moved" cases legitimate skips, or is
+     the strategy's price_limit calculation too conservative?
+
+Deliverable: a one-page audit doc at
+  state/sessions/2026-05-11-fill-rate-audit.md
+that answers: which categories are fixable vs which are intentional?
+
+------------------------------------------------------------------------
+ITEM 2 — Lift fill rate to ~100% via strategy adjustment (~1-2h)
+------------------------------------------------------------------------
+
+Once Item 1 categorizes the unfills, fix the fixable ones. Two main
+levers:
+
+(a) **Lift price_limit by N cents** — currently the bot fires at
+    spot-derived price (e.g. limit=0.55 vs ask=0.56 means we miss).
+    Bumping limit by +1¢ buys most of the misses. Trade-off: paying
+    1¢ more per fill on every fill (not just the misses).
+
+(b) **Take-at-ask mode** — set price_limit = best_ask + impact at
+    decision time. Always crosses the spread, always fills.
+    Trade-off: higher execution cost vs maker fills.
+
+Recommended: option (a) with a tunable `SPOT_AWARE_LIMIT_LIFT_BPS`
+env var. Default 0; operator can dial up to 1-3¢ to see the impact.
+
+For the LLM-FIRE path specifically, consider option (b) — when the LLM
+says FIRE the bot is more confident, so paying the spread is worth it.
+
+Tests:
+  * Lift = 0¢ → no behavior change
+  * Lift = 2¢ → fill rate climbs, WR holds within 1-2pp
+  * Per-strategy override (LLM-FIRE gets bigger lift than wide-fire base)
+
+Verification on the bot:
+  * After deploy, fill rate should climb from 74% → 90%+
+  * WR may dip 1-2pp (we're now taking marginal trades that were
+    correctly being skipped)
+  * Net PnL/trade should be similar or higher
+
+Don't go to 100% if it crashes WR. Find the sweet spot.
+
+------------------------------------------------------------------------
+ITEM 3 — Bankroll experiments (~1-2h)
+------------------------------------------------------------------------
+
+Operator wants to play with sizing. Currently $5 flat per trade
+(locked decision #9: "$5 flat per trade for first 100 trades, then
+fractional Kelly"). We've passed 100 trades — Kelly is on the table.
+
+Three sub-experiments:
+
+(a) **Bankroll bump**: change starting bankroll from $1,000 (locked
+    decision #10) to a different value via state/bankroll.json or env.
+    This is for SHADOW PnL display only — we're paper-trading, so the
+    actual capital is fictional. But operator may want to model
+    different starting bankrolls.
+
+    Implementation: probably add `STARTING_BANKROLL_USD` env var to
+    the dashboard's bankroll module. Or add a separate "scenarios"
+    panel that shows PnL projection at different starting bankrolls.
+
+(b) **Position sizing**: change $5 flat to a fraction of bankroll
+    (e.g. 0.5%, 1%, 2%). Implementation: add `POSITION_SIZING_MODE`
+    env (flat | fractional | kelly) + `POSITION_SIZING_PARAM` env
+    (the dollar amount or fraction). Strategy reads at fire-time.
+
+(c) **Kelly sizing**: per locked decision #9, fractional Kelly when
+    edge is high. Need: (1) edge estimate per fire (already have
+    p_win from spot_aware_v2); (2) Kelly formula `f = (p*b - q)/b`
+    where b=odds, p=win prob, q=1-p; (3) cap at half-Kelly for
+    variance control.
+
+    Implementation: `kelly_size_usd(p_win, fill_price, bankroll)` in
+    a new strategies/sizing.py module. Tests for known cases.
+
+Anti-vibe: don't ship all three at once. Start with (a) — read-only
+display change, no behavior risk. Then (b) flat-fractional. Then
+Kelly with explicit operator approval (this is a locked-decision
+revisit per #9).
+
+------------------------------------------------------------------------
+ITEM 4 — Tighten the edge: per-tier discipline + regime gate (~1-2h)
+------------------------------------------------------------------------
+
+Two known signals not currently in production:
+
+(a) **Per-tier WR**: The dashboard shows per-tier breakdown (15-30%,
+    30-50%, 50-70%, 70-85%, 85-100%). Some tiers consistently win,
+    others lose. Restrict firing to high-WR tiers only.
+    The data is on the dashboard; codify it as a strategy filter.
+
+(b) **Regime detector**: src/polymarket_bot/strategies/regime_detector.py
+    classifies BTC regime (trend / chop / volatile). Per-regime WR
+    diverges 23pp on historical data (research at
+    runbooks/scripts/regime_classifier_validation.py). Currently NOT
+    wired into ensemble — only used by spot_aware_v3 (which isn't
+    the active base). Wire it in: regime ABSTAIN if regime is "chop".
+
+For both, the implementation pattern is:
+  * Add as a pre-fire filter in the base strategy
+  * Make it env-toggleable so operator can A/B
+  * Test that disabled = current behavior (no regression)
+
+------------------------------------------------------------------------
+ITEM 5 — Overnight WR check: did gate-mode deliver? (~10 min)
+------------------------------------------------------------------------
+
+By the time this session starts, ~12 hours of gate-mode soak data
+should be available. Compute:
+
+  ssh ops@108.132.51.116 'cd /home/ops/polymarket-5m-bot && \
+    python3 /tmp/audit_ensemble_wr.py 2>/dev/null'
+
+Decision per locked decision #16:
+  * If LLM_FIRE+filled WR > 55% on n>50 → gate-mode confirmed,
+    document the win in a research note.
+  * If 50-55% → marginal; keep gate but consider tuning.
+  * If <50% → gate-mode is hurting; revert to shadow + investigate.
+
+Publish the verdict in a dashboard-visible alert or daily-rollup line.
+
+------------------------------------------------------------------------
+ITEM 6 — End-of-session vault closeout
+------------------------------------------------------------------------
+
+Standard: session note + memory checkpoint update + MEMORY.md update +
+next-session prompt + 4-way alignment check.
+
+================================================================================
+ANTI-VIBE RULES — relevant for this session
+================================================================================
+
+- Bug → failing test → fix → green (#2): EVERY change to fills.py /
+  strategy code ships with a test asserting the new behavior + a
+  regression test for old behavior.
+- Always ship a kill-switch env var: each Item 2/3/4 fix gets its own
+  env toggle (LIMIT_LIFT_BPS, POSITION_SIZING_MODE, REGIME_GATE_ENABLED).
+  Default = current behavior (off / 0).
+- Defer bot-affecting deploys to natural restart points: bundle
+  Items 2 + 3 + 4 into ONE restart at the end. Don't restart 4 times.
+- No locked-decision overrides without explicit operator go: Item 3
+  Kelly sizing is a #9 revisit — get sign-off first.
+- Test under load: any new strategy filter must come with a
+  performance test (does it complete in <50ms? doesn't add to LLM
+  blocking budget? doesn't risk new queue overflow?).
+
+================================================================================
+HARD LIMITS
+================================================================================
+
+- Bankroll: $1,000 paper (locked decision #10). Item 3a is display-only
+  unless operator approves a real bankroll change.
+- bot.service stays DISABLED (Phase 6 stub).
+- Funder key NEVER goes to the VPS.
+- Anthropic spend: ~$0.50 cumulative + ~$1-3/day projection. Hard cap
+  remains $10/day per .envrc.
+- Don't ship all of Items 2, 3, 4 in one go. One bot restart per
+  major change. Verify each before moving on.
+
+================================================================================
+SESSION BOUNDARY — ENDS WHEN ONE OF
+================================================================================
+
+(a) Items 1-5 shipped, tested, deployed. Fill rate ≥90%. Gate-mode
+    WR verdict in. Item 3 sizing experiment running. ✅ full
+(b) Items 1-2 shipped + Item 3a (read-only) + overnight verdict
+    captured. Items 3b/3c/4 deferred to next session. ✅ partial
+(c) Three-fix-failed on Item 2 (fill rate doesn't climb without
+    crashing WR) → write incident note, document the failure, defer
+    to a redesign. 🛑
+(d) Context ≥ 60% before Item 4 → close out what's green, write
+    partial checkpoint, stop. ⏸
+
+================================================================================
+THE BIGGER PICTURE — why this matters
+================================================================================
+
+Phase 5 closed today with the LLM ensemble PROMOTED to gate-mode.
+The bot has a real, validated +4.1pp edge (LLM-FIRE+filled = 56.4%
+WR vs deterministic 52.3%). All known bug classes are defended:
+phantom fills, settle-resolution divergence, queue overflow,
+mid-restart orphans. The bot is SAFE.
+
+What's left is OPTIMIZATION:
+  * More fills = more samples = tighter statistics + bigger PnL
+  * Better sizing = bigger wins on the right trades
+  * Tighter edge = restrict firing to higher-WR conditions
+
+If we can get fill rate to 95%+ AND keep WR at 55%+ AND start
+sizing per Kelly when edge is real, the bot's PnL/day should
+double or triple from today's ~$70-80 baseline. That's the path
+to the $2k bankroll trigger (locked decision #12 → hardware wallet
++ live trading).
+
+For now: paper. Next phase = squeeze the paper edge, then the
+operator decides on Phase 6 live deployment.
