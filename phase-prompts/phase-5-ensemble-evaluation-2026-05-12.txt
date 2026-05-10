@@ -1,0 +1,221 @@
+Subject: Phase 5 LLM ensemble evaluation on CLEAN data + dashboard
+correction-honor + ensemble rollup phantom-filter.
+
+Bot has been running on STRATEGY=ensemble + ENSEMBLE_MODE=shadow +
+ENSEMBLE_BASE_STRATEGY=wide_fire on bot-staging since 2026-05-10
+04:31:41 UTC. Phase 5 settle-resolution bugs (chainlink-fallback
+wrong + phantom-fill at floor) were both fixed and deployed
+2026-05-10 05:24:54 UTC at commit 6464541. Audit is now CLEAN.
+
+This session: do the Phase 5 LLM ensemble evaluation that the prior
+session deferred (n was too small), wire the dashboard to honor
+settled_correction records (so the operator-visible PnL matches the
+canonical JSONL truth), and update the rollup script to exclude
+phantom-flagged trades.
+
+================================================================================
+READ FIRST (vault context, in order)
+================================================================================
+
+1. /Users/hamad/.claude/projects/-Users-hamad-Desktop-PolyMarket-5m/memory/MEMORY.md
+2. ~/.claude/projects/.../memory/checkpoint_phase_5_settle_resolution_bug.md
+   — full context on what shipped 2026-05-10 (commits 28c01cf + 6464541),
+     including all 5 known followups documented at the end.
+3. ~/.claude/projects/.../memory/checkpoint_phase_5_llm_ensemble.md
+   — Phase 5 LLM ensemble checkpoint; gate-mode promotion criteria.
+4. state/sessions/2026-05-10-phase-5-settle-resolution-bug.md
+   — narrative session note for the bug-fix session.
+5. /Users/hamad/Desktop/PolyMarket-5m/CLAUDE.md
+   — durable preferences, anti-vibe rules, locked decisions index.
+
+================================================================================
+STATE AT HAND-OFF (verify before driving)
+================================================================================
+
+Branch:  claude/jovial-hermann-7e103f
+HEAD:    6464541 fix(simulator): refuse fill at price floor when ask depth unknown + neutralize 2 phantom wins
+Pushed:  yes
+
+VPS:
+  bot-staging.service active since 2026-05-10 05:24:54 UTC
+  STRATEGY=ensemble  ENSEMBLE_MODE=shadow  ENSEMBLE_BASE_STRATEGY=wide_fire
+  INSTANT_SETTLE_ENABLED=1  ORPHAN_RECOVERY_ENABLED=1 (default)
+  POST_HOC_GAMMA_RETRY_ENABLED=1   ← NEW from 2026-05-10
+  ANTHROPIC_DAILY_BUDGET_USD=10
+
+  Quick state check:
+    ssh -i $HOME/Downloads/LightsailDefaultKey-eu-west-1.pem -p 2222 \
+        ops@108.132.51.116 'systemctl is-active bot-staging.service && \
+        cd /home/ops/polymarket-5m-bot && git rev-parse HEAD && \
+        tail -1 state/decisions/$(date -u +%Y-%m-%d).jsonl 2>/dev/null'
+
+  Expected: active; HEAD=6464541 (or further); JSONL present.
+
+================================================================================
+WORK — six items, in priority order
+================================================================================
+
+------------------------------------------------------------------------
+ITEM 1 — Dashboard: honor settled_correction records (~1h)
+------------------------------------------------------------------------
+
+The bot's `decisions/<date>.jsonl` now contains `settled_correction`
+records (kind=settled_correction) appended by the post-hoc retry. The
+dashboard's resolver_loop (in src/polymarket_bot/dashboard_server/
+resolver_loop.py) does its own gamma re-resolution into
+`state/decisions-resolved/` but does NOT yet read the bot's
+correction records. So the operator-facing dashboard still shows the
+2 phantom-floor wins (windows 1778388600 + 1778389500) at +$449 each
+even though the canonical JSONL truth is pnl=0.
+
+Two approaches:
+  (a) Update dashboard's state.snapshot() to OVERLAY settled_correction
+      records on top of decisions-resolved data. For each correction,
+      use corrected_resolution + corrected_pnl_usd. Easier to reason
+      about but adds a new merge layer.
+  (b) Update resolver_loop to skip windows that have a
+      settled_correction with phantom_fill=true (or any
+      polymarket-post-hoc / phantom-fill-neutralized source). Simpler
+      but couples resolver to the bot's correction schema.
+
+Recommendation: (a) is more decoupled. Add a thin function to dashboard
+state that reads correction records once at snapshot-time and applies
+them in-memory.
+
+Tests:
+  * settled_correction with corrected_pnl=0 + phantom_fill=true makes
+    the dashboard show pnl=0 for that window
+  * settled_correction with corrected_resolution differing from the
+    raw settled record makes the dashboard show the CORRECTED side
+  * windows without a correction still use decisions-resolved as before
+
+------------------------------------------------------------------------
+ITEM 2 — Re-run ensemble shadow rollup on CLEAN data + decide (~30min)
+------------------------------------------------------------------------
+
+Pre-flight:
+  cd ~/Desktop/PolyMarket-5m && bash runbooks/scripts/sync_staging.sh
+
+This rsync's VPS state/decisions/ → laptop staging + runs
+resolve_decisions.py to PM-truth. After the sync, also run the new
+backfill script on the staging dir so settled_correction records get
+applied (or update sync_staging.sh to do this):
+
+  uv run python scripts/backfill_settled_corrections.py \
+      state/staging/decisions/$(date -u -d "1 day ago" +%Y-%m-%d).jsonl \
+      state/staging/decisions/$(date -u +%Y-%m-%d).jsonl
+
+THEN re-run the rollup. Currently the rollup at
+runbooks/scripts/ensemble_shadow_rollup.py reads PM-truth-corrected
+decisions but does NOT filter `phantom_fill=true` settled_corrections
+or honor non-phantom settled_corrections. Update it to:
+  * Prefer settled_correction over settled when present (same decision_id)
+  * Skip trades where the chosen settled_correction has phantom_fill=true
+    (or alternatively count them with pnl=0)
+
+Verdict per the design's binary gate:
+  (a) +5pp WR uplift over deterministic → flip ENSEMBLE_MODE=gate.
+  (b) ±3pp → keep deterministic baseline; ensemble was free observation.
+  (c) Worse → drop, write Phase 5 conclusive postmortem, restore v2-tight.
+
+Caveat from the prior prompt: needed n ≥ 30 settled. By 2026-05-12 the
+bot will have ~3 days of shadow data; n should be plenty.
+
+------------------------------------------------------------------------
+ITEM 3 — Update audit_resolutions_v2.py to honor corrections (~30min)
+------------------------------------------------------------------------
+
+The audit script (uncommitted on VPS at /tmp/audit_resolutions_v2.py)
+re-reads `settled` records and compares to gamma. Update to:
+  * For each decision_id, find the most recent settled OR
+    settled_correction record (correction takes precedence)
+  * Compare the EFFECTIVE resolution to gamma
+  * Should report 0 mismatches now that the backfill is applied
+
+Also commit the script to scripts/research/ so it survives future
+operator workflow.
+
+------------------------------------------------------------------------
+ITEM 4 — Implement decision per Item 2 verdict (~30min)
+------------------------------------------------------------------------
+
+If LLM gate beats deterministic by ≥+5pp:
+  - export ENSEMBLE_MODE=gate in .envrc, restart bot.
+  - Watch for 30 min: most fires get blocked (meta is more selective
+    than wide_fire). PnL/trade should climb sharply.
+
+If gate hurts:
+  - export STRATEGY=spot_aware_v2 in .envrc, restart.
+  - Set ev_min=0.05, oracle_gap=1.0 (the validated 72.4% WR config
+    from the historical audit).
+  - Document the Phase 5 conclusive postmortem.
+
+If neither is clearly better:
+  - Run BOTH for another week. Don't make a permanent call on noisy data.
+
+------------------------------------------------------------------------
+ITEM 5 — Document the phantom-floor-fill simulator bug (~30min)
+------------------------------------------------------------------------
+
+Write runbooks/incidents/2026-05-10-phantom-floor-fill.md covering:
+  * Root cause (WS best_bid_ask / price_change events don't carry depth)
+  * The 2 affected windows + the dollar exposure
+  * Defensive fix (DEFAULT_FLOOR_BEST_ASK in fills.py)
+  * Proper fix deferred (track depth across events) — see followup #5
+    in checkpoint_phase_5_settle_resolution_bug.md
+
+------------------------------------------------------------------------
+ITEM 6 — End-of-session vault closeout
+------------------------------------------------------------------------
+
+Standard closeout: session note + checkpoint + MEMORY.md update +
+next-session prompt.
+
+================================================================================
+ANTI-VIBE RULES — relevant for this session
+================================================================================
+
+- Bug → failing test → fix → green (#2): Item 1's dashboard change
+  ships with tests asserting the correction is honored.
+- Kill-switch env: not needed for Items 1, 3 — they're read-only data
+  changes. Item 4 modifies bot behavior; the existing
+  ENSEMBLE_MODE/STRATEGY env vars ARE the kill-switches.
+- Defer bot-affecting deploys: Items 2 + 4 may require a bot restart.
+  Bundle into one restart at the end of Item 4.
+
+================================================================================
+HARD LIMITS
+================================================================================
+
+- Bankroll: $1,000 paper (locked decision #10). Don't promote anything
+  whose CORRECTED cumulative PnL crosses -$150.
+- bot.service stays DISABLED (Phase 6 stub).
+- Funder key NEVER goes to the VPS.
+- Anthropic spend: ~$0.5 cumulative incl this session's projection.
+  Hard cap remains $10/day.
+
+================================================================================
+SESSION BOUNDARY — ENDS WHEN ONE OF
+================================================================================
+
+(a) Items 1-4 shipped, tested, deployed, decision made. ✅ full
+(b) Items 1-3 shipped + Item 4 decision deferred (need more data). ✅ partial
+(c) Three-fix-failed on Item 1 → write incident, abort. 🛑
+(d) Context ≥ 60% before Item 4 completes → close out what's green,
+    write a partial checkpoint, stop. ⏸
+
+================================================================================
+WHY THIS MATTERS
+================================================================================
+
+The data is now CLEAN. The Phase 5 LLM ensemble has been voting in
+shadow mode for ~48h on PM-truth data. We can now make a real
+data-driven decision about whether the LLM adds edge — the very
+question the prior session deferred for lack of clean data.
+
+If gate-mode beats deterministic, the operator gets a more selective
+bot that fires less and wins more. If deterministic-only wins, the
+operator stops paying for LLM tokens with no edge to show for it. The
+key constraint is making the call on STATISTICALLY SOUND DATA — which
+we now have, for the first time since the bot started running this
+strategy class.
