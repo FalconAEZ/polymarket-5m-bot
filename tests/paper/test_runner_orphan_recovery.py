@@ -329,3 +329,103 @@ async def test_recovery_no_gamma_client_skips_safely(tmp_path: Path) -> None:
 
 # Use time only to suppress flake; real test logic doesn't depend on it.
 _ = time
+
+
+# ----------------------------------------------------------------------
+# Periodic orphan-recovery sweep (audit 2026-05-10 16:18 UTC, window
+# 1778428800). Verify: a window that's UNRESOLVABLE at startup gets
+# resolved on a later sweep when gamma catches up.
+# ----------------------------------------------------------------------
+
+
+class _LateResolvingTransport:
+    """Returns 'unresolved' for the first N calls, then resolves to UP.
+
+    Models gamma being slow: the bot's startup-time orphan recovery sees
+    no resolution (calls #1-N return empty), but the periodic sweep
+    later catches the resolution (call #N+1 returns UP).
+    """
+
+    def __init__(self, calls_until_resolved: int) -> None:
+        self._n = 0
+        self._threshold = calls_until_resolved
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        self._n += 1
+        if self._n <= self._threshold:
+            return httpx.Response(200, json=[])  # unresolved
+        payload = [
+            {
+                "markets": [
+                    {
+                        "closed": True,
+                        "outcomes": ["Up", "Down"],
+                        "outcomePrices": ["1", "0"],
+                    }
+                ]
+            }
+        ]
+        return httpx.Response(200, json=payload)
+
+
+@pytest.mark.asyncio
+async def test_periodic_sweep_recovers_orphan_after_gamma_catches_up(
+    tmp_path: Path,
+) -> None:
+    """First _recover_orphan_fires call sees gamma=unresolved → orphan
+    stays. Second call (the periodic sweep would do this in production)
+    sees gamma=UP → settles. Tests the loop body directly; an
+    end-to-end runner test would need feed plumbing to keep the main
+    loop alive long enough for the sweep to fire."""
+    _seed_orphan_fire(tmp_path, decision_id="orphan-late", window_ts=WINDOW_TS, side="UP")
+    log = DecisionLog(root=tmp_path)
+    transport = httpx.MockTransport(_LateResolvingTransport(calls_until_resolved=1))
+    runner = PaperRunner(
+        feeds=[_StubFeed()],
+        strategy=_NoFireStrategy(),
+        side_resolver=_resolver(),
+        shadow_book=ShadowBook(),
+        decision_log=log,
+        clock_ns=lambda: WINDOW_TS_NEXT * 1_000_000_000 + 5_000_000_000,
+        gamma_client=httpx.Client(transport=transport),
+        orphan_recovery_enabled=True,
+        periodic_orphan_recovery_enabled=True,
+    )
+
+    # First call: gamma unresolved → orphan untouched.
+    await runner._recover_orphan_fires()  # type: ignore[attr-defined]
+    events = list(read_jsonl(_list_jsonl(tmp_path)[0]))
+    settled_after_first = [
+        e for e in events if e["kind"] == "settled" and e["decision_id"] == "orphan-late"
+    ]
+    assert len(settled_after_first) == 0, "first sweep should NOT resolve (gamma unresolved)"
+
+    # Second call: same as the periodic sweep would do — gamma now resolves.
+    await runner._recover_orphan_fires()  # type: ignore[attr-defined]
+    events = list(read_jsonl(_list_jsonl(tmp_path)[0]))
+    settled = [e for e in events if e["kind"] == "settled" and e["decision_id"] == "orphan-late"]
+    assert len(settled) == 1, "second sweep (periodic) should have settled the orphan"
+    assert settled[0]["resolution"] == "UP"
+    assert settled[0]["resolution_source"] == "polymarket-recovery"
+
+
+@pytest.mark.asyncio
+async def test_periodic_sweep_disabled_does_not_spawn_loop(tmp_path: Path) -> None:
+    """When periodic_orphan_recovery_enabled=False, the loop task is
+    never spawned (regression check for the kill-switch)."""
+    log = DecisionLog(root=tmp_path)
+    transport = httpx.MockTransport(_gamma_resolves("UP"))
+    runner = PaperRunner(
+        feeds=[_StubFeed()],
+        strategy=_NoFireStrategy(),
+        side_resolver=_resolver(),
+        shadow_book=ShadowBook(),
+        decision_log=log,
+        clock_ns=lambda: WINDOW_TS_NEXT * 1_000_000_000 + 5_000_000_000,
+        gamma_client=httpx.Client(transport=transport),
+        orphan_recovery_enabled=True,
+        periodic_orphan_recovery_enabled=False,
+    )
+
+    await runner.run()
+    assert runner._periodic_orphan_task is None  # type: ignore[attr-defined]

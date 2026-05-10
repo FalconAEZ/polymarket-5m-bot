@@ -76,6 +76,17 @@ DEFAULT_POST_HOC_RETRY_INITIAL_DELAY_S = 300.0
 DEFAULT_POST_HOC_RETRY_INTERVAL_S = 30.0
 DEFAULT_POST_HOC_RETRY_MAX_ATTEMPTS = 50
 
+# Periodic orphan-recovery sweep. Per audit 2026-05-10 16:18 UTC:
+# window 1778428800 was permanently orphaned because the bot was
+# restarted at 16:05:30 mid-settle, gamma still hadn't resolved by the
+# new bot's startup at 16:05:51, orphan-recovery counted it as
+# "unresolved" and never retried. With the periodic sweep, the bot
+# rechecks unresolved orphans every PERIODIC_ORPHAN_RECOVERY_INTERVAL_S
+# seconds — gamma typically resolves within 1-3 min so a 5-min sweep
+# catches everything. Bounded by the date-window of orphan_recovery_
+# lookback_days so the sweep is cheap.
+DEFAULT_PERIODIC_ORPHAN_RECOVERY_INTERVAL_S = 300.0
+
 # Post-hoc retry phantom-detection thresholds — mirror
 # scripts/backfill_phantom_floor_fills.py AUTO_FILL_PRICE_MAX /
 # AUTO_FILL_SIZE_MIN. When the existing fill matches the phantom pattern
@@ -149,6 +160,15 @@ class PaperRunner:
         post_hoc_retry_initial_delay_s: float = DEFAULT_POST_HOC_RETRY_INITIAL_DELAY_S,
         post_hoc_retry_interval_s: float = DEFAULT_POST_HOC_RETRY_INTERVAL_S,
         post_hoc_retry_max_attempts: int = DEFAULT_POST_HOC_RETRY_MAX_ATTEMPTS,
+        # Periodic orphan-recovery sweep — re-runs orphan_recovery on a
+        # timer (default every 5 min). Catches windows that were unresolved
+        # at startup-time but have since become resolvable. Audit
+        # 2026-05-10 16:18 UTC: window 1778428800 was permanently
+        # orphaned by a startup-only recovery; periodic catches that case.
+        # Off-by-default; production wires PERIODIC_ORPHAN_RECOVERY_ENABLED
+        # (default true) in run_paper.py.
+        periodic_orphan_recovery_enabled: bool = False,
+        periodic_orphan_recovery_interval_s: float = DEFAULT_PERIODIC_ORPHAN_RECOVERY_INTERVAL_S,
     ) -> None:
         if not feeds:
             raise ValueError("PaperRunner requires at least one Feed")
@@ -184,6 +204,10 @@ class PaperRunner:
         # shutdown can await them and we don't lose corrections on stop.
         self._pending_post_hoc_retries: set[asyncio.Task[None]] = set()
         self._post_hoc_corrections_total = 0
+        self._periodic_orphan_recovery_enabled = periodic_orphan_recovery_enabled
+        self._periodic_orphan_recovery_interval_s = max(30.0, periodic_orphan_recovery_interval_s)
+        # Tracks the periodic-recovery task so shutdown can cancel + await it.
+        self._periodic_orphan_task: asyncio.Task[None] | None = None
 
     def _alert(self, level: Level, message: str, **fields: str | int | float) -> None:
         try:
@@ -278,6 +302,19 @@ class PaperRunner:
 
         tasks = [asyncio.create_task(pump(f), name=f"paper-pump-{f.name}") for f in self._feeds]
         active = len(tasks)
+        # Periodic orphan-recovery sweep — runs in parallel with the main
+        # consumer loop. Every interval seconds it re-scans for orphans
+        # and resolves any whose gamma has caught up since startup. This
+        # closes the "restart-during-settle while gamma is still pending"
+        # gap (audit 2026-05-10 16:18 UTC, window 1778428800).
+        if (
+            self._periodic_orphan_recovery_enabled
+            and self._orphan_recovery_enabled
+            and self._gamma_client is not None
+        ):
+            self._periodic_orphan_task = asyncio.create_task(
+                self._periodic_orphan_recovery_loop(), name="periodic-orphan-recovery"
+            )
         try:
             while active > 0:
                 if external_stop is not None and external_stop.is_set():
@@ -293,6 +330,14 @@ class PaperRunner:
             for t in tasks:
                 t.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
+            # Cancel + await the periodic orphan-recovery task. Cancel
+            # first so its own asyncio.sleep wakes up as CancelledError;
+            # then gather with return_exceptions so a hung sweep can't
+            # block shutdown.
+            if self._periodic_orphan_task is not None:
+                self._periodic_orphan_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await self._periodic_orphan_task
             # Wait for in-flight background settle tasks before closing the
             # log. Snapshot the set first because each task's done_callback
             # discards itself from the live set, which would mutate during
@@ -578,6 +623,39 @@ class PaperRunner:
                 recovered=recovered,
                 unresolved=unresolved,
             )
+
+    async def _periodic_orphan_recovery_loop(self) -> None:
+        """Re-runs orphan recovery on a timer so windows that were
+        unresolvable at startup get retried as gamma catches up.
+
+        Audit 2026-05-10 16:18 UTC: window 1778428800 was permanently
+        orphaned because the bot was restarted at 16:05:30 mid-settle.
+        At the new bot's startup orphan-recovery (16:05:51) gamma
+        hadn't yet resolved the window, so it was counted "unresolved"
+        and never retried. With this loop, it would have been picked up
+        on the next sweep ~5min later.
+
+        Fire-and-forget exception handling: any failure in a single
+        sweep is logged + alerted but never propagates to the runner.
+        """
+        # Initial delay so the first sweep doesn't pile on top of the
+        # startup-time recovery (which just ran).
+        try:
+            await asyncio.sleep(self._periodic_orphan_recovery_interval_s)
+            while not self._stop.is_set():
+                try:
+                    await self._recover_orphan_fires()
+                except Exception as exc:
+                    LOG.exception("periodic orphan recovery sweep raised; continuing")
+                    self._alert(
+                        Level.WARN,
+                        f"periodic orphan recovery sweep raised: {exc}",
+                    )
+                await asyncio.sleep(self._periodic_orphan_recovery_interval_s)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            LOG.exception("periodic orphan recovery loop crashed; will not restart")
 
     def _prime_active_window_state(self) -> None:
         # Scan today's decision_log for fired records in the CURRENT

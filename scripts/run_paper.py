@@ -483,6 +483,17 @@ async def main() -> int:
     # them via Polymarket Gamma. Default ON (kill-switch via env). Shares
     # the same httpx.Client as instant-settle.
     orphan_recovery_enabled = _env_bool("ORPHAN_RECOVERY_ENABLED", True)
+    # Periodic orphan-recovery sweep — runs orphan_recovery on a timer
+    # (default every 5 min, env override PERIODIC_ORPHAN_RECOVERY_INTERVAL_S).
+    # Catches windows that were unresolvable at startup-time but have
+    # since become resolvable. Audit 2026-05-10: window 1778428800 was
+    # permanently orphaned because the bot was restarted mid-settle and
+    # gamma was still pending at the new bot's startup. Default ON;
+    # kill-switch via PERIODIC_ORPHAN_RECOVERY_ENABLED=0.
+    periodic_orphan_recovery_enabled = _env_bool("PERIODIC_ORPHAN_RECOVERY_ENABLED", True)
+    periodic_orphan_recovery_interval_s = (
+        _env_float("PERIODIC_ORPHAN_RECOVERY_INTERVAL_S", 300.0) or 300.0
+    )
     # Post-hoc gamma re-resolution: when the instant-settle path falls
     # through to chainlink-local, schedule a delayed gamma retry so a
     # later-resolving Polymarket truth can correct the chainlink answer.
@@ -511,6 +522,11 @@ async def main() -> int:
         )
     if orphan_recovery_enabled:
         LOG.info("orphan-fire recovery ENABLED at startup")
+    if periodic_orphan_recovery_enabled:
+        LOG.info(
+            "periodic orphan-recovery ENABLED: interval=%ss",
+            periodic_orphan_recovery_interval_s,
+        )
     if post_hoc_retry_enabled:
         LOG.info(
             "post-hoc gamma retry ENABLED: initial_delay=%ss interval=%ss max_attempts=%d",
@@ -535,6 +551,8 @@ async def main() -> int:
         post_hoc_retry_initial_delay_s=post_hoc_retry_initial_delay_s,
         post_hoc_retry_interval_s=post_hoc_retry_interval_s,
         post_hoc_retry_max_attempts=post_hoc_retry_max_attempts,
+        periodic_orphan_recovery_enabled=periodic_orphan_recovery_enabled,
+        periodic_orphan_recovery_interval_s=periodic_orphan_recovery_interval_s,
     )
 
     stop_event = asyncio.Event()
