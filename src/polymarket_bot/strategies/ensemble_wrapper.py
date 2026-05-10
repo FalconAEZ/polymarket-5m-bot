@@ -52,6 +52,7 @@ from polymarket_bot.backtest.types import (
     SpotTick,
     WindowBoundary,
 )
+from polymarket_bot.resolver import WINDOW_SECONDS
 from polymarket_bot.strategies.protocol import Strategy
 from polymarket_bot.strategies.regime_detector import RegimeDetector
 from polymarket_bot.tiers import TIER_LABELS, tier_label_for_price
@@ -495,7 +496,7 @@ class EnsembleWrapper:
             oracle_age_s = 999.0
         seconds_to_close = max(
             0,
-            (self._window_ts + 300) - now_ns // 1_000_000_000,
+            (self._window_ts + WINDOW_SECONDS) - now_ns // 1_000_000_000,
         )
         cutoff = now_ns - self._recent_window_s * 1_000_000_000
         recent = [p for ts, p in self._recent_spot if ts >= cutoff]

@@ -1,0 +1,121 @@
+Subject: Phase 18B — Meta-decide outcome telemetry (small precursor to Phase 19)
+       (audit-spawned: 2026-05-12 deep-dive found 22.1% meta=None rate
+       with no journal trail; 30 cases today had all 3 specialists
+       agreeing UP but meta returned None — root cause unknown)
+
+This is a SMALL phase (~30 min, observability-only) carved out of the
+deep-dive audit findings. It's a precursor to Phase 19 (async LLM
+pre-compute) because Phase 19's design needs to know *why* meta returns
+None today.
+
+================================================================================
+THE PROBLEM
+================================================================================
+
+`scripts/audit_regime_wr.py` + journal scan on 2026-05-10 (~5.5h gate-
+mode + 25min post-restart):
+
+  ensemble_vote total: 226
+    timeout (LLM >12s):       20 (8.8%)
+    meta=None (other):        30 (13.3%)  ← uninvestigated
+    meta=ABSTAIN:             85 (37.6%)
+    meta=FIRE:                91 (40.3%)
+
+The 30 meta=None cases all had 3 valid specialist votes agreeing on
+side. Meta call WAS attempted (would have raised + LOG.exception
+otherwise — that path is clean) but returned None.
+
+Sonnet's `_meta.decide()` returns None on:
+  - Anthropic API error (LOG.warning, INFO level)
+  - Refusal (LOG.info)
+  - No text content (LOG.info)
+  - ValidationError after string-truncation recovery (LOG.info)
+  - Budget exceeded (would propagate, not return None)
+
+We don't know which path the 30 cases took. Without that breakdown:
+  - Can't tune the LLM prompt to reduce refusal/validation rates
+  - Can't decide if Phase 19 async pre-compute is the right shape
+  - Each meta=None is a fire that DIDN'T get LLM-gated (gate-mode
+    fallback policy: meta=None → honor base = fire as-is)
+
+================================================================================
+THE WORK
+================================================================================
+
+------------------------------------------------------------------------
+ITEM 1 — Design (~10 min)
+------------------------------------------------------------------------
+
+Write design/phase-18b-meta-observability.md. Two changes:
+
+  (a) `AnthropicAdapter` returns a tagged outcome instead of `None | T`.
+      Probably: `tuple[T | None, TokenUsage, Literal['ok',
+      'api_error', 'refusal', 'no_text', 'validation_failed',
+      'string_too_long_retry_failed']]` or similar.
+  (b) `MetaDecider.decide()` propagates that tag.
+  (c) `EnsembleWrapper._run_ensemble` writes the tag into the
+      `ensemble_vote` JSONL record as a new `meta_outcome` field.
+
+Out of scope: changing the FALLBACK behavior (gate-mode meta=None →
+candidate). That's anti-vibe — purely additive observability.
+
+------------------------------------------------------------------------
+ITEM 2 — Implement + test (~15 min)
+------------------------------------------------------------------------
+
+Files:
+  - src/polymarket_bot/agents/anthropic_client.py — return outcome tag
+    alongside the parsed object
+  - src/polymarket_bot/agents/meta.py — propagate
+  - src/polymarket_bot/agents/protocol.py — Maybe add outcome type
+  - src/polymarket_bot/strategies/ensemble_wrapper.py — log meta_outcome
+  - tests/agents/test_anthropic_client.py — assert outcome tags
+  - tests/strategies/test_ensemble_wrapper.py — assert log field present
+
+Gates: ruff + mypy --strict + pytest + lint-imports all green.
+
+------------------------------------------------------------------------
+ITEM 3 — Deploy + analyse (~5 min)
+------------------------------------------------------------------------
+
+VPS pull + restart bot-staging (small change, low risk). Tail
+state/ensemble/<today>.jsonl for new `meta_outcome` field. After 24h:
+re-run a meta-outcome breakdown audit and decide whether Phase 19
+should target (a) prompt improvements vs (b) async pre-compute vs (c)
+both.
+
+================================================================================
+WHY THIS PHASE BEFORE PHASE 17/18
+================================================================================
+
+Phase 17 (sizing modes) + Phase 18 (Kelly) are decision #9 revisits —
+they require operator decisions, not data. This phase generates the
+DATA needed to design Phase 19 correctly. Cheap, low-risk, additive.
+
+Optional: bundle into Phase 17 prep so it ships dark alongside.
+
+================================================================================
+SESSION BOUNDARY
+================================================================================
+
+(a) Items 1-3 shipped: meta_outcome field live in JSONL log, design
+    locked, deployed. ✅ full
+(b) Items 1-2 shipped, deploy deferred. ✅ partial
+(c) Discovery that meta=None root cause is something else entirely
+    (e.g., a code bug, not an API behavior). Pivot to fix.
+
+================================================================================
+WHAT THIS PHASE UNLOCKS
+================================================================================
+
+- Phase 19 (async LLM pre-compute) design has ground-truth data on
+  *why* current LLM calls fail.
+- If 30% of meta=None turns out to be validation failures, the fix is
+  prompt tuning — much cheaper than async pre-compute.
+- If 30% is API errors, the fix is a retry layer.
+- If 30% is refusals, the fix is prompt-stage routing (different
+  prompt structure that Sonnet can answer).
+
+The deep-dive audit identified this as the highest-information
+low-cost intervention. Do it before any sizing or async pre-compute
+work.
