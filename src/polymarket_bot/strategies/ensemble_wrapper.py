@@ -228,22 +228,36 @@ class EnsembleWrapper:
             self._window_open_oracle = None
 
     def _build_context(self, *, now_ns: int, candidate: Decision) -> AgentContext | None:
-        if (
-            self._window_ts is None
-            or self._spot_now is None
-            or self._oracle_last is None
-            or self._oracle_last_ns is None
-            or self._window_open_spot is None
-            or self._window_open_oracle is None
-        ):
+        # Hard requirements: window known + spot known on both sides of
+        # the window. Without these the bot literally can't have made a
+        # candidate fire so this branch is true cold-start.
+        if self._window_ts is None or self._spot_now is None or self._window_open_spot is None:
             return None
+        # Soft requirements: oracle. Chainlink heartbeats ~33s, so on a
+        # just-restarted bot or a quiet window we may have no oracle
+        # reading yet. Rather than skip the LLM ensemble entirely (which
+        # was the prior behavior — every "cold-start" log ate a fire's
+        # vote), fall back to spot as a proxy. The oracle_gap specialist
+        # can recognise the staleness via oracle_age_s and abstain; the
+        # orderbook + momentum specialists don't need oracle data at all.
+        oracle_last = self._oracle_last if self._oracle_last is not None else self._spot_now
+        oracle_at_window_open = (
+            self._window_open_oracle
+            if self._window_open_oracle is not None
+            else self._window_open_spot
+        )
+        if self._oracle_last_ns is not None:
+            oracle_age_s = (now_ns - self._oracle_last_ns) / 1_000_000_000
+        else:
+            # Very stale signal value; oracle_gap agent treats this as
+            # "no real oracle, abstain".
+            oracle_age_s = 999.0
         seconds_to_close = max(
             0,
             (self._window_ts + 300) - now_ns // 1_000_000_000,
         )
         cutoff = now_ns - self._recent_window_s * 1_000_000_000
         recent = [p for ts, p in self._recent_spot if ts >= cutoff]
-        oracle_age_s = (now_ns - self._oracle_last_ns) / 1_000_000_000
         bid_size_up, ask_size_up = self._top_size_for_side.get("UP", (0.0, 0.0))
         bid_size_down, ask_size_down = self._top_size_for_side.get("DOWN", (0.0, 0.0))
         # Book imbalance: (bid_total - ask_total) / (bid_total + ask_total).
@@ -261,8 +275,8 @@ class EnsembleWrapper:
             spot_now=self._spot_now,
             spot_at_window_open=self._window_open_spot,
             spot_recent_60s=recent,
-            oracle_last=self._oracle_last,
-            oracle_at_window_open=self._window_open_oracle,
+            oracle_last=oracle_last,
+            oracle_at_window_open=oracle_at_window_open,
             oracle_age_s=oracle_age_s,
             best_bid_up=self._best_bid_for_side.get("UP"),
             best_ask_up=self._best_ask_for_side.get("UP"),
