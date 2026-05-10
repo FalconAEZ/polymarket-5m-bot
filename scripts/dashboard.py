@@ -34,6 +34,8 @@ from polymarket_bot.dashboard.loaders import (  # noqa: E402
     HealthSnapshot,
     ProcessStatus,
     aggregate_pnl,
+    apply_settled_corrections,
+    compute_scenarios,
     fire_rate_per_hour,
     latest_active_mode,
     load_decisions,
@@ -899,6 +901,56 @@ def _render_tier_panel(rows: list[DecisionRow]) -> None:
     )
 
 
+def _render_scenarios_panel(rows: list[DecisionRow]) -> None:
+    """Phase 16: project today's realised PnL onto alternative starting
+    bankrolls. Fixed-stake projection ($5/trade per locked decision #9)
+    so absolute PnL is constant across scenarios — Phase 17 will enable
+    fractional sizing where this no longer holds."""
+    scenarios = compute_scenarios(rows)
+    st.html(
+        '<div class="pmb-section"><div class="pmb-card__title">'
+        '💰 Bankroll scenarios <span class="pmb-card__sub">'
+        "fixed-stake projection — Phase 17 enables fractional</span></div></div>"
+    )
+    if not scenarios or scenarios[0].n_settled == 0:
+        st.html('<div class="pmb-empty">No settled trades yet to project.</div>')
+        return
+    df = pd.DataFrame(
+        [
+            {
+                "Start": s.start_bankroll_usd,
+                "Realised PnL": s.realized_pnl_usd,
+                "End": s.end_bankroll_usd,
+                "Δ%": (s.end_bankroll_usd - s.start_bankroll_usd) / s.start_bankroll_usd * 100
+                if s.start_bankroll_usd > 0
+                else None,
+                "Bankrupt": "⚠ yes" if s.is_bankrupt else "",
+            }
+            for s in scenarios
+        ]
+    )
+    st.dataframe(
+        df,
+        width="stretch",
+        hide_index=True,
+        column_config={
+            "Start": st.column_config.NumberColumn("Start $", format="$%.0f", width="small"),
+            "Realised PnL": st.column_config.NumberColumn(
+                "Realised PnL", format="$%+.2f", width="small"
+            ),
+            "End": st.column_config.NumberColumn("End $", format="$%+.2f", width="small"),
+            "Δ%": st.column_config.NumberColumn("Δ%", format="%+.2f%%", width="small"),
+            "Bankrupt": st.column_config.TextColumn("Bankrupt", width="small"),
+        },
+    )
+    head = scenarios[0]
+    st.caption(
+        f"Stake fixed at ${head.fixed_stake_usd:.2f}/trade · "
+        f"{head.n_settled} settled · "
+        f"locked decision #10 ($1,000 paper) is the live bankroll — other rows are model-only"
+    )
+
+
 def main() -> None:
     st.set_page_config(
         page_title="Polymarket Bot — Operations",
@@ -935,6 +987,15 @@ def main() -> None:
     capture, paper = load_process_status(state_dir)
     snap = load_feeds_health(state_dir)
     rows = load_decisions(state_dir / DECISIONS_SUBDIR, since_utc_date=since or None)
+    # Phase 15.5 Item 1 / Phase 16 fix: Streamlit dashboard previously
+    # consumed the raw `pnl_usd` field, double-counting the May 9
+    # chainlink-resolver-mismatch trades that the bot later neutralized
+    # via `settled_correction` records. Apply the corrections overlay
+    # here so KPI + chart + per-tier + scenarios panels all read the
+    # SAME corrected number the production v4 dashboard reports.
+    rows = apply_settled_corrections(
+        rows, state_dir / DECISIONS_SUBDIR, since_utc_date=since or None
+    )
     issues = _detect_incidents(capture, paper, snap, state_dir / PAPER_LOG)
 
     # ABOVE THE FOLD — fits in a single viewport (~900px tall).
@@ -963,6 +1024,7 @@ def main() -> None:
     # mode==aggressive) + per-tier discipline breakdown.
     _render_aggressive_trip_wires(rows)
     _render_tier_panel(rows)
+    _render_scenarios_panel(rows)
 
     # Historical reference (Phase 3 ensemble that was CUT) — collapsed by
     # default so the live above-fold content fills the viewport. Operator

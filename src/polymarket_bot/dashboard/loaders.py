@@ -14,7 +14,7 @@ import json
 import os
 import re
 import subprocess
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -584,6 +584,67 @@ def latest_active_mode(rows: Iterable[DecisionRow]) -> str | None:
         return None
     most_recent = max(rows_list, key=lambda r: r.decision_dt_utc)
     return most_recent.mode or most_recent.strategy
+
+
+SCENARIO_BANKROLLS_USD: tuple[float, ...] = (500.0, 1000.0, 2000.0, 5000.0, 10000.0)
+
+
+@dataclass(frozen=True, slots=True)
+class ScenarioResult:
+    """One row of the Phase 16 bankroll-display scenarios panel.
+
+    Stake is fixed at ``fixed_stake_usd`` per trade (locked decision #9),
+    so realised PnL is INDEPENDENT of the starting bankroll. The end
+    balance is simply ``start_bankroll_usd + realized_pnl_usd``.
+    `is_bankrupt` flags scenarios where the small starting bankroll
+    cannot absorb the realised loss; the panel still shows the negative
+    number rather than clamping to 0.
+    """
+
+    start_bankroll_usd: float
+    end_bankroll_usd: float
+    realized_pnl_usd: float
+    n_settled: int
+    fixed_stake_usd: float
+    is_bankrupt: bool
+
+
+def compute_scenarios(
+    rows: Iterable[DecisionRow],
+    scenarios: Sequence[float] = SCENARIO_BANKROLLS_USD,
+    *,
+    fixed_stake_usd: float = 5.0,
+) -> list[ScenarioResult]:
+    """Project today's realised PnL onto alternative starting bankrolls.
+
+    Caller is expected to pass corrections-applied rows (i.e. the output
+    of ``apply_settled_corrections(load_decisions(...), ...)`` — see
+    design/phase-16-bankroll-display.md §"hidden requirement"). Passing
+    raw `load_decisions` output produces a phantom-inflated projection
+    that double-counts the May 9 chainlink-resolver-mismatch class.
+
+    Stake is fixed (locked decision #9), so the PnL added to each
+    scenario is the SAME absolute amount — scenarios differ only in
+    starting balance. ``is_bankrupt`` flags scenarios pushed below 0;
+    the result reflects the negative balance rather than clamping.
+    """
+    rows_list = list(rows)
+    realized = sum((r.pnl_usd or 0.0) for r in rows_list if r.pnl_usd is not None)
+    n_settled = sum(1 for r in rows_list if r.pnl_usd is not None)
+    out: list[ScenarioResult] = []
+    for start in scenarios:
+        end = start + realized
+        out.append(
+            ScenarioResult(
+                start_bankroll_usd=float(start),
+                end_bankroll_usd=float(end),
+                realized_pnl_usd=float(realized),
+                n_settled=n_settled,
+                fixed_stake_usd=fixed_stake_usd,
+                is_bankrupt=end <= 0,
+            )
+        )
+    return out
 
 
 def aggregate_pnl(rows: Iterable[DecisionRow]) -> dict[str, float | int | None]:

@@ -16,6 +16,8 @@ from polymarket_bot._paper.decision_log import DecisionLog
 from polymarket_bot.backtest.types import Decision, Fill
 from polymarket_bot.dashboard.loaders import (
     aggregate_pnl,
+    apply_settled_corrections,
+    compute_scenarios,
     load_decisions,
     load_feeds_health,
     load_process_status,
@@ -367,3 +369,170 @@ def test_aggregate_pnl_with_rows(tmp_path: Path) -> None:
     assert isinstance(win_rate, float)
     assert isinstance(pnl, float)
     assert abs(pnl - -0.6) < 1e-9  # 4.4 + -5.0 with float drift
+
+
+# ---------- Phase 16: compute_scenarios + Phase 15.5 corrections regression ----
+
+
+def _settled_rowset(tmp_path: Path, *, won: bool, pnl: float) -> Path:
+    """Helper: write one fired+settled pair returning ``pnl`` PnL.
+
+    Returns the decisions/ directory path so the caller can hand it
+    straight to `load_decisions` and `apply_settled_corrections`.
+    """
+    log_dir = tmp_path / "decisions"
+    log = DecisionLog(root=log_dir)
+    did = log.record_fired(
+        decision=_decision(),
+        side="UP",
+        window_ts=WINDOW_TS,
+        snapshot={},
+        composite_pct=0.6,
+        fill=_fill(),
+    )
+    log.record_settled(
+        decision_id=did,
+        window_ts=WINDOW_TS,
+        settled_ts_ns=(WINDOW_TS + 300) * 1_000_000_000,
+        open_oracle=67400.0,
+        close_oracle=67500.0,
+        resolution="UP" if won else "DOWN",
+        fill_at_settle=_fill(),
+        pnl_usd=pnl,
+    )
+    log.close()
+    return log_dir
+
+
+def test_scenarios_at_1k_matches_actual_pnl(tmp_path: Path) -> None:
+    """Phase 16 master-plan invariant #1: the $1,000 scenario equals
+    realised PnL + $1,000. compute_scenarios must agree with
+    aggregate_pnl on the same row set."""
+    log_dir = _settled_rowset(tmp_path, won=True, pnl=4.4)
+    rows = load_decisions(log_dir)
+    scenarios = compute_scenarios(rows)
+    one_k = next(s for s in scenarios if s.start_bankroll_usd == 1000.0)
+    agg_pnl = aggregate_pnl(rows)["total_pnl_usd"]
+    assert isinstance(agg_pnl, float)
+    assert abs(one_k.realized_pnl_usd - agg_pnl) < 1e-9
+    assert abs(one_k.end_bankroll_usd - (1000.0 + agg_pnl)) < 1e-9
+    assert one_k.is_bankrupt is False
+
+
+def test_scenarios_scale_linearly_at_fixed_stake(tmp_path: Path) -> None:
+    """Phase 16 master-plan invariant #2: at fixed stake, the delta
+    (end - start) is the same for every scenario. Critical because the
+    bot fires $5 per trade regardless of bankroll — the realised PnL
+    can't scale with starting bankroll until Phase 17 enables
+    fractional sizing.
+    """
+    log_dir = _settled_rowset(tmp_path, won=True, pnl=4.4)
+    rows = load_decisions(log_dir)
+    scenarios = compute_scenarios(rows)
+    deltas = [s.end_bankroll_usd - s.start_bankroll_usd for s in scenarios]
+    assert len(set(round(d, 9) for d in deltas)) == 1, (
+        f"deltas differ across scenarios: {deltas} — compute_scenarios is "
+        "incorrectly scaling PnL by start bankroll (Phase 17 territory)"
+    )
+
+
+def test_scenarios_handles_negative_pnl_without_clamping(tmp_path: Path) -> None:
+    """Phase 16 invariant #3: when realised PnL pushes a small starting
+    bankroll below 0, the scenario reflects the negative number
+    (operator needs to SEE the bankruptcy threshold). is_bankrupt flags
+    the row; we do NOT clamp to 0."""
+    # Synth: 200 losses at $5 each ⇒ -$1000 PnL. The $500 scenario goes
+    # to -$500; the $1k scenario stops exactly at 0 (bankrupt edge);
+    # the $10k scenario is fine.
+    log_dir = tmp_path / "decisions"
+    log = DecisionLog(root=log_dir)
+    for i in range(200):
+        did = log.record_fired(
+            decision=_decision(ts_offset_ns=i * 10_000_000_000),
+            side="UP",
+            window_ts=WINDOW_TS + i * 300,
+            snapshot={},
+            composite_pct=0.6,
+            fill=_fill(),
+        )
+        log.record_settled(
+            decision_id=did,
+            window_ts=WINDOW_TS + i * 300,
+            settled_ts_ns=(WINDOW_TS + (i + 1) * 300) * 1_000_000_000,
+            open_oracle=67400.0,
+            close_oracle=67500.0,
+            resolution="DOWN",  # bot fires UP → DOWN resolution = loss
+            fill_at_settle=_fill(),
+            pnl_usd=-5.0,
+        )
+    log.close()
+    rows = load_decisions(log_dir)
+    scenarios = compute_scenarios(rows, scenarios=(500.0, 1000.0, 10000.0))
+    by_start = {s.start_bankroll_usd: s for s in scenarios}
+    assert by_start[500.0].end_bankroll_usd == -500.0
+    assert by_start[500.0].is_bankrupt is True
+    assert by_start[1000.0].end_bankroll_usd == 0.0
+    assert by_start[1000.0].is_bankrupt is True  # at 0 = bankrupt edge
+    assert by_start[10000.0].end_bankroll_usd == 9000.0
+    assert by_start[10000.0].is_bankrupt is False
+
+
+def test_apply_settled_corrections_overlays_corrected_pnl(tmp_path: Path) -> None:
+    """Phase 15.5 Item 1 regression: this safety net was missing.
+
+    When a settled record reports `resolution=UP / pnl=+$X` but a later
+    `settled_correction` flips it to `DOWN / -$X` (the May 9 chainlink-
+    resolver-mismatch class), the dashboard MUST see the corrected
+    value. Without this overlay every audit and the Streamlit
+    dashboard quote inflated phantom PnL — which is exactly what
+    the Phase 14 per-tier audit did when it quoted +$2,504 of "phantom
+    profit" that the v4 production dashboard correctly excluded."""
+    log_dir = tmp_path / "decisions"
+    log = DecisionLog(root=log_dir)
+    did = log.record_fired(
+        decision=_decision(),
+        side="UP",
+        window_ts=WINDOW_TS,
+        snapshot={},
+        composite_pct=0.6,
+        fill=_fill(),
+    )
+    log.record_settled(
+        decision_id=did,
+        window_ts=WINDOW_TS,
+        settled_ts_ns=(WINDOW_TS + 300) * 1_000_000_000,
+        open_oracle=67400.0,
+        close_oracle=67500.0,
+        resolution="UP",  # chainlink-local resolver said UP won
+        fill_at_settle=_fill(),
+        pnl_usd=4.4,  # bot wrote +$4.4 win
+    )
+    # Polymarket-post-hoc retry later determined the chainlink resolver
+    # was wrong — the window actually went DOWN. PnL flips to -$5.
+    log.record_settled_correction(
+        decision_id=did,
+        window_ts=WINDOW_TS,
+        original_settled_ts_ns=(WINDOW_TS + 300) * 1_000_000_000,
+        original_resolution="UP",
+        original_pnl_usd=4.4,
+        corrected_resolution="DOWN",
+        corrected_pnl_usd=-5.0,
+        corrected_ts_ns=(WINDOW_TS + 600) * 1_000_000_000,
+        fill_at_settle=_fill(),
+    )
+    log.close()
+    rows = load_decisions(log_dir)
+    assert len(rows) == 1
+    naive_pnl = rows[0].pnl_usd
+    assert naive_pnl == 4.4  # raw reader is still broken — that's the bug
+
+    overlaid = apply_settled_corrections(rows, log_dir)
+    assert len(overlaid) == 1
+    assert overlaid[0].pnl_usd == -5.0
+    assert overlaid[0].resolution == "DOWN"
+
+    # And the downstream compute_scenarios projects the CORRECTED value.
+    scenarios = compute_scenarios(overlaid)
+    one_k = next(s for s in scenarios if s.start_bankroll_usd == 1000.0)
+    assert one_k.realized_pnl_usd == -5.0
+    assert one_k.end_bankroll_usd == 995.0
