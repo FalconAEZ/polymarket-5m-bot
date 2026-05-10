@@ -28,6 +28,7 @@ from polymarket_bot.agents.protocol import (
     AgentContext,
     AgentVote,
     MetaDecision,
+    MetaOutcome,
 )
 from polymarket_bot.backtest.types import (
     BookUpdate,
@@ -94,15 +95,30 @@ class _StubAgent:
 
 
 class _StubMeta:
-    """Returns canned MetaDecision (or None) on each .decide() call."""
+    """Returns canned MetaDecision (or None) + optional outcome tag on
+    each .decide() call. Phase 18B: meta now returns (decision, outcome);
+    stub auto-derives ``ok`` for a returned decision, ``validation_failed``
+    for None, unless an explicit outcome was supplied at construction.
+    """
 
-    def __init__(self, decision: MetaDecision | None) -> None:
+    def __init__(
+        self,
+        decision: MetaDecision | None,
+        outcome: MetaOutcome | None = None,
+    ) -> None:
         self.name = "meta-stub"
         self.model = "sonnet-stub"
         self._decision = decision
+        self._outcome: MetaOutcome = (
+            outcome
+            if outcome is not None
+            else ("ok" if decision is not None else "validation_failed")
+        )
 
-    async def decide(self, ctx: AgentContext, votes: dict[str, AgentVote]) -> MetaDecision | None:
-        return self._decision
+    async def decide(
+        self, ctx: AgentContext, votes: dict[str, AgentVote]
+    ) -> tuple[MetaDecision | None, MetaOutcome]:
+        return self._decision, self._outcome
 
 
 def _spot(price: float, ts_offset_s: int) -> SpotTick:
@@ -308,6 +324,77 @@ async def test_gate_falls_back_to_base_when_meta_is_none(tmp_path: Path) -> None
 
 
 @pytest.mark.asyncio
+async def test_ensemble_vote_log_carries_meta_outcome_tag(tmp_path: Path) -> None:
+    """Phase 18B: every ensemble_vote JSONL record carries a meta_outcome
+    field tagging the failure (or success) class. Two cases here:
+
+      1. Happy path with a meta=FIRE decision → outcome="ok".
+      2. Refusal path with meta=None (StubMeta constructed with explicit
+         tag) → outcome="refusal". Same gate-mode fallback as before, but
+         the audit script now sees WHICH failure caused the fallback.
+    """
+    # Case 1 — happy path emits "ok".
+    happy = EnsembleWrapper(
+        base=_StubBaseStrategy(side="UP"),
+        specialists=[
+            _StubAgent("orderbook", AgentVote(side="UP", confidence=0.8, rationale="o")),
+            _StubAgent("oracle_gap", AgentVote(side="UP", confidence=0.7, rationale="og")),
+        ],
+        meta=_StubMeta(MetaDecision(action="FIRE", side="UP", confidence=0.85, rationale="m")),
+        mode="gate",
+        log_root=tmp_path,
+    )
+    await _drive(happy)
+    happy_log = _read_jsonl_lines(_list_jsonl(tmp_path)[0])
+    assert happy_log[-1]["meta_outcome"] == "ok"
+
+    # Case 2 — refusal: meta returned None with an explicit tag from the
+    # adapter. The wrapper must surface that tag (not coarsen to None /
+    # "validation_failed").
+    refused_dir = tmp_path / "refused"
+    refused_dir.mkdir()
+    refused = EnsembleWrapper(
+        base=_StubBaseStrategy(side="UP"),
+        specialists=[
+            _StubAgent("orderbook", AgentVote(side="UP", confidence=0.8, rationale="o")),
+            _StubAgent("oracle_gap", AgentVote(side="UP", confidence=0.7, rationale="og")),
+        ],
+        meta=_StubMeta(None, outcome="refusal"),
+        mode="gate",
+        log_root=refused_dir,
+    )
+    refused_decision = await _drive(refused)
+    assert refused_decision is not None, "gate-mode falls back to base on meta=None"
+    refused_log = _read_jsonl_lines(_list_jsonl(refused_dir)[0])
+    assert refused_log[-1]["meta"] is None
+    assert refused_log[-1]["meta_outcome"] == "refusal"
+
+
+@pytest.mark.asyncio
+async def test_ensemble_vote_log_tags_no_meta_call_when_too_few_votes(
+    tmp_path: Path,
+) -> None:
+    """Phase 18B: when fewer than MIN_VOTES_FOR_META specialists vote,
+    meta is never called. The new tag is ``"no_meta_call"`` so audits can
+    distinguish "LLM failed" from "we never even asked"."""
+    wrapper = EnsembleWrapper(
+        base=_StubBaseStrategy(side="UP"),
+        specialists=[
+            _StubAgent("orderbook", None),
+            _StubAgent("oracle_gap", None),
+            _StubAgent("momentum", None),
+        ],
+        meta=_StubMeta(MetaDecision(action="FIRE", side="UP", confidence=0.9, rationale="m")),
+        mode="shadow",
+        log_root=tmp_path,
+    )
+    await _drive(wrapper)
+    log = _read_jsonl_lines(_list_jsonl(tmp_path)[0])
+    assert log[-1]["meta"] is None
+    assert log[-1]["meta_outcome"] == "no_meta_call"
+
+
+@pytest.mark.asyncio
 async def test_shadow_mode_passes_through_when_too_few_votes(tmp_path: Path) -> None:
     """Same setup but shadow mode: base verdict still wins."""
     wrapper = EnsembleWrapper(
@@ -450,11 +537,13 @@ class _SlowStubMeta:
         self._decision = decision
         self._delay_s = delay_s
 
-    async def decide(self, ctx: AgentContext, votes: dict[str, AgentVote]) -> MetaDecision:
+    async def decide(
+        self, ctx: AgentContext, votes: dict[str, AgentVote]
+    ) -> tuple[MetaDecision | None, MetaOutcome]:
         import asyncio as _asyncio
 
         await _asyncio.sleep(self._delay_s)
-        return self._decision
+        return self._decision, "ok"
 
 
 @pytest.mark.asyncio
@@ -555,9 +644,12 @@ class _SleepyStubMeta:
         self._decision = decision
         self._sleep_s = sleep_s
 
-    async def decide(self, ctx: AgentContext, votes: dict[str, AgentVote]) -> MetaDecision | None:
+    async def decide(
+        self, ctx: AgentContext, votes: dict[str, AgentVote]
+    ) -> tuple[MetaDecision | None, MetaOutcome]:
         await asyncio.sleep(self._sleep_s)
-        return self._decision
+        outcome: MetaOutcome = "ok" if self._decision is not None else "validation_failed"
+        return self._decision, outcome
 
 
 @pytest.mark.asyncio
@@ -595,6 +687,11 @@ async def test_gate_timeout_falls_back_to_base(tmp_path: Path) -> None:
     assert len(timeout_logs) == 1
     assert timeout_logs[0]["meta"] is None
     assert timeout_logs[0]["timeout_s"] == 0.1
+    # Phase 18B: every ensemble_vote record carries a meta_outcome tag so
+    # post-hoc audits can attribute meta=None to its source. Timeout path
+    # uses the dedicated "timeout" tag — same group as the legacy
+    # timeout_s field, just easier to GROUP BY.
+    assert timeout_logs[0]["meta_outcome"] == "timeout"
 
 
 # ----------------------------------------------------------------------

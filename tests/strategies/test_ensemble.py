@@ -33,6 +33,7 @@ from polymarket_bot.agents.protocol import (
     AgentContext,
     AgentVote,
     MetaDecision,
+    MetaOutcome,
 )
 from polymarket_bot.backtest.types import (
     BookUpdate,
@@ -87,9 +88,12 @@ class _FakeMeta:
         self._decision = decision
         self.calls: list[tuple[AgentContext, dict[str, AgentVote]]] = []
 
-    async def decide(self, ctx: AgentContext, votes: dict[str, AgentVote]) -> MetaDecision | None:
+    async def decide(
+        self, ctx: AgentContext, votes: dict[str, AgentVote]
+    ) -> tuple[MetaDecision | None, MetaOutcome]:
         self.calls.append((ctx, dict(votes)))
-        return self._decision
+        outcome: MetaOutcome = "ok" if self._decision is not None else "validation_failed"
+        return self._decision, outcome
 
 
 # --- fixture builders ---------------------------------------------------

@@ -174,7 +174,11 @@ class EnsembleStrategy:
 
         meta_decision: MetaDecision | None = None
         if len(votes) >= MIN_VOTES_FOR_META:
-            meta_decision = await self._meta.decide(ctx, votes)
+            # Phase 18B: meta.decide() returns (decision, outcome). The
+            # legacy EnsembleStrategy here only consumes the decision —
+            # outcome telemetry lives on the EnsembleWrapper that writes
+            # the ensemble_vote JSONL log. Drop the tag.
+            meta_decision, _outcome = await self._meta.decide(ctx, votes)
 
         return self._compose_decision(
             now_ts_utc_ns=now_ts_utc_ns,

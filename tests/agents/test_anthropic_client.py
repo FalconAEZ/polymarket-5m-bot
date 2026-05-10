@@ -82,7 +82,7 @@ async def test_parses_valid_response_into_pydantic_model() -> None:
         client=_FakeAnthropicClient(fake),  # type: ignore[arg-type]
     )
 
-    parsed, usage = await adapter.parse(
+    parsed, usage, outcome = await adapter.parse(
         model="claude-haiku-4-5",
         system=[{"type": "text", "text": "system"}],
         user="ctx",
@@ -93,6 +93,7 @@ async def test_parses_valid_response_into_pydantic_model() -> None:
     assert usage.input_tokens == 100
     assert usage.output_tokens == 50
     assert adapter.budget.spent_usd > 0
+    assert outcome == "ok"
 
 
 async def test_returns_none_on_refusal() -> None:
@@ -107,13 +108,14 @@ async def test_returns_none_on_refusal() -> None:
         client=_FakeAnthropicClient(fake),  # type: ignore[arg-type]
     )
 
-    parsed, _usage = await adapter.parse(
+    parsed, _usage, outcome = await adapter.parse(
         model="claude-haiku-4-5",
         system=[{"type": "text", "text": "system"}],
         user="ctx",
         output_format=AgentVote,
     )
     assert parsed is None
+    assert outcome == "refusal"
 
 
 async def test_returns_none_on_schema_failure() -> None:
@@ -125,13 +127,14 @@ async def test_returns_none_on_schema_failure() -> None:
         client=_FakeAnthropicClient(fake),  # type: ignore[arg-type]
     )
 
-    parsed, _usage = await adapter.parse(
+    parsed, _usage, outcome = await adapter.parse(
         model="claude-haiku-4-5",
         system=[{"type": "text", "text": "system"}],
         user="ctx",
         output_format=AgentVote,
     )
     assert parsed is None
+    assert outcome == "validation_failed"
 
 
 async def test_returns_none_on_no_text_content() -> None:
@@ -141,13 +144,14 @@ async def test_returns_none_on_no_text_content() -> None:
         client=_FakeAnthropicClient(fake),  # type: ignore[arg-type]
     )
 
-    parsed, _usage = await adapter.parse(
+    parsed, _usage, outcome = await adapter.parse(
         model="claude-haiku-4-5",
         system=[{"type": "text", "text": "system"}],
         user="ctx",
         output_format=AgentVote,
     )
     assert parsed is None
+    assert outcome == "no_text"
 
 
 async def test_returns_none_on_api_exception() -> None:
@@ -160,7 +164,7 @@ async def test_returns_none_on_api_exception() -> None:
         client=_FakeAnthropicClient(fake),  # type: ignore[arg-type]
     )
 
-    parsed, usage = await adapter.parse(
+    parsed, usage, outcome = await adapter.parse(
         model="claude-haiku-4-5",
         system=[{"type": "text", "text": "system"}],
         user="ctx",
@@ -168,6 +172,7 @@ async def test_returns_none_on_api_exception() -> None:
     )
     assert parsed is None
     assert usage.input_tokens == 0  # no tokens charged on API-error path
+    assert outcome == "api_error"
 
 
 async def test_propagates_budget_exceeded() -> None:
@@ -288,7 +293,7 @@ async def test_truncates_string_too_long_and_recovers() -> None:
         BudgetTracker(hard_limit_usd=10.0),
         client=_FakeAnthropicClient(fake),  # type: ignore[arg-type]
     )
-    parsed, _usage = await adapter.parse(
+    parsed, _usage, outcome = await adapter.parse(
         model="claude-haiku-4-5",
         system=[{"type": "text", "text": "s"}],
         user="ctx",
@@ -300,6 +305,9 @@ async def test_truncates_string_too_long_and_recovers() -> None:
     # Truncated to fit max_length=2000, with "..." marker
     assert parsed.rationale.endswith("...")
     assert len(parsed.rationale) <= 2000
+    # The recovery path emits "ok" — the rationale is salvaged, the vote
+    # is alive. Phase 18B audits should not see these as validation_failed.
+    assert outcome == "ok"
 
 
 async def test_does_not_recover_when_other_validation_errors_present() -> None:
@@ -311,10 +319,11 @@ async def test_does_not_recover_when_other_validation_errors_present() -> None:
         BudgetTracker(hard_limit_usd=10.0),
         client=_FakeAnthropicClient(fake),  # type: ignore[arg-type]
     )
-    parsed, _usage = await adapter.parse(
+    parsed, _usage, outcome = await adapter.parse(
         model="claude-haiku-4-5",
         system=[{"type": "text", "text": "s"}],
         user="ctx",
         output_format=AgentVote,
     )
     assert parsed is None
+    assert outcome == "validation_failed"

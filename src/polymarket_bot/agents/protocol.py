@@ -20,6 +20,22 @@ from pydantic import BaseModel, Field
 Side = Literal["UP", "DOWN"]
 VoteSide = Literal["UP", "DOWN", "ABSTAIN"]
 
+# Phase 18B observability tag. Every `AnthropicAdapter.parse` /
+# `MetaDecider.decide` round-trip emits one of these so the ensemble
+# log can attribute meta=None outcomes to a specific failure mode.
+# Values defined in design/phase-18b-meta-observability.md.
+MetaOutcome = Literal[
+    "ok",
+    "api_error",
+    "refusal",
+    "no_text",
+    "validation_failed",
+    "invariant_violated",
+    "exception",
+    "no_meta_call",
+    "timeout",
+]
+
 
 class AgentContext(BaseModel):
     """Per-window snapshot fed to each specialist + meta-decider.
@@ -111,15 +127,15 @@ class MetaAgent(Protocol):
 
     async def decide(
         self, ctx: AgentContext, votes: dict[str, AgentVote]
-    ) -> MetaDecision | None: ...
+    ) -> tuple[MetaDecision | None, MetaOutcome]: ...
 
 
 # ---------------------------------------------------------------------------
 # AnthropicAdapter dependency-injection types
 # ---------------------------------------------------------------------------
 
-ParseFn = Callable[..., Awaitable[tuple[BaseModel | None, "TokenUsage"]]]
-"""Async callable that takes Anthropic-API kwargs + returns (parsed, usage)."""
+ParseFn = Callable[..., Awaitable[tuple[BaseModel | None, "TokenUsage", MetaOutcome]]]
+"""Async callable that takes Anthropic-API kwargs + returns (parsed, usage, outcome)."""
 
 
 class TokenUsage(BaseModel):
@@ -137,6 +153,7 @@ __all__ = [
     "AgentVote",
     "MetaAgent",
     "MetaDecision",
+    "MetaOutcome",
     "ParseFn",
     "Side",
     "TokenUsage",

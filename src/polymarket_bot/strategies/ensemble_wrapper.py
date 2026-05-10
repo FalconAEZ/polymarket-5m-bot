@@ -42,6 +42,7 @@ from polymarket_bot.agents.protocol import (
     AgentVote,
     MetaAgent,
     MetaDecision,
+    MetaOutcome,
 )
 from polymarket_bot.backtest.types import (
     BookUpdate,
@@ -315,8 +316,9 @@ class EnsembleWrapper:
         # through to base (same policy as meta=None).
         votes: dict[str, AgentVote | None]
         meta_decision: MetaDecision | None
+        meta_outcome: MetaOutcome
         try:
-            votes, meta_decision = await asyncio.wait_for(
+            votes, meta_decision, meta_outcome = await asyncio.wait_for(
                 self._run_ensemble(ctx), timeout=self._gate_llm_timeout_s
             )
         except TimeoutError:
@@ -337,6 +339,7 @@ class EnsembleWrapper:
                     "candidate_rationale": candidate.rationale,
                     "votes": {},
                     "meta": None,
+                    "meta_outcome": "timeout",
                     "timeout_s": self._gate_llm_timeout_s,
                 }
             )
@@ -355,6 +358,7 @@ class EnsembleWrapper:
                     for name, vote in votes.items()
                 },
                 "meta": meta_decision.model_dump() if meta_decision is not None else None,
+                "meta_outcome": meta_outcome,
             }
         )
         # GATE-mode fallback policy. Two distinct cases:
@@ -404,7 +408,7 @@ class EnsembleWrapper:
         self, *, ctx: AgentContext, candidate: Decision, event_ts_ns: int
     ) -> None:
         try:
-            votes, meta_decision = await self._run_ensemble(ctx)
+            votes, meta_decision, meta_outcome = await self._run_ensemble(ctx)
             self._log_ensemble_event(
                 {
                     "kind": "ensemble_vote",
@@ -419,6 +423,7 @@ class EnsembleWrapper:
                         for name, vote in votes.items()
                     },
                     "meta": meta_decision.model_dump() if meta_decision is not None else None,
+                    "meta_outcome": meta_outcome,
                 }
             )
         except Exception as exc:
@@ -530,7 +535,7 @@ class EnsembleWrapper:
 
     async def _run_ensemble(
         self, ctx: AgentContext
-    ) -> tuple[dict[str, AgentVote | None], MetaDecision | None]:
+    ) -> tuple[dict[str, AgentVote | None], MetaDecision | None, MetaOutcome]:
         # Specialists in parallel; each can return None (refusal/schema/budget).
         results = await asyncio.gather(
             *(spec.vote(ctx) for spec in self._specialists),
@@ -547,16 +552,17 @@ class EnsembleWrapper:
                 if result is not None:
                     valid_count += 1
         if valid_count < MIN_VOTES_FOR_META:
-            return votes, None
+            return votes, None, "no_meta_call"
         try:
-            meta = await self._meta.decide(
+            meta, outcome = await self._meta.decide(
                 ctx,
                 {name: v for name, v in votes.items() if v is not None},
             )
         except Exception as exc:
             LOG.exception("meta agent raised: %s", exc)
             meta = None
-        return votes, meta
+            outcome = "exception"
+        return votes, meta, outcome
 
     def _log_ensemble_event(self, payload: dict[str, object]) -> None:
         if self._log_root is None:

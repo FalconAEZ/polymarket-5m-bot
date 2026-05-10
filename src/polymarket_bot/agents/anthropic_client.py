@@ -21,7 +21,7 @@ import anthropic
 from pydantic import BaseModel, ValidationError
 
 from polymarket_bot.agents.budget import BudgetExceeded, BudgetTracker
-from polymarket_bot.agents.protocol import TokenUsage
+from polymarket_bot.agents.protocol import MetaOutcome, TokenUsage
 
 LOG = logging.getLogger("polymarket_bot.agents.anthropic_client")
 
@@ -62,15 +62,18 @@ class AnthropicAdapter:
         thinking: dict[str, object] | None = None,
         effort: str | None = None,
         max_tokens: int = 1024,
-    ) -> tuple[BaseModel | None, TokenUsage]:
+    ) -> tuple[BaseModel | None, TokenUsage, MetaOutcome]:
         """Call Anthropic with a JSON-schema output constraint and validate.
 
-        Returns (validated_pydantic_instance, usage) on success;
-        (None, usage) on refusal, schema fail, or API error. Always records
-        usage against the budget tracker after the call returns — even on
-        failure paths, since Anthropic still charges for those tokens. May
-        raise BudgetExceeded synchronously if the call's cost crosses the
-        hard cap.
+        Returns ``(parsed, usage, outcome)``. ``outcome`` is a MetaOutcome
+        Literal tag (see design/phase-18b-meta-observability.md) — ``"ok"``
+        on success, otherwise one of ``"api_error"`` / ``"refusal"`` /
+        ``"no_text"`` / ``"validation_failed"`` so callers can attribute
+        every None back to a specific failure mode. Always records usage
+        against the budget tracker after the call returns — even on
+        failure paths, since Anthropic still charges for those tokens.
+        May raise BudgetExceeded synchronously if the call's cost crosses
+        the hard cap.
         """
         schema = _strict_object_schema(output_format.model_json_schema())
         output_config: dict[str, object] = {"format": {"type": "json_schema", "schema": schema}}
@@ -91,7 +94,7 @@ class AnthropicAdapter:
             response = await self._client.messages.create(**kwargs)
         except anthropic.APIError as e:
             LOG.warning("anthropic API error: %s: %s", type(e).__name__, e)
-            return None, TokenUsage()
+            return None, TokenUsage(), "api_error"
 
         usage = _extract_usage(response)
         # Charge the budget even on refusal / schema failure — Anthropic
@@ -103,12 +106,12 @@ class AnthropicAdapter:
 
         if getattr(response, "stop_reason", None) == "refusal":
             LOG.info("anthropic refusal on model %s", model)
-            return None, usage
+            return None, usage, "refusal"
 
         text = _extract_first_text(response)
         if text is None:
             LOG.info("anthropic returned no text content")
-            return None, usage
+            return None, usage, "no_text"
 
         try:
             parsed: BaseModel = output_format.model_validate_json(text)
@@ -127,10 +130,10 @@ class AnthropicAdapter:
                     "rationale and recovered (%s)",
                     output_format.__name__,
                 )
-                return recovered, usage
+                return recovered, usage, "ok"
             LOG.info("anthropic response failed schema validation: %s", e)
-            return None, usage
-        return parsed, usage
+            return None, usage, "validation_failed"
+        return parsed, usage, "ok"
 
 
 # JSON Schema keywords Anthropic's structured-output API rejects (mirrors
