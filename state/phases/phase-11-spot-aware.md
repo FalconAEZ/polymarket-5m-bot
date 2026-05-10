@@ -1,7 +1,7 @@
 ---
 title: Phase 11 — SpotAwareStrategy paper-soak (post phase-5-pass)
-status: 11.A.2 — v2 + instant-settle LIVE on bot-staging since 2026-05-09 23:12:00 UTC after the 22:20 UTC queue-overflow incident; proper background-settle fix landed at 43872e9 (PR #1), re-deployed clean; 30-min re-soak in progress 2026-05-09 23:12 → 23:42 UTC; orphan-recovery + dashboard fixes pushed but pending next natural restart; 48h gate review 2026-05-10 22:26:15 UTC
-tags: [phase, spot-aware, paper-soak, aggressive-mode, in-progress]
+status: 11.A.2 superseded by Phase 5 LLM-ensemble experiment 2026-05-10. Bot now running STRATEGY=ensemble + BASE=wide_fire + MODE=shadow on bot-staging since 2026-05-10 04:31:41 UTC at commit 54fa0d5 (PR #1). Two queue-overflow incidents fixed (2026-05-09 instant-settle, 2026-05-10 LLM ensemble — both same architectural class, both resolved). LLM economic-gate prompts (option C) verified live: meta correctly ABSTAINs at best_ask>=0.90. 24-72h shadow soak underway; promotion to ENSEMBLE_MODE=gate gated on rollup data showing >=+5pp WR uplift over deterministic.
+tags: [phase, spot-aware, llm-ensemble, paper-soak, in-progress]
 ---
 
 # Phase 11 — SpotAwareStrategy paper-soak
