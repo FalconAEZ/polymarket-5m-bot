@@ -7,23 +7,27 @@ A real Polymarket book at the $0.01 floor has tiny depth (typically <$1
 of shares); the simulator can't know this without depth data, so it
 inflates pnl by 50-100x.
 
-This script writes a `settled_correction` record for each affected window
-with:
-  - corrected_resolution: same as the original (gamma agrees the side won)
-  - corrected_pnl_usd: 0.0 (we cannot reconstruct what would have actually
-                            filled in real Polymarket; neutralizing is
-                            the conservative, honest choice)
-  - phantom_fill: true (analytics flag — exclude these from rollup pnl
-                       stats)
-  - reason: "phantom_fill_at_floor: best_ask=0.01 ask_size_top=None;
-             cannot reconstruct realistic fill"
+A maker-side analog was found later (window 1778390700 + 12 more in the
+2026-05-10 morning re-audit): bot fires at price_limit=$0.03 with
+best_ask=$0.01 + ask_size_top=None at decision time (taker guard
+correctly refuses, fill=None at fired-time). The order rests; the book
+later crashes to ask=$0.03 (still floor-adjacent, still no depth info);
+the simulator fills the full $5 at the maker limit, producing 166.67
+shares and a +$161.67 phantom win when the side happens to be right.
+
+This script writes a `settled_correction` record for each detected
+phantom with corrected_pnl_usd=0.0, phantom_fill=true, and a reason
+flag. Auto-detects by pattern: fired with no fill (taker guard refused)
++ settled with fill_at_settle.price_filled <= 0.05 + size_filled >= 50.
+Also still honors the explicit PHANTOM_WINDOWS dict for legacy/manual
+records (kept for traceability of the original 3).
 
 Going forward, scripts/run_paper.py uses the FillSimulator's
 `floor_best_ask` guard (DEFAULT_FLOOR_BEST_ASK=0.02, fills.py) which
-refuses these fills outright — so the phantom records stop accumulating.
+refuses these fills on BOTH the taker AND maker paths — so the phantom
+records stop accumulating once the bot picks up the new code.
 
-Idempotent: skips windows that already have a `settled_correction` with
-phantom_fill=true.
+Idempotent: skips decisions that already have a `settled_correction`.
 """
 
 from __future__ import annotations
@@ -59,11 +63,23 @@ PHANTOM_WINDOWS: dict[int, dict[str, object]] = {
 }
 
 REASON = (
-    "phantom_fill_at_floor: best_ask=0.01 ask_size_top=None; "
-    "simulator over-filled $5 size at the floor producing unrealistic "
-    "454 shares; real Polymarket depth at the floor is typically <$1; "
-    "neutralizing pnl to 0 — see fills.py DEFAULT_FLOOR_BEST_ASK guard"
+    "phantom_fill_at_floor: simulator over-filled $5 size at near-floor "
+    "ask with ask_size_top=None; real Polymarket depth at the floor is "
+    "typically <$1; neutralizing pnl to 0 — see fills.py "
+    "DEFAULT_FLOOR_BEST_ASK guard"
 )
+
+# Auto-detect thresholds. A phantom-floor candidate is a settled record
+# whose:
+#   * fired record had fill=None (taker guard refused at decision time)
+#   * settled has fill_at_settle.price_filled <= AUTO_FILL_PRICE_MAX
+#   * settled has fill_at_settle.size_filled >= AUTO_FILL_SIZE_MIN
+# The (price <= 0.05, size >= 50) pair is tight enough that real edge
+# trades don't trigger — Polymarket BTC 5m wins fire at price_limit
+# 0.30-0.85 typically; size for a $5 stake at those prices is 6-17
+# shares, well below 50.
+AUTO_FILL_PRICE_MAX = 0.05
+AUTO_FILL_SIZE_MIN = 50.0
 
 
 def _read_records(path: Path) -> list[dict[str, object]]:
@@ -82,33 +98,72 @@ def _read_records(path: Path) -> list[dict[str, object]]:
     return out
 
 
+def _is_phantom_pattern(
+    fired: dict[str, object] | None, settled: dict[str, object]
+) -> tuple[bool, float | None]:
+    """Auto-detect: returns (is_phantom, fill_price_at_settle).
+
+    A phantom-floor candidate is one where:
+      * fired had no fill (taker guard refused at decision time -- this
+        is the signature of "we wanted to bet but couldn't fill at the
+        time"; if it later fills, it's the maker-floor pattern)
+      * fill_at_settle has price <= AUTO_FILL_PRICE_MAX AND
+        size >= AUTO_FILL_SIZE_MIN
+    """
+    if fired is None:
+        # Without fired, can't tell taker-guard-refused vs legitimate.
+        # Be conservative: don't auto-neutralize.
+        return False, None
+    if fired.get("fill") is not None:
+        return False, None
+    fas = settled.get("fill_at_settle")
+    if not isinstance(fas, dict):
+        return False, None
+    px = fas.get("price_filled")
+    sz = fas.get("size_filled", 0) or 0
+    if not isinstance(px, int | float) or not isinstance(sz, int | float):
+        return False, None
+    if px > AUTO_FILL_PRICE_MAX or sz < AUTO_FILL_SIZE_MIN:
+        return False, None
+    return True, float(px)
+
+
 def backfill(path: Path, *, dry_run: bool = False) -> int:
     records = _read_records(path)
     if not records:
         return 0
 
+    fired_by_id: dict[str, dict[str, object]] = {}
+    settled_by_id: dict[str, dict[str, object]] = {}
     settled_by_window: dict[int, dict[str, object]] = {}
-    phantom_corrected_windows: set[int] = set()
+    corrected_decision_ids: set[str] = set()
     for rec in records:
         kind = rec.get("kind")
+        did = rec.get("decision_id")
         w = rec.get("window_ts")
-        if not isinstance(w, int):
-            continue
-        if kind == "settled" and w in PHANTOM_WINDOWS:
-            settled_by_window[w] = rec
-        elif kind == "settled_correction" and rec.get("phantom_fill") is True:
-            phantom_corrected_windows.add(w)
+        if kind == "fired" and isinstance(did, str):
+            fired_by_id[did] = rec
+        elif kind == "settled" and isinstance(did, str):
+            settled_by_id[did] = rec
+            if isinstance(w, int):
+                settled_by_window[w] = rec
+        elif kind == "settled_correction" and isinstance(did, str):
+            corrected_decision_ids.add(did)
 
     new_lines: list[str] = []
     now_ns = time.time_ns()
-    n = 0
+    n_explicit = 0
+    n_auto = 0
+
+    # Pass 1 — explicit PHANTOM_WINDOWS dict (legacy / manual).
     for w, expected in PHANTOM_WINDOWS.items():
-        if w in phantom_corrected_windows:
-            print(f"  window {w}: already phantom-corrected, skipping")
-            continue
         settled = settled_by_window.get(w)
         if settled is None:
             print(f"  window {w}: no settled record found, skipping")
+            continue
+        did = settled.get("decision_id")
+        if isinstance(did, str) and did in corrected_decision_ids:
+            print(f"  window {w}: already phantom-corrected, skipping")
             continue
         original_pnl = float(settled.get("pnl_usd") or 0.0)  # type: ignore[arg-type]
         original_res = settled.get("resolution")
@@ -120,7 +175,7 @@ def backfill(path: Path, *, dry_run: bool = False) -> int:
             continue
         line = {
             "kind": "settled_correction",
-            "decision_id": settled.get("decision_id"),
+            "decision_id": did,
             "window_ts": w,
             "original_settled_ts_ns": settled.get("settled_ts_ns"),
             "original_resolution": original_res,
@@ -133,14 +188,55 @@ def backfill(path: Path, *, dry_run: bool = False) -> int:
             "phantom_fill": True,
             "reason": REASON,
             "best_ask_at_fill": expected["best_ask_at_fill"],
+            "fill_kind": expected.get("fill_kind"),
             "backfilled": True,
+            "detection": "explicit",
+        }
+        new_lines.append(json.dumps(line, separators=(",", ":")))
+        print(f"  window {w} (explicit): NEUTRALIZE pnl {original_pnl:+.4f} -> 0.0000")
+        n_explicit += 1
+        if isinstance(did, str):
+            corrected_decision_ids.add(did)
+
+    # Pass 2 — auto-detect by pattern.
+    for did, settled in settled_by_id.items():
+        if did in corrected_decision_ids:
+            continue
+        fired = fired_by_id.get(did)
+        is_phantom, fill_px = _is_phantom_pattern(fired, settled)
+        if not is_phantom:
+            continue
+        original_pnl = float(settled.get("pnl_usd") or 0.0)  # type: ignore[arg-type]
+        original_res = settled.get("resolution")
+        w = settled.get("window_ts")
+        line = {
+            "kind": "settled_correction",
+            "decision_id": did,
+            "window_ts": w,
+            "original_settled_ts_ns": settled.get("settled_ts_ns"),
+            "original_resolution": original_res,
+            "original_pnl_usd": original_pnl,
+            "corrected_resolution": original_res,
+            "corrected_pnl_usd": 0.0,
+            "corrected_ts_ns": now_ns,
+            "fill_at_settle": settled.get("fill_at_settle"),
+            "resolution_source": "phantom-fill-neutralized",
+            "phantom_fill": True,
+            "reason": REASON,
+            "best_ask_at_fill": fill_px,
+            "fill_kind": "maker",  # auto-detect catches the maker pattern (taker is rejected at fired)
+            "backfilled": True,
+            "detection": "auto",
         }
         new_lines.append(json.dumps(line, separators=(",", ":")))
         print(
-            f"  window {w}: NEUTRALIZE pnl {original_pnl:+.4f} -> 0.0000 "
-            f"(delta {-original_pnl:+.4f})"
+            f"  window {w} (auto): NEUTRALIZE pnl {original_pnl:+.4f} -> 0.0000 "
+            f"(fill_px={fill_px})"
         )
-        n += 1
+        n_auto += 1
+        corrected_decision_ids.add(did)
+
+    print(f"  explicit: {n_explicit}, auto-detected: {n_auto}, total: {n_explicit + n_auto}")
 
     if dry_run:
         print(f"  --dry-run: would append {len(new_lines)} record(s)")
@@ -152,7 +248,7 @@ def backfill(path: Path, *, dry_run: bool = False) -> int:
         for line in new_lines:
             fh.write(line + "\n")
         fh.flush()
-    return n
+    return n_explicit + n_auto
 
 
 def main(argv: Iterable[str] | None = None) -> int:
