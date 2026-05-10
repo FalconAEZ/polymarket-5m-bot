@@ -451,16 +451,57 @@ async def main() -> int:
     # doesn't share the polymarket-feed client.
     import httpx as _httpx
 
+    # Defaults tracked from the runner module so a bump there propagates
+    # without an extra edit here.
+    from polymarket_bot._paper.runner import (
+        DEFAULT_INSTANT_SETTLE_INTERVAL_S as _DEF_GAMMA_INTERVAL,
+    )
+    from polymarket_bot._paper.runner import (
+        DEFAULT_INSTANT_SETTLE_TIMEOUT_S as _DEF_GAMMA_TIMEOUT,
+    )
+    from polymarket_bot._paper.runner import (
+        DEFAULT_POST_HOC_RETRY_INITIAL_DELAY_S as _DEF_POSTHOC_DELAY,
+    )
+    from polymarket_bot._paper.runner import (
+        DEFAULT_POST_HOC_RETRY_INTERVAL_S as _DEF_POSTHOC_INTERVAL,
+    )
+    from polymarket_bot._paper.runner import (
+        DEFAULT_POST_HOC_RETRY_MAX_ATTEMPTS as _DEF_POSTHOC_ATTEMPTS,
+    )
+
     instant_settle_enabled = _env_bool("INSTANT_SETTLE_ENABLED", False)
-    instant_settle_timeout_s = _env_float("INSTANT_SETTLE_GAMMA_TIMEOUT_S", 30.0) or 30.0
-    instant_settle_interval_s = _env_float("INSTANT_SETTLE_GAMMA_POLL_INTERVAL_S", 1.0) or 1.0
+    instant_settle_timeout_s = (
+        _env_float("INSTANT_SETTLE_GAMMA_TIMEOUT_S", _DEF_GAMMA_TIMEOUT) or _DEF_GAMMA_TIMEOUT
+    )
+    instant_settle_interval_s = (
+        _env_float("INSTANT_SETTLE_GAMMA_POLL_INTERVAL_S", _DEF_GAMMA_INTERVAL)
+        or _DEF_GAMMA_INTERVAL
+    )
     # Orphan-fire recovery — at startup, scan recent decision-log files
     # for fired records that were never settled (e.g., bot was restarted
     # mid-window before its close-side settle ran) and post-hoc resolve
     # them via Polymarket Gamma. Default ON (kill-switch via env). Shares
     # the same httpx.Client as instant-settle.
     orphan_recovery_enabled = _env_bool("ORPHAN_RECOVERY_ENABLED", True)
-    needs_gamma_client = instant_settle_enabled or orphan_recovery_enabled
+    # Post-hoc gamma re-resolution: when the instant-settle path falls
+    # through to chainlink-local, schedule a delayed gamma retry so a
+    # later-resolving Polymarket truth can correct the chainlink answer.
+    # Default ON; kill-switch is POST_HOC_GAMMA_RETRY_ENABLED=0. Per the
+    # 2026-05-10 audit (chainlink-local disagrees with gamma on ~33% of
+    # windows). Tunables let the operator dial frequency without a deploy.
+    post_hoc_retry_enabled = _env_bool("POST_HOC_GAMMA_RETRY_ENABLED", True)
+    post_hoc_retry_initial_delay_s = (
+        _env_float("POST_HOC_GAMMA_RETRY_INITIAL_DELAY_S", _DEF_POSTHOC_DELAY) or _DEF_POSTHOC_DELAY
+    )
+    post_hoc_retry_interval_s = (
+        _env_float("POST_HOC_GAMMA_RETRY_INTERVAL_S", _DEF_POSTHOC_INTERVAL)
+        or _DEF_POSTHOC_INTERVAL
+    )
+    post_hoc_retry_max_attempts = int(
+        _env_float("POST_HOC_GAMMA_RETRY_MAX_ATTEMPTS", float(_DEF_POSTHOC_ATTEMPTS))
+        or _DEF_POSTHOC_ATTEMPTS
+    )
+    needs_gamma_client = instant_settle_enabled or orphan_recovery_enabled or post_hoc_retry_enabled
     gamma_client_for_settle = _httpx.Client() if needs_gamma_client else None
     if instant_settle_enabled:
         LOG.info(
@@ -470,6 +511,13 @@ async def main() -> int:
         )
     if orphan_recovery_enabled:
         LOG.info("orphan-fire recovery ENABLED at startup")
+    if post_hoc_retry_enabled:
+        LOG.info(
+            "post-hoc gamma retry ENABLED: initial_delay=%ss interval=%ss max_attempts=%d",
+            post_hoc_retry_initial_delay_s,
+            post_hoc_retry_interval_s,
+            post_hoc_retry_max_attempts,
+        )
 
     runner = PaperRunner(
         feeds=feeds,
@@ -483,6 +531,10 @@ async def main() -> int:
         instant_settle_timeout_s=instant_settle_timeout_s,
         instant_settle_interval_s=instant_settle_interval_s,
         orphan_recovery_enabled=orphan_recovery_enabled,
+        post_hoc_gamma_retry_enabled=post_hoc_retry_enabled,
+        post_hoc_retry_initial_delay_s=post_hoc_retry_initial_delay_s,
+        post_hoc_retry_interval_s=post_hoc_retry_interval_s,
+        post_hoc_retry_max_attempts=post_hoc_retry_max_attempts,
     )
 
     stop_event = asyncio.Event()

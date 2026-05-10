@@ -51,13 +51,30 @@ from polymarket_bot.strategies.protocol import Strategy
 LOG = logging.getLogger("polymarket_bot._paper.runner")
 
 DEFAULT_QUEUE_SIZE = 1024
-# Instant-settle defaults — see design/instant_settlement.md. Gamma poll
-# typically resolves within 1-3s of T+300; 30s timeout is the operator-
-# configurable upper bound before falling back to Chainlink-local. The bot
-# blocks during settle (no decisions to make at the exact moment between
-# windows), so a 1-3s block here is acceptable.
-DEFAULT_INSTANT_SETTLE_TIMEOUT_S = 30.0
-DEFAULT_INSTANT_SETTLE_INTERVAL_S = 1.0
+# Instant-settle defaults — see design/instant_settlement.md and the
+# 2026-05-10 audit (runbooks/incidents/2026-05-10-settle-resolution-bug.md).
+# Live observation: with the previous 30s/1s defaults, gamma instant-settle
+# succeeded 0/22 times — every settle fell through to chainlink-local, which
+# disagrees with on-chain truth on ~33% of windows. Gamma typically becomes
+# `closed=true` within 1-3 minutes of T+300; the new 5-minute timeout covers
+# that window. With background-settle (commit 43872e9) the long poll does
+# not block the main loop, so a generous timeout is now safe.
+# Per-poll interval bumped 1s → 5s to reduce gamma load and sidestep the
+# CDN/cache TTL hypothesis (cached "not closed yet" responses for ~1-30s).
+DEFAULT_INSTANT_SETTLE_TIMEOUT_S = 300.0
+DEFAULT_INSTANT_SETTLE_INTERVAL_S = 5.0
+
+# Post-hoc gamma re-resolution defaults. After the chainlink-local fallback
+# writes a `settled` record, the bot schedules a background task that waits
+# briefly for gamma to catch up, then re-polls. If gamma's truth disagrees
+# with the recorded chainlink resolution, a `settled_correction` record is
+# appended to the same JSONL — the original `settled` is preserved so the
+# audit trail is intact. Defaults: wait 5 min before first retry, poll
+# every 30s for up to ~25 min total. Off-by-default flag wires through env
+# `POST_HOC_GAMMA_RETRY_ENABLED` so the operator has a 30s kill-switch.
+DEFAULT_POST_HOC_RETRY_INITIAL_DELAY_S = 300.0
+DEFAULT_POST_HOC_RETRY_INTERVAL_S = 30.0
+DEFAULT_POST_HOC_RETRY_MAX_ATTEMPTS = 50
 
 
 class PaperRunner:
@@ -96,6 +113,17 @@ class PaperRunner:
         # consecutive startups don't double-write.
         orphan_recovery_enabled: bool = False,
         orphan_recovery_lookback_days: int = 1,
+        # Post-hoc gamma re-resolution — after a chainlink-local-fallback
+        # writes a settled record, schedule a background task that polls
+        # gamma a few minutes later and appends a `settled_correction`
+        # record if the truths disagree. Off-by-default to preserve
+        # legacy behavior; production wires POST_HOC_GAMMA_RETRY_ENABLED
+        # (default true) in run_paper.py. Defaults match
+        # DEFAULT_POST_HOC_RETRY_* constants. Tunable for tests.
+        post_hoc_gamma_retry_enabled: bool = False,
+        post_hoc_retry_initial_delay_s: float = DEFAULT_POST_HOC_RETRY_INITIAL_DELAY_S,
+        post_hoc_retry_interval_s: float = DEFAULT_POST_HOC_RETRY_INTERVAL_S,
+        post_hoc_retry_max_attempts: int = DEFAULT_POST_HOC_RETRY_MAX_ATTEMPTS,
     ) -> None:
         if not feeds:
             raise ValueError("PaperRunner requires at least one Feed")
@@ -123,6 +151,14 @@ class PaperRunner:
         self._pending_settles: set[asyncio.Task[None]] = set()
         self._orphan_recovery_enabled = orphan_recovery_enabled
         self._orphan_recovery_lookback_days = orphan_recovery_lookback_days
+        self._post_hoc_gamma_retry_enabled = post_hoc_gamma_retry_enabled
+        self._post_hoc_retry_initial_delay_s = post_hoc_retry_initial_delay_s
+        self._post_hoc_retry_interval_s = post_hoc_retry_interval_s
+        self._post_hoc_retry_max_attempts = post_hoc_retry_max_attempts
+        # Tracks in-flight post-hoc retry tasks the same way settle does, so
+        # shutdown can await them and we don't lose corrections on stop.
+        self._pending_post_hoc_retries: set[asyncio.Task[None]] = set()
+        self._post_hoc_corrections_total = 0
 
     def _alert(self, level: Level, message: str, **fields: str | int | float) -> None:
         try:
@@ -241,6 +277,13 @@ class PaperRunner:
                 pending = list(self._pending_settles)
                 LOG.info("awaiting %d in-flight settle tasks", len(pending))
                 await asyncio.gather(*pending, return_exceptions=True)
+            # Also await post-hoc gamma retries so a stop-mid-retry doesn't
+            # silently drop a pending correction record. Snapshot first
+            # because each task's done_callback discards itself.
+            if self._pending_post_hoc_retries:
+                pending_retries = list(self._pending_post_hoc_retries)
+                LOG.info("awaiting %d in-flight post-hoc gamma retries", len(pending_retries))
+                await asyncio.gather(*pending_retries, return_exceptions=True)
             # Strategies that own background tasks (e.g., EnsembleWrapper's
             # shadow-mode LLM votes) get an aclose() callout so their
             # work finishes writing to disk before we close the decision
@@ -688,11 +731,12 @@ class PaperRunner:
         pnl = 0.0
         if fill is not None and resolution is not None and snap.side is not None:
             pnl = _realised_pnl(fill, resolution == snap.side)
+        settled_ts_ns = self._clock_ns()
         try:
             self._log.record_settled(
                 decision_id=snap.decision_id,
                 window_ts=snap.window_ts,
-                settled_ts_ns=self._clock_ns(),
+                settled_ts_ns=settled_ts_ns,
                 open_oracle=snap.open_oracle,
                 close_oracle=snap.close_oracle,
                 resolution=resolution,
@@ -708,6 +752,131 @@ class PaperRunner:
                 decision_id=snap.decision_id,
                 window_ts=snap.window_ts,
             )
+            return
+
+        # Schedule a post-hoc gamma re-resolution if we fell back to
+        # chainlink-local. Per audit 2026-05-10: chainlink and gamma
+        # disagree on ~33% of windows. The retry waits a few minutes for
+        # gamma to catch up, then appends a settled_correction if the
+        # truths differ. Fire-and-forget so the settle path returns
+        # immediately; shutdown awaits the task.
+        if (
+            self._post_hoc_gamma_retry_enabled
+            and resolution_source == "chainlink-local-fallback"
+            and self._gamma_client is not None
+        ):
+            task = asyncio.create_task(
+                self._post_hoc_gamma_retry(
+                    snap=snap,
+                    original_resolution=resolution,
+                    original_pnl_usd=pnl,
+                    original_settled_ts_ns=settled_ts_ns,
+                ),
+                name=f"post-hoc-gamma-{snap.window_ts}",
+            )
+            self._pending_post_hoc_retries.add(task)
+            task.add_done_callback(self._pending_post_hoc_retries.discard)
+
+    async def _post_hoc_gamma_retry(
+        self,
+        *,
+        snap: _SettleSnapshot,
+        original_resolution: Side | None,
+        original_pnl_usd: float,
+        original_settled_ts_ns: int,
+    ) -> None:
+        # Top-level guard: a failure here must NEVER propagate. Log + alert
+        # and return; the runner stays alive and the next settle's retry
+        # is independent.
+        try:
+            await asyncio.sleep(self._post_hoc_retry_initial_delay_s)
+            client = self._gamma_client
+            if client is None:
+                # Caller already checks this; defensive narrowing for mypy.
+                return
+            for _attempt in range(self._post_hoc_retry_max_attempts):
+                try:
+                    truth = await asyncio.to_thread(gamma_resolution, snap.window_ts, client=client)
+                except Exception as exc:
+                    LOG.warning(
+                        "post-hoc gamma retry fetch raised for window %s: %s",
+                        snap.window_ts,
+                        exc,
+                    )
+                    truth = None
+                if truth in ("UP", "DOWN"):
+                    if truth == original_resolution:
+                        LOG.info(
+                            "post-hoc gamma retry for window %s: agrees with chainlink (%s)",
+                            snap.window_ts,
+                            truth,
+                        )
+                        return
+                    # Truths disagree — write a correction.
+                    fill = snap.settled_fill
+                    corrected_pnl = (
+                        _realised_pnl(fill, truth == snap.side)
+                        if (fill is not None and snap.side is not None)
+                        else 0.0
+                    )
+                    try:
+                        self._log.record_settled_correction(
+                            decision_id=snap.decision_id,
+                            window_ts=snap.window_ts,
+                            original_settled_ts_ns=original_settled_ts_ns,
+                            original_resolution=original_resolution,
+                            original_pnl_usd=original_pnl_usd,
+                            corrected_resolution=truth,
+                            corrected_pnl_usd=corrected_pnl,
+                            corrected_ts_ns=self._clock_ns(),
+                            fill_at_settle=fill,
+                        )
+                    except OSError as exc:
+                        LOG.critical("decision_log.record_settled_correction OSError: %s", exc)
+                        self._alert(
+                            Level.CRITICAL,
+                            f"settled_correction OSError; correction dropped: {exc}",
+                            decision_id=snap.decision_id,
+                            window_ts=snap.window_ts,
+                        )
+                        return
+                    self._post_hoc_corrections_total += 1
+                    LOG.info(
+                        "post-hoc gamma correction for window %s: %s -> %s " "(pnl %.4f -> %.4f)",
+                        snap.window_ts,
+                        original_resolution,
+                        truth,
+                        original_pnl_usd,
+                        corrected_pnl,
+                    )
+                    self._alert(
+                        Level.INFO,
+                        f"post-hoc correction window {snap.window_ts}: "
+                        f"{original_resolution} -> {truth}",
+                        decision_id=snap.decision_id,
+                        window_ts=snap.window_ts,
+                        delta_pnl_usd=corrected_pnl - original_pnl_usd,
+                    )
+                    return
+                await asyncio.sleep(self._post_hoc_retry_interval_s)
+            LOG.info(
+                "post-hoc gamma retry for window %s gave up after %d attempts",
+                snap.window_ts,
+                self._post_hoc_retry_max_attempts,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            LOG.exception("post-hoc gamma retry crashed for window %s", snap.window_ts)
+            try:
+                self._alert(
+                    Level.WARN,
+                    f"post-hoc gamma retry crashed: {exc}",
+                    decision_id=snap.decision_id,
+                    window_ts=snap.window_ts,
+                )
+            except Exception:
+                LOG.exception("alert publish raised inside post-hoc retry exception handler")
 
     def _snapshot_for_log(self, decision: Decision) -> dict[str, float | None]:
         s = self._state

@@ -152,6 +152,44 @@ class DecisionLog:
             line["resolution_source"] = resolution_source
         self._write(settled_ts_ns, line)
 
+    def record_settled_correction(
+        self,
+        *,
+        decision_id: str,
+        window_ts: int,
+        original_settled_ts_ns: int,
+        original_resolution: Side | None,
+        original_pnl_usd: float,
+        corrected_resolution: Side,
+        corrected_pnl_usd: float,
+        corrected_ts_ns: int,
+        fill_at_settle: Fill | None,
+    ) -> None:
+        """Append a `settled_correction` record after a chainlink-local-fallback
+        was later proven wrong by Polymarket Gamma.
+
+        The original `settled` record is left intact for audit history; the
+        correction is a separate append-only line keyed by the same
+        decision_id. Downstream consumers (rollup, dashboard, analytics)
+        prefer the correction when present.
+        """
+        if self._closed:
+            raise RuntimeError("DecisionLog is closed")
+        line: dict[str, object] = {
+            "kind": "settled_correction",
+            "decision_id": decision_id,
+            "window_ts": window_ts,
+            "original_settled_ts_ns": original_settled_ts_ns,
+            "original_resolution": original_resolution,
+            "original_pnl_usd": original_pnl_usd,
+            "corrected_resolution": corrected_resolution,
+            "corrected_pnl_usd": corrected_pnl_usd,
+            "corrected_ts_ns": corrected_ts_ns,
+            "fill_at_settle": _fill_to_dict(fill_at_settle),
+            "resolution_source": "polymarket-post-hoc",
+        }
+        self._write(corrected_ts_ns, line)
+
     def close(self) -> None:
         """Flush and close all open file handles."""
         for handle in self._handles.values():
