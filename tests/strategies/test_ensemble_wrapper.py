@@ -281,10 +281,12 @@ async def test_gate_mode_blocks_when_meta_disagrees_on_side(tmp_path: Path) -> N
 
 
 @pytest.mark.asyncio
-async def test_gate_falls_through_when_too_few_specialist_votes(tmp_path: Path) -> None:
-    """When fewer than MIN_VOTES_FOR_META specialists return valid votes,
-    meta is not invoked. In shadow mode log + pass; in gate mode the
-    safe behavior is to abstain (we can't validate the base's verdict)."""
+async def test_gate_falls_back_to_base_when_meta_is_none(tmp_path: Path) -> None:
+    """gate-mode policy change 2026-05-10: when meta returns None (LLM
+    error / refusal / schema fail / too-few-votes-to-invoke-meta),
+    fall back to the base strategy's verdict. Pre-fix this dropped 23%
+    of trades silently; post-fix gate-mode honors the LLM only when
+    the LLM actually voted."""
     wrapper = EnsembleWrapper(
         base=_StubBaseStrategy(side="UP"),
         specialists=[
@@ -297,8 +299,9 @@ async def test_gate_falls_through_when_too_few_specialist_votes(tmp_path: Path) 
         log_root=tmp_path,
     )
     decision = await _drive(wrapper)
-    # gate mode + meta never invoked = abstain. The log records meta=null.
-    assert decision is None
+    # gate-mode + meta never invoked → base candidate passes through.
+    assert decision is not None
+    assert "side=UP" in decision.rationale
 
 
 @pytest.mark.asyncio

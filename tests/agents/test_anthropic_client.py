@@ -274,3 +274,47 @@ async def test_passes_thinking_and_effort_through() -> None:
     assert call["thinking"] == {"type": "adaptive"}
     assert call["output_config"]["effort"] == "medium"
     assert call["output_config"]["format"]["type"] == "json_schema"
+
+
+async def test_truncates_string_too_long_and_recovers() -> None:
+    """Audit 2026-05-10: 18 votes lost to string_too_long on rationale.
+    Belt-and-suspenders: when the only validation error is string_too_long,
+    truncate the offending field and re-parse so we don't lose the vote."""
+    # AgentVote.rationale max_length is 2000 (post-bump). Send 2100 chars.
+    long_rationale = "x" * 2100
+    fake_text = '{"side": "UP", "confidence": 0.6, "rationale": "' + long_rationale + '"}'
+    fake = _FakeMessages(_FakeResponse(text=fake_text))
+    adapter = AnthropicAdapter(
+        BudgetTracker(hard_limit_usd=10.0),
+        client=_FakeAnthropicClient(fake),  # type: ignore[arg-type]
+    )
+    parsed, _usage = await adapter.parse(
+        model="claude-haiku-4-5",
+        system=[{"type": "text", "text": "s"}],
+        user="ctx",
+        output_format=AgentVote,
+    )
+    assert isinstance(parsed, AgentVote)
+    assert parsed.side == "UP"
+    assert parsed.confidence == 0.6
+    # Truncated to fit max_length=2000, with "..." marker
+    assert parsed.rationale.endswith("...")
+    assert len(parsed.rationale) <= 2000
+
+
+async def test_does_not_recover_when_other_validation_errors_present() -> None:
+    """If the LLM also produces an invalid `side` (not UP/DOWN/ABSTAIN),
+    truncation alone won't recover — return None."""
+    fake_text = '{"side": "INVALID", "confidence": 0.6, "rationale": "' + "x" * 2100 + '"}'
+    fake = _FakeMessages(_FakeResponse(text=fake_text))
+    adapter = AnthropicAdapter(
+        BudgetTracker(hard_limit_usd=10.0),
+        client=_FakeAnthropicClient(fake),  # type: ignore[arg-type]
+    )
+    parsed, _usage = await adapter.parse(
+        model="claude-haiku-4-5",
+        system=[{"type": "text", "text": "s"}],
+        user="ctx",
+        output_format=AgentVote,
+    )
+    assert parsed is None

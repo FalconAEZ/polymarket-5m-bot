@@ -53,20 +53,36 @@ class AgentContext(BaseModel):
 
 
 class AgentVote(BaseModel):
-    """One specialist agent's verdict. Validated by pydantic on parse."""
+    """One specialist agent's verdict. Validated by pydantic on parse.
+
+    ``rationale`` upper bound is generous (2000 chars) since the verdict
+    fields (side + confidence) are what the meta-decider uses; the
+    rationale is narrative and rarely the deciding signal. Anthropic's
+    structured-output API doesn't enforce ``max_length`` anyway (see
+    AnthropicAdapter._strict_object_schema), so the limit only serves
+    as a sanity check after parsing. Audit 2026-05-10: 18 votes were
+    rejected at the old 240-char limit (rationales 250-400 chars
+    typical); each rejection silently dropped a vote and contributed
+    to the 23% null-meta rate that broke gate-mode.
+    """
 
     side: VoteSide
     confidence: float = Field(ge=0.0, le=1.0)
-    rationale: str = Field(max_length=240)
+    rationale: str = Field(max_length=2000)
 
 
 class MetaDecision(BaseModel):
-    """Meta-decider's final action. ABSTAIN ⇒ ensemble does not fire."""
+    """Meta-decider's final action. ABSTAIN ⇒ ensemble does not fire.
+
+    Same rationale-bound rationale as AgentVote: bumped 400 → 2000 to
+    accommodate the meta-decider's slightly longer narrative + the
+    same audit lesson.
+    """
 
     action: Literal["FIRE", "ABSTAIN"]
     side: Side | None = None
     confidence: float = Field(ge=0.0, le=1.0)
-    rationale: str = Field(max_length=400)
+    rationale: str = Field(max_length=2000)
 
 
 @runtime_checkable

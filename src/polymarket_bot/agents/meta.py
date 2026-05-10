@@ -24,7 +24,12 @@ from polymarket_bot.agents.protocol import (
 )
 
 DEFAULT_MODEL = "claude-sonnet-4-6"
-DEFAULT_MAX_TOKENS = 1024
+# Meta only emits a small JSON object (action + side + confidence + rationale).
+# Even with adaptive thinking, 512 output tokens is more than enough for the
+# rationale (max ~500 chars) plus the structured fields. Cut from 1024 -> 512
+# to shave latency. Per audit 2026-05-10, dropping unused output budget
+# noticeably reduces P95 response time.
+DEFAULT_MAX_TOKENS = 512
 DEFAULT_EFFORT = "medium"
 PROMPT_NAME = "meta"
 

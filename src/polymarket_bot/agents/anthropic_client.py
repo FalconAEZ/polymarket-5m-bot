@@ -113,6 +113,21 @@ class AnthropicAdapter:
         try:
             parsed: BaseModel = output_format.model_validate_json(text)
         except ValidationError as e:
+            # Belt-and-suspenders: if the only validation errors are
+            # `string_too_long`, truncate the offending fields and re-validate.
+            # This recovers the vote when the LLM is wordy without losing the
+            # actual verdict (side/confidence/action). Audit 2026-05-10:
+            # 18 specialist + meta votes were lost to string_too_long today
+            # alone; recovering those should restore ~14% of trades that
+            # gate-mode was silently dropping.
+            recovered = _try_truncate_and_revalidate(text, e, output_format)
+            if recovered is not None:
+                LOG.info(
+                    "anthropic response had string_too_long; truncated "
+                    "rationale and recovered (%s)",
+                    output_format.__name__,
+                )
+                return recovered, usage
             LOG.info("anthropic response failed schema validation: %s", e)
             return None, usage
         return parsed, usage
@@ -163,6 +178,52 @@ def _strict_object_schema(schema: dict[str, Any]) -> dict[str, Any]:
     out = copy.deepcopy(schema)
     _walk_strict(out)
     return out
+
+
+def _try_truncate_and_revalidate(
+    text: str, err: ValidationError, output_format: type[BaseModel]
+) -> BaseModel | None:
+    """If `err` is purely `string_too_long`, truncate offending fields + retry.
+
+    Returns the validated model on success, None if the error class is
+    different (or truncation still doesn't validate). Tight scope: only
+    handles top-level string fields. Nested-object truncation isn't worth
+    the complexity for the agent schemas (all string fields are top-level).
+    """
+    import json as _json
+
+    errors = err.errors()
+    if not errors or any(e.get("type") != "string_too_long" for e in errors):
+        return None
+    try:
+        payload = _json.loads(text)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    # Each error has loc=('field_name',) and ctx={'max_length': N}
+    for e in errors:
+        loc = e.get("loc")
+        if not loc or not isinstance(loc[0], str):
+            return None
+        field = loc[0]
+        ctx = e.get("ctx") or {}
+        max_len = ctx.get("max_length")
+        if not isinstance(max_len, int) or max_len <= 0:
+            return None
+        val = payload.get(field)
+        if not isinstance(val, str):
+            return None
+        # Truncate with an ellipsis marker so the rationale visibly says
+        # "this was clipped"; safe because the consumer only reads the
+        # first chars for logging.
+        ellipsis = "..."
+        keep = max(1, max_len - len(ellipsis))
+        payload[field] = val[:keep] + ellipsis
+    try:
+        return output_format.model_validate(payload)
+    except ValidationError:
+        return None
 
 
 def _walk_strict(node: object) -> None:

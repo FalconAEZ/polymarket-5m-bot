@@ -32,8 +32,18 @@ def test_agent_vote_clamps_confidence_range() -> None:
 
 
 def test_agent_vote_rationale_max_length() -> None:
+    # Bumped 240 -> 2000 on 2026-05-10 after audit found 18 votes lost to
+    # the old limit. 2100 chars still rejects (sanity bound).
     with pytest.raises(ValidationError):
-        AgentVote(side="UP", confidence=0.5, rationale="x" * 300)
+        AgentVote(side="UP", confidence=0.5, rationale="x" * 2100)
+
+
+def test_agent_vote_rationale_under_new_limit_succeeds() -> None:
+    """A 1500-char rationale (typical "wordy" LLM response) must now pass.
+    Pre-bump (240 limit) this would have raised ValidationError, dropping
+    the vote silently and contributing to the 23% null-meta rate."""
+    v = AgentVote(side="UP", confidence=0.5, rationale="x" * 1500)
+    assert v.rationale == "x" * 1500
 
 
 def test_meta_decision_fire_must_have_side() -> None:

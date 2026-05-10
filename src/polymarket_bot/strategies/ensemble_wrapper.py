@@ -214,7 +214,26 @@ class EnsembleWrapper:
                 "meta": meta_decision.model_dump() if meta_decision is not None else None,
             }
         )
-        if meta_decision is None or meta_decision.action != "FIRE":
+        # GATE-mode fallback policy. Two distinct cases:
+        #
+        #   (1) meta_decision is None — the LLM call failed (refusal, schema
+        #       fail, budget cap, network error). The LLM did NOT vote.
+        #       Falling through to base preserves the bot's trade volume
+        #       when the LLM infrastructure is degraded — gate-mode then
+        #       only ABSTAINs when the LLM ACTUALLY said no, not when it
+        #       failed to answer. Audit 2026-05-10: 23% of votes were
+        #       null-meta and silently dropped under the previous behavior.
+        #
+        #   (2) meta_decision.action == "ABSTAIN" — the LLM explicitly said
+        #       no. Honor it; return None (no fire).
+        if meta_decision is None:
+            LOG.warning(
+                "ensemble meta=None for window %s — falling back to base "
+                "candidate (gate-mode honors LLM only when it actually voted)",
+                self._window_ts,
+            )
+            return candidate
+        if meta_decision.action != "FIRE":
             return None
         candidate_side = _side_from_rationale(candidate.rationale)
         if candidate_side is not None and meta_decision.side != candidate_side:
