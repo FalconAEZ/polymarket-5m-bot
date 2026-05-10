@@ -143,7 +143,13 @@ tar xzf /home/ops/dashboard-track-backup-2026-05-12/dashboard-track-20260510T215
 - (c) Only WARN since restart = the expected `wide_fire — NO tier/priors/EV gates` notice. No ERROR / Traceback / CRITICAL. Periodic orphan-recovery firing normally (last: 22:03:46 "0 orphans found")
 - (d) Firing healthy — 3 recent windows fired (1778449500/1778450100/1778450400), 2/3 filled (3rd had ask=0.01 phantom-fill class → expected no-fill). 179 settled today.
 
-**+30min verify** scheduled (~22:28 UTC).
+**+30min verify @ 2026-05-10 22:33 UTC — CLEAN:**
+- (a) service `active`, ActiveEnterTimestamp = `Sun 2026-05-10 21:58:44 UTC` — UNCHANGED through full 35-min window (no parallel-SSH reset)
+- (b) HEAD = `fbcd38a` (audit-pass `fa586bb` pushed to GitHub but VPS has not pulled — by design; bot-staging stays on the deployed commit until a natural restart)
+- (c) Only WARN since restart still = the expected `wide_fire — NO tier/priors/EV gates` notice. No new ERRORs, no Tracebacks, no CRITICALs.
+- (d) **`fired=180, settled=180`** (no change vs +5m check) — meta=ABSTAIN gated all 6 windows from 22:05 to 22:30 inclusive. 7 ensemble_vote events in the period (one per window), 1 FIRE (22:00, already counted) + 6 ABSTAIN. All 6 abstain cases had specialists agreeing UP but meta returned ABSTAIN — either side mismatch with base candidate (DOWN on 4 of 6) or meta over-conservative when specialists agree. This is gate-mode working as intended. Flagged for Phase 18B follow-up.
+
+Deploy chain CLOSED. No further wakeups scheduled.
 
 ## Honest pushback recorded (for the vault)
 
