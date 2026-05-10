@@ -290,10 +290,12 @@ def _build_strategy(name: str) -> Strategy:
         #   "off"    — wrapper passes base verdict through (kill-switch)
         #   "shadow" — ensemble votes logged; base verdict still drives
         #   "gate"   — only fire when base AND meta agree
-        # Base strategy is always v2 with whatever knobs operator sets;
-        # wide-fire (ev_min=0.003) is the operator-approved Phase 5
-        # configuration so the ensemble has the maximum decision space
-        # to filter from.
+        # Base strategy via ENSEMBLE_BASE_STRATEGY env var:
+        #   "spot_aware_v2" (default) — tier-restricted, priors-gated v2
+        #   "wide_fire"               — fires every window with any spot
+        #                               move, NO tier/priors/EV gates.
+        #                               Operator-approved 2026-05-10:
+        #                               max volume + LLM filters.
         from polymarket_bot.agents.anthropic_client import AnthropicAdapter
         from polymarket_bot.agents.budget import BudgetTracker
         from polymarket_bot.agents.meta import MetaDecider
@@ -305,26 +307,52 @@ def _build_strategy(name: str) -> Strategy:
             EnsembleWrapper,
         )
 
-        # Build the base v2 with the same env knobs as STRATEGY=spot_aware_v2
-        # so the operator can tighten/loosen the underlying strategy
-        # independently of the ensemble layer.
-        base_kwargs: dict[str, float] = {}
-        d_min = _env_float("SPOT_AWARE_DELTA_MIN_BPS", None)
-        if d_min is not None:
-            base_kwargs["delta_min_bps"] = d_min
-        d_max = _env_float("SPOT_AWARE_DELTA_MAX_BPS", None)
-        if d_max is not None:
-            base_kwargs["delta_max_bps"] = d_max
-        ev_min = _env_float("SPOT_AWARE_EV_MIN_DOLLARS", None)
-        if ev_min is not None:
-            base_kwargs["ev_min_dollars_per_share"] = ev_min
-        limit_buf = _env_float("SPOT_AWARE_LIMIT_BUFFER_USD", None)
-        if limit_buf is not None:
-            base_kwargs["limit_buffer_usd"] = limit_buf
-        oracle_gap = _env_float("ORACLE_GAP_MIN_BPS", None)
-        if oracle_gap is not None and oracle_gap > 0:
-            base_kwargs["oracle_gap_min_bps"] = oracle_gap
-        base = SpotAwareStrategyV2(priors=load_priors(), **base_kwargs)
+        # Build the base strategy. Default = spot_aware_v2 with whatever
+        # knobs operator sets via SPOT_AWARE_* env vars. Override to
+        # `wide_fire` for max-volume mode where the LLM ensemble is the
+        # only meaningful gate.
+        base_strategy_name = (
+            os.environ.get("ENSEMBLE_BASE_STRATEGY", "spot_aware_v2").strip().lower()
+        )
+        base: Strategy
+        if base_strategy_name == "wide_fire":
+            from polymarket_bot.strategies.wide_fire import WideFireStrategy
+
+            wf_kwargs: dict[str, float] = {}
+            wf_d_min = _env_float("SPOT_AWARE_DELTA_MIN_BPS", None)
+            if wf_d_min is not None:
+                wf_kwargs["delta_min_bps"] = wf_d_min
+            wf_limit = _env_float("SPOT_AWARE_LIMIT_BUFFER_USD", None)
+            if wf_limit is not None:
+                wf_kwargs["limit_buffer_usd"] = wf_limit
+            LOG.warning(
+                "ensemble base=wide_fire — NO tier/priors/EV gates; LLM is the only filter (%s)",
+                wf_kwargs,
+            )
+            base = WideFireStrategy(**wf_kwargs)
+        elif base_strategy_name == "spot_aware_v2":
+            base_kwargs: dict[str, float] = {}
+            d_min = _env_float("SPOT_AWARE_DELTA_MIN_BPS", None)
+            if d_min is not None:
+                base_kwargs["delta_min_bps"] = d_min
+            d_max = _env_float("SPOT_AWARE_DELTA_MAX_BPS", None)
+            if d_max is not None:
+                base_kwargs["delta_max_bps"] = d_max
+            ev_min = _env_float("SPOT_AWARE_EV_MIN_DOLLARS", None)
+            if ev_min is not None:
+                base_kwargs["ev_min_dollars_per_share"] = ev_min
+            limit_buf = _env_float("SPOT_AWARE_LIMIT_BUFFER_USD", None)
+            if limit_buf is not None:
+                base_kwargs["limit_buffer_usd"] = limit_buf
+            oracle_gap = _env_float("ORACLE_GAP_MIN_BPS", None)
+            if oracle_gap is not None and oracle_gap > 0:
+                base_kwargs["oracle_gap_min_bps"] = oracle_gap
+            base = SpotAwareStrategyV2(priors=load_priors(), **base_kwargs)
+        else:
+            raise ValueError(
+                f"ENSEMBLE_BASE_STRATEGY must be 'spot_aware_v2' or 'wide_fire'; "
+                f"got {base_strategy_name!r}"
+            )
 
         api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
         mode_raw = os.environ.get("ENSEMBLE_MODE", "off").strip().lower()
