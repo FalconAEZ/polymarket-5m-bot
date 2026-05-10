@@ -1,0 +1,439 @@
+Subject: Phase 5 settle-resolution bug — fix the chainlink-fallback
+data corruption + verify dashboard resolver corrects it + decide on
+Phase 5 LLM ensemble future based on CLEAN data.
+
+Bot is RUNNING on STRATEGY=ensemble + ENSEMBLE_MODE=shadow +
+ENSEMBLE_BASE_STRATEGY=wide_fire on bot-staging since 2026-05-10
+04:31:41 UTC at commit 99915a2 (PR #1). Phase 5 LLM ensemble is
+voting on every fire — confirmed working including the hard
+economic gate (ABSTAIN on best_ask >= 0.90).
+
+BUT: live-data audit at 2026-05-10 04:50 UTC found the bot's
+`chainlink-local-fallback` settlement path is wrong **33% of the
+time**. 7 of 22 settled trades today have wrong recorded resolution
+vs Polymarket Gamma truth. Bankroll over-stated by ~$6.34. This
+contaminates EVERY metric: WR, per-trade PnL, the LLM shadow rollup
+verdict, the dashboard. 429 tests pass; PRs #1 + #2 open.
+
+This session's priority: fix the settle-resolution bug, backfill
+correct gamma truth, then re-evaluate Phase 5 ensemble using CLEAN
+data.
+
+================================================================================
+READ FIRST (vault context, in order)
+================================================================================
+
+1. /Users/hamad/.claude/projects/-Users-hamad-Desktop-PolyMarket-5m/memory/MEMORY.md
+   — index of memories. Top item: checkpoint_phase_5_llm_ensemble.md
+2. ~/.claude/projects/-Users-hamad-Desktop-PolyMarket-5m/memory/checkpoint_phase_5_llm_ensemble.md
+   — full Phase 5 hand-off detail (commits, env state, deferred items).
+3. state/sessions/2026-05-10-phase-5-llm-ensemble.md
+   — narrative session note for 2026-05-10. Lists the 8 commits, the
+     two queue-overflow incidents fixed, the LLM economic-gate
+     prompts, and the deferred items.
+4. runbooks/incidents/2026-05-10-ensemble-llm-queue-overflow.md
+   — postmortem for THIS session's incident. 16,223 dropped records.
+     Same bug class as the 2026-05-09 instant-settle incident.
+5. runbooks/incidents/2026-05-09-instant-settle-queue-overflow.md
+   — first-incident postmortem. Reference for the fix pattern.
+6. ~/.claude/projects/-Users-hamad-Desktop-PolyMarket-5m/memory/feedback_test_under_load.md
+   — the lesson (now applied 2x). Honor it on every PR touching the
+     runner main loop.
+7. design/phase-5-llm-ensemble.md
+   — operator-approved Phase 5 plan with my recorded objection on
+     pushing back on wide-fire (operator overrode; doc captures both).
+8. /Users/hamad/Desktop/PolyMarket-5m/CLAUDE.md
+   — durable preferences, 10 anti-vibe rules, locked decisions index.
+
+================================================================================
+STATE AT HAND-OFF (verify before driving)
+================================================================================
+
+Branch:  claude/jovial-hermann-7e103f
+HEAD:    99915a2 (vault closeout)
+Pushed:  yes
+
+VPS:
+  bot-staging.service active since 2026-05-10 04:31:41 UTC
+  STRATEGY=ensemble
+  ENSEMBLE_MODE=shadow
+  ENSEMBLE_BASE_STRATEGY=wide_fire
+  SPOT_AWARE_EV_MIN_DOLLARS=0.003   (wide-fire — fires every window)
+  ANTHROPIC_API_KEY set (length 108)
+  ANTHROPIC_DAILY_BUDGET_USD=10
+  INSTANT_SETTLE_ENABLED=1
+  ORPHAN_RECOVERY_ENABLED=1 (default)
+
+Dashboard at 127.0.0.1:8505 → SSH tunnel:
+  ssh -i ~/Downloads/LightsailDefaultKey-eu-west-1.pem -p 2222 \
+      -L 8505:127.0.0.1:8505 -N -f ops@108.132.51.116
+
+Quick state check (run these BEFORE any work):
+  ssh -i $HOME/Downloads/LightsailDefaultKey-eu-west-1.pem -p 2222 \
+      ops@108.132.51.116 'systemctl is-active bot-staging.service && \
+      cd /home/ops/polymarket-5m-bot && git rev-parse HEAD && \
+      tail -1 state/decisions/$(date -u +%Y-%m-%d).jsonl 2>/dev/null'
+
+Expected: active; HEAD=99915a2 (or further); JSONL present with
+recent entry.
+
+If any check fails: STOP. Re-read the Phase 5 checkpoint before
+acting.
+
+================================================================================
+THE BUG (read this carefully — it's why this session exists)
+================================================================================
+
+Audit script: /tmp/audit_resolutions_v2.py (already on VPS).
+Run again this session to confirm + measure scope:
+
+  ssh -i $HOME/Downloads/LightsailDefaultKey-eu-west-1.pem -p 2222 \
+      ops@108.132.51.116 'cd /home/ops/polymarket-5m-bot && \
+      .venv/bin/python /tmp/audit_resolutions_v2.py \
+      state/decisions/$(date -u +%Y-%m-%d).jsonl'
+
+Yesterday's audit (2026-05-10):
+
+  total settled: 22
+  resolved via polymarket (instant): 0   ← gamma poll FAILS 100% of the time
+  resolved via polymarket-recovery:  1
+  resolved via chainlink-fallback:   21
+  matched gamma truth:               14 (67%)
+  MISMATCHED gamma truth:             7 (33%)
+  bankroll over-stated by:           +$6.34
+
+Two distinct problems:
+
+A) **Gamma instant-settle never succeeds in production.** Bot polls
+   gamma every 1s for 30s after window close. ALL 21 chainlink-
+   fallback settles came after the 30s timeout fired. Yet manual
+   curl of gamma a few minutes later returns the truth (closed=true,
+   outcomePrices=[1,0]). So gamma DOES resolve — just not within
+   our 30s polling window, OR our polling-loop is hitting a stale
+   CDN response.
+
+   Hypothesis: gamma returns `closed=false` with cache TTL ~30s. We
+   poll for 30s, all queries hit the cached "not closed yet"
+   response. By the time the cache expires, our timeout has fired.
+
+B) **Chainlink-local-fallback is wrong ~33% of the time.** The
+   bot's `_state.close_oracle` is the latest OracleUpdate it saw
+   via WebSocket before window close. Polymarket's on-chain
+   settlement uses a different/later chainlink reading. Even tiny
+   timing differences flip the answer when the spot move is small
+   (most windows are < ±5bps total = sub-tick chainlink).
+
+   Concrete example from yesterday: window 1778387400.
+     fired UP at fill 0.911
+     bot's open_oracle=80819.29, close_oracle=80812.415
+     chainlink says: close < open → DOWN → bot recorded -$5.00
+     gamma says: outcomePrices=["1","0"] → UP won
+     actual pnl was +$0.49
+
+================================================================================
+THE WORK — six items, in priority order
+================================================================================
+
+Sequential. Items 1-3 are the data-integrity fix. Item 4 is the
+backfill. Items 5-6 are how to use the now-clean data.
+
+------------------------------------------------------------------------
+ITEM 1 — Verify the dashboard's resolver_loop is actually correcting
+the wrong JSONL records (~30 min)
+------------------------------------------------------------------------
+
+The 2026-05-09 dashboard incident postmortem said the dashboard's
+resolver_loop scans recent settled records and re-resolves via gamma.
+If it's actually running, the dashboard SHOULD show CORRECTED PnL
+even when JSONL has the chainlink-fallback wrong answer.
+
+Operator reported window 1778387400 showed -$5.00 in the dashboard
+at 2026-05-10 ~04:45 UTC. If true, resolver_loop isn't doing its job.
+
+Steps:
+  a. SSH to VPS. tail dashboard-server.log for resolver_loop activity:
+       grep -iE "resolver|re-resolve|gamma" \
+           /home/ops/polymarket-5m-bot/state/dashboard-server.log | tail -30
+  b. Check state/decisions-resolved/ for the resolver's output:
+       ls -la /home/ops/polymarket-5m-bot/state/decisions-resolved/
+  c. /api/state.decisions[].resolution and /api/state.decisions[].pnl_usd
+     should reflect the gamma-corrected truth.
+  d. If resolver isn't running or isn't writing corrections: file an
+     incident note + fix it. The dashboard is the operator's source of
+     truth; it MUST show correct numbers even when raw JSONL is wrong.
+
+------------------------------------------------------------------------
+ITEM 2 — Extend gamma instant-settle timeout 30s → 5min (~30 min)
+------------------------------------------------------------------------
+
+With the background-settle architecture (commit 43872e9, validated),
+a long gamma poll doesn't block anything. The 30s timeout was sized
+for a synchronous-call era; we can extend it generously now.
+
+  src/polymarket_bot/_paper/runner.py:
+    DEFAULT_INSTANT_SETTLE_TIMEOUT_S: float = 30.0
+                                              ↓
+    DEFAULT_INSTANT_SETTLE_TIMEOUT_S: float = 300.0  # 5 min
+
+  Or via env:
+    INSTANT_SETTLE_GAMMA_TIMEOUT_S=300  in .envrc
+
+Plus consider increasing interval from 1s to e.g. 5s — with 5 min
+window we make ~60 polls. Reduces gamma load + sidesteps the
+1s-cache-TTL hypothesis.
+
+Add a test: settle background task awaits gamma for 5 min before
+falling back; if gamma resolves at minute 4, the resolution is
+gamma's, not chainlink's.
+
+------------------------------------------------------------------------
+ITEM 3 — Post-hoc gamma re-resolution (~1-2h)
+------------------------------------------------------------------------
+
+Even with longer timeout, gamma might still occasionally fail (UMA
+slow, network blip). Need a SECOND chance: after a chainlink
+fallback fires, schedule another gamma retry 5-10 minutes later.
+
+Sketch (in `_do_settle` after chainlink fallback writes settled):
+
+  if resolution_source == "chainlink-local-fallback":
+      task = asyncio.create_task(
+          self._post_hoc_gamma_retry(snap, settled_ts_ns),
+          name=f"post-hoc-gamma-{snap.window_ts}",
+      )
+      self._pending_post_hoc_retries.add(task)
+      task.add_done_callback(self._pending_post_hoc_retries.discard)
+
+  async def _post_hoc_gamma_retry(self, snap, original_settled_ts_ns):
+      # Wait 5 min, then poll gamma at 30s intervals for up to 25 min
+      await asyncio.sleep(300)
+      for _ in range(50):  # 50 × 30s = 25 min
+          truth = await asyncio.to_thread(gamma_resolution, snap.window_ts, ...)
+          if truth in ("UP", "DOWN"):
+              if truth != snap.original_resolution:
+                  # Write a "settled-correction" record
+                  self._log.record_settled_correction(
+                      decision_id=snap.decision_id,
+                      original_resolution=snap.original_resolution,
+                      corrected_resolution=truth,
+                      original_pnl=...,
+                      corrected_pnl=...,
+                      original_settled_ts_ns=original_settled_ts_ns,
+                      corrected_ts_ns=self._clock_ns(),
+                  )
+              return
+          await asyncio.sleep(30)
+
+Schema decision: a NEW kind="settled_correction" record vs
+overwriting the original "settled". Append-only is safer (preserves
+audit history); the dashboard reads both and prefers correction
+when available.
+
+DecisionLog needs `record_settled_correction` method. Plus tests:
+  - Correction fires when chainlink and gamma disagree
+  - No correction when chainlink and gamma agree
+  - Multiple corrections never written for same decision_id
+
+Shutdown awaits in-flight retries (same pattern as
+_pending_settles + _pending_shadow_votes).
+
+------------------------------------------------------------------------
+ITEM 4 — Backfill the 7 wrong settles + recompute today's stats (~30 min)
+------------------------------------------------------------------------
+
+Use /tmp/audit_resolutions_v2.py output as the source. For each
+mismatched record, write a settled_correction (or operator-blessed
+manual fix). Recompute:
+
+  - True bankroll today
+  - True WR today
+  - True per-trade PnL today
+
+This is needed for the ensemble shadow rollup to give a CORRECT
+verdict — current data shows e.g. window 1778387400 (UP, fill 0.911)
+as -$5 loss; LLM meta said ABSTAIN on this fire (correctly per
+economic gate). With wrong data the rollup would say "LLM
+disagreed and would have saved $5"; with correct data the LLM's
+abstain saved $0.49 (still right call but smaller absolute lift).
+
+Either:
+  a. Operator runs a one-shot script that reads
+     /tmp/audit_resolutions_v2.py output + writes
+     settled_correction records for the 7 mismatches.
+  b. Just delete-and-replay (clean), but harder due to live
+     dashboard running off the same files.
+
+Option (a) is safer.
+
+------------------------------------------------------------------------
+ITEM 5 — Re-run ensemble shadow rollup on CLEAN data (~10 min)
+------------------------------------------------------------------------
+
+Once Items 1-4 are done:
+
+  ssh -i $HOME/Downloads/LightsailDefaultKey-eu-west-1.pem -p 2222 \
+      ops@108.132.51.116 'cd /home/ops/polymarket-5m-bot && \
+      uv run python runbooks/scripts/ensemble_shadow_rollup.py'
+
+The verdict per design's binary gate:
+  (a) +5pp WR uplift over deterministic → flip ENSEMBLE_MODE=gate
+  (b) ±3pp → keep deterministic baseline; ensemble was free observation
+  (c) Worse → drop, write Phase 5 conclusive postmortem, restore v2-tight
+
+Caveat: with only ~22 settled trades today and a 7-trade correction,
+n is too small for a stable verdict. Recommend continuing shadow
+soak for another 24-48h to get n ≥ 30 settled. The promotion
+decision should not be made on n < 30.
+
+------------------------------------------------------------------------
+ITEM 6 — Decision: continue Phase 5 OR revert (~operator's call)
+------------------------------------------------------------------------
+
+After clean rollup data is in:
+
+  - If LLM gate beats deterministic by ≥+5pp → flip
+    ENSEMBLE_MODE=gate. Watch for 30 min. Most fires get blocked
+    (meta is more selective than wide_fire). PnL/trade should
+    climb sharply.
+
+  - If gate hurts → revert to v2-tight (STRATEGY=spot_aware_v2,
+    ev_min=0.05, oracle_gap=1.0). The validated edge from yesterday's
+    audit was: ev≥0.05 + oracle aligned + |gap|≥1bps → 72.4% WR.
+    That's the deterministic floor that doesn't need LLM at all.
+
+  - If neither is clearly better → run BOTH for another week. The
+    sample size is small. Don't make a permanent call on noisy data.
+
+================================================================================
+ANTI-VIBE RULES — enforced this session, especially relevant
+================================================================================
+
+Same 10 rules in CLAUDE.md. Especially:
+
+- **Test runtime behavior under load (feedback_test_under_load.md)**:
+  Item 3's post-hoc retry runs as a background task. Test it under
+  heavy fire load to confirm it doesn't compound the queue-overflow
+  failure mode. Two incidents already from inline-await; refuse to
+  ship without the queue-doesn't-overflow test.
+
+- **Bug → failing test → fix → green (#2)**: Item 3's correction
+  logic ships with a test that injects a chainlink-fallback +
+  later gamma=different scenario, asserts a settled_correction
+  record lands.
+
+- **Always ship a kill-switch env var**: Item 3's post-hoc retry
+  needs `POST_HOC_GAMMA_RETRY_ENABLED` (default true). If retries
+  somehow misbehave, operator can disable in 30s.
+
+- **Defer bot-affecting deploys to natural restart points**: the
+  fix for items 1-3 needs a bot restart. Bundle into one restart
+  AFTER all three are tested + green. Don't restart mid-soak for
+  unrelated work.
+
+================================================================================
+HARD LIMITS
+================================================================================
+
+- Bankroll: $1,000 paper (locked decision #10). Don't promote
+  anything whose CORRECTED cumulative PnL crosses -$150.
+- bot.service stays DISABLED (Phase 6 stub).
+- Funder key NEVER goes to the VPS.
+- Anthropic spend: ~$0.455 cumulative. This session likely adds
+  $1-3 in the LLM-during-soak budget. Hard cap remains $10/day.
+
+================================================================================
+SESSION BOUNDARY — ENDS WHEN ONE OF
+================================================================================
+
+(a) Items 1-4 shipped, tested, deployed. Backfill complete. Clean
+    data ready for ensemble rollup. ✅ full
+
+(b) Items 1-3 shipped + tested + PR'd but operator wants to review
+    backfill before applying. ✅ partial
+
+(c) Three-fix-failed on Item 2 or 3 → write
+    runbooks/incidents/<date>-settle-resolution-broken.md, abort. 🛑
+
+(d) Context ≥ 60% before Item 4 completes → close out what's green,
+    write a partial checkpoint, stop. ⏸
+
+================================================================================
+CHECKS TO RUN PROACTIVELY THIS SESSION
+================================================================================
+
+Before/during work:
+
+1. **Audit early:** run /tmp/audit_resolutions_v2.py before touching
+   anything. Confirms scope hasn't changed; gives you the baseline
+   mismatch count.
+
+2. **Cost check:** verify `redis-cli LLEN` queues empty + bot still
+   running. The Phase 5 ensemble + new background-settle code is
+   live; sanity check it didn't break overnight.
+
+3. **Dashboard truth check:** open the dashboard at 127.0.0.1:8505
+   and compare 1-2 recent settled trades' displayed PnL vs gamma
+   curl. If dashboard shows the wrong numbers, the resolver_loop
+   isn't running. That's Item 1.
+
+4. **Bot uptime check:** if the bot crashed/restarted overnight (we
+   shipped a lot in this session), there may be new orphan-recovery
+   runs in journal. Sanity-check no errors.
+
+5. **Token budget check:** sum tokens used today via Anthropic
+   dashboard or BudgetTracker logs. If we're approaching $10/day
+   cap, throttle the LLM call frequency before continuing the soak.
+
+After fix:
+
+6. **Re-audit after Item 3:** rerun audit_resolutions_v2.py. Mismatch
+   count should drop to 0 (after Item 4 backfill applied).
+
+7. **Verify economic gate still working:** look for at least one
+   meta=ABSTAIN with rationale citing best_ask>=0.90 in the new
+   ensemble logs since restart.
+
+8. **Verify post-hoc retries fired:** journal should show "post-hoc
+   gamma retry succeeded for window N" for at least one window.
+
+================================================================================
+THE EDGE — WHY THIS MATTERS
+================================================================================
+
+The Phase 5 LLM ensemble is the operator's bet for getting WR above
+60%. Right now we don't know if it works because:
+
+  - 33% of our "ground truth" labels are wrong
+  - The LLM is voting against contaminated data
+  - The shadow rollup verdict will be biased by the wrong outcomes
+
+Fixing the settle-resolution bug is the prerequisite for ANY
+data-driven decision about whether the LLM ensemble adds edge,
+whether the regime detector helps, whether oracle_gap is real,
+etc. EVERY downstream metric is wrong by some amount today.
+
+After the fix, we have CLEAN data. Then the LLM rollup tells us
+the truth: does LLM gate-mode beat deterministic-only? If yes,
+flip gate mode → bot fires less, wins more, bankroll climbs. If
+no, revert to v2-tight + oracle-gap (validated 72.4% WR on the
+historical audit) and stop paying for LLM tokens.
+
+================================================================================
+HAND-OFF SIGNATURE
+================================================================================
+
+Previous session closed at HEAD 99915a2 on `claude/jovial-hermann-7e103f`.
+Pushed to github.com/FalconAEZ/polymarket-5m-bot.
+
+Bot active in shadow mode. LLM ensemble voting on every fire +
+economic gate verified. Two queue-overflow incidents fixed. But
+chainlink-fallback resolution is wrong 1/3 of the time → all today's
+PnL numbers are off → must fix before any data-driven decision.
+
+This session: ship Items 1-4 (resolver verify + gamma timeout extend
++ post-hoc retry + backfill). Items 5-6 are the post-fix evaluation.
+
+If everything goes well, the bot ends the session with: clean data
+in JSONL, dashboard showing correct PnL, ensemble shadow rollup
+giving a real verdict, operator decision on gate vs revert made on
+solid ground.
