@@ -131,6 +131,39 @@ def test_returns_none_when_limit_just_below_effective_after_impact() -> None:
     assert fill is None
 
 
+def test_taker_refuses_floor_ask_when_depth_unknown() -> None:
+    """Audit 2026-05-10 windows 1778388600 + 1778389500: best_ask was at
+    Polymarket's $0.01 minimum tick and ask_size_top was None (the WS
+    price_change / best_bid_ask events do not carry depth). The simulator
+    over-filled $5 at the floor price, producing 454 shares and a phantom
+    $449 win when UP later won. The defensive guard refuses the fill;
+    the strategy's fired record gets fill=None and pnl=0."""
+    sim = FillSimulator()  # default floor_best_ask=0.02
+    book = _book(best_ask=0.01, ask_size_top=None)
+    fill = sim.attempt_fill(_decision(price_limit=0.03), book, is_taker=True)
+    assert fill is None
+
+
+def test_taker_allows_floor_ask_when_depth_is_known() -> None:
+    """When ask_size_top is known, the impact model can do its job —
+    no need to refuse on price alone. A $5 buy against $0.50 of top
+    depth at $0.01 fills with substantial impact."""
+    sim = FillSimulator(impact_per_5usd_per_5k=0.001, max_impact_usd=0.05)
+    book = _book(best_ask=0.01, ask_size_top=50.0)  # $0.50 of depth
+    # price_limit must clear best_ask + impact; impact is capped at 0.05
+    fill = sim.attempt_fill(_decision(price_limit=0.10), book, is_taker=True)
+    assert fill is not None
+
+
+def test_taker_allows_above_floor_even_when_depth_unknown() -> None:
+    """The guard only rejects when BOTH best_ask is at the floor AND
+    depth is unknown. A book with best_ask above the floor is fine."""
+    sim = FillSimulator()
+    book = _book(best_ask=0.50, ask_size_top=None)
+    fill = sim.attempt_fill(_decision(price_limit=0.55), book, is_taker=True)
+    assert fill is not None
+
+
 def test_constructor_rejects_negative_fee() -> None:
     with pytest.raises(ValueError, match="fee_bps"):
         FillSimulator(fee_bps=-0.1)

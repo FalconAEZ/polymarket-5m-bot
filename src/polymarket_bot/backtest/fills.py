@@ -24,6 +24,17 @@ DEFAULT_REFERENCE_DEPTH_USD = 5_000.0
 # every fill rejected even though they'd execute fine in practice.
 DEFAULT_MAX_IMPACT_USD = 0.01
 
+# Defensive depth floor — refuse taker fills when best_ask is at-or-near
+# Polymarket's $0.01 minimum tick AND ask_size_top is unknown. The audit
+# 2026-05-10 found two windows (1778388600, 1778389500) that produced
+# phantom $449 wins because the bot bought 454.5 shares at $0.011 against
+# a book with best_ask=$0.01 and ask_size_top=None (the WS price_change /
+# best_bid_ask events do not carry depth). Real Polymarket depth at the
+# floor is typically <$1 worth of shares; the simulator over-fills the
+# entire $5 size and inflates pnl by 50-100x. Refusing is the conservative
+# choice when we have no way to know depth.
+DEFAULT_FLOOR_BEST_ASK = 0.02
+
 
 class FillSimulator:
     """Simulates a buy-side fill against a single BookUpdate snapshot."""
@@ -36,6 +47,7 @@ class FillSimulator:
         reference_trade_usd: float = DEFAULT_REFERENCE_TRADE_USD,
         reference_depth_usd: float = DEFAULT_REFERENCE_DEPTH_USD,
         max_impact_usd: float = DEFAULT_MAX_IMPACT_USD,
+        floor_best_ask: float = DEFAULT_FLOOR_BEST_ASK,
     ) -> None:
         if fee_bps < 0:
             raise ValueError(f"fee_bps must be >= 0, got {fee_bps}")
@@ -44,6 +56,7 @@ class FillSimulator:
         self._ref_trade = reference_trade_usd
         self._ref_depth = reference_depth_usd
         self._max_impact = max(0.0, max_impact_usd)
+        self._floor_best_ask = max(0.0, floor_best_ask)
 
     def attempt_fill(
         self, decision: Decision, book: BookUpdate, *, is_taker: bool = True
@@ -83,6 +96,17 @@ class FillSimulator:
         if book.best_ask is None:
             return None
         if is_taker:
+            # Defensive depth-floor guard. When best_ask sits at-or-near
+            # Polymarket's $0.01 minimum tick AND we have no top-of-book
+            # depth info, the linear-impact model has no way to know the
+            # real ladder thinness — it will fill the entire size at the
+            # floor and produce a phantom 50-100x return when the side
+            # eventually wins (audit 2026-05-10, windows 1778388600 +
+            # 1778389500). Refuse here; the strategy's `fired` record
+            # gets fill=None and pnl=0 at settle. Bypassed when ask_size
+            # is known (the impact model can do its job then).
+            if book.best_ask <= self._floor_best_ask and book.ask_size_top is None:
+                return None
             depth_usd = self._ask_depth_usd(book)
             impact = self._impact(decision.size_usd, depth_usd)
             effective_ask = book.best_ask + impact
