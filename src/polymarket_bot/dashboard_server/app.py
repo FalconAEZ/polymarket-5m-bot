@@ -21,6 +21,12 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from polymarket_bot.dashboard.loaders import load_decisions
+from polymarket_bot.dashboard_server.resolver_loop import (
+    ResolverConfig,
+    ResolverState,
+    cancel_resolver_task,
+    spawn_resolver_task,
+)
 from polymarket_bot.dashboard_server.state import (
     DECISIONS_SUBDIR,
     UpstreamCache,
@@ -30,6 +36,7 @@ from polymarket_bot.dashboard_server.upstream import (
     cancel_upstream_tasks,
     spawn_upstream_tasks,
 )
+from polymarket_bot.resolver import active_window_ts
 
 log = logging.getLogger("dashboard_server.app")
 
@@ -45,15 +52,31 @@ def _state_dir() -> Path:
 
 
 def _resolve_current_window_side() -> tuple[int | None, str | None]:
-    """Returns (window_ts, side) for the most-recent fired decision so
-    the CTF poller can subscribe to the right token. Returns (None, None)
-    when no decisions exist yet."""
+    """Returns (window_ts, side) for the CTF orderbook poller to subscribe to.
+
+    Audit 2026-05-10: previously returned the most-recent FIRED decision's
+    (window_ts, side) — which meant the OUR MARKET panel locked onto the
+    last-fire window forever, even after that window closed and was hours
+    stale. With the v2 ev_min=0.05 tightening firing ~1/day, this caused
+    the panel to show empty books for the closed-and-removed market.
+
+    New behavior: always return the CURRENT 5m window's window_ts. For
+    side, prefer the most-recent fired decision's side IF that fire is
+    still in the current window (active bet); otherwise default to "UP"
+    so the panel shows live depth on at least one side rather than going
+    blank.
+    """
+    import time
+
+    current_window = active_window_ts(int(time.time()))
     state_dir = _state_dir()
     rows = load_decisions(state_dir / DECISIONS_SUBDIR, since_utc_date=None)
     if not rows:
-        return (None, None)
+        return (current_window, "UP")
     most_recent = max(rows, key=lambda r: r.decision_dt_utc)
-    return (most_recent.window_ts, most_recent.side)
+    if most_recent.window_ts == current_window:
+        return (current_window, most_recent.side)
+    return (current_window, "UP")
 
 
 @asynccontextmanager
@@ -65,13 +88,18 @@ async def lifespan(app: FastAPI) -> Any:
         state_dir_resolver=_resolve_current_window_side,
         on_update=on_update,
     )
+    resolver_state = ResolverState()
+    resolver_task = spawn_resolver_task(_state_dir(), resolver_state, config=ResolverConfig())
     app.state.upstream_cache = cache
     app.state.on_update = on_update
     app.state.upstream_tasks = tasks
+    app.state.resolver_state = resolver_state
+    app.state.resolver_task = resolver_task
     try:
         yield
     finally:
         await cancel_upstream_tasks(tasks)
+        await cancel_resolver_task(resolver_task)
 
 
 app = FastAPI(title="Polymarket bot dashboard v3", lifespan=lifespan)
