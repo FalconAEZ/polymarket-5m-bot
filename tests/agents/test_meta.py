@@ -21,7 +21,10 @@ def _meta_decision(action: str, side: str | None, confidence: float) -> MetaDeci
     )
 
 
-async def test_meta_uses_sonnet_with_adaptive_and_effort() -> None:
+async def test_meta_uses_sonnet_with_effort_no_adaptive_thinking_by_default() -> None:
+    """Adaptive thinking was disabled by default on 2026-05-10 14:38 UTC after
+    audit showed 2/3 of gate-mode LLM votes timing out at 2.5s with adaptive
+    thinking on. Sonnet-medium without adaptive completes in ~1-2s typically."""
     adapter = FakeAdapter(responses=[(_meta_decision("FIRE", "UP", 0.7), TokenUsage())])
     meta = MetaDecider(adapter)
     assert meta.model == "claude-sonnet-4-6"
@@ -34,8 +37,20 @@ async def test_meta_uses_sonnet_with_adaptive_and_effort() -> None:
     assert isinstance(decision, MetaDecision)
     call = adapter.calls[0]
     assert call.model == "claude-sonnet-4-6"
-    assert call.thinking == {"type": "adaptive"}
+    assert call.thinking is None
     assert call.effort == "medium"
+
+
+async def test_meta_can_enable_adaptive_thinking_explicitly() -> None:
+    """Operator can opt back into adaptive thinking via the explicit flag if
+    they're willing to take the latency hit (e.g. higher gate_llm_timeout_s)."""
+    adapter = FakeAdapter(responses=[(_meta_decision("FIRE", "UP", 0.7), TokenUsage())])
+    meta = MetaDecider(adapter, adaptive_thinking=True)
+    await meta.decide(
+        sample_context(),
+        {"orderbook": sample_vote("UP", 0.7), "oracle_gap": sample_vote("UP", 0.8)},
+    )
+    assert adapter.calls[0].thinking == {"type": "adaptive"}
 
 
 async def test_meta_serialises_votes_with_agent_names() -> None:

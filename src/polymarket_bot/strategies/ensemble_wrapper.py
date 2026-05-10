@@ -67,11 +67,15 @@ MIN_VOTES_FOR_META = 2
 # round-trip (Haiku specialists in parallel + Sonnet meta serially). If
 # the LLM hangs/slows, the runner can't drain its feed queue and drops
 # market records (audit 2026-05-10 14:24 UTC: 13,172 records dropped in
-# the first ~17min of gate-mode). 2.5s is generous enough that healthy
-# Haiku-parallel + Sonnet-medium completes (typical ~1-2s) but tight
-# enough that a single slow-LLM tail event doesn't cascade. On timeout,
-# we fall back to base candidate (same policy as meta=None).
-DEFAULT_GATE_LLM_TIMEOUT_S = 2.5
+# the first ~17min of gate-mode). On timeout, we fall back to base
+# candidate (same policy as meta=None).
+#
+# Bumped 2.5s -> 4.0s on 2026-05-10 14:38 UTC: post-deploy sample showed
+# 2/3 of LLM votes timing out at 2.5s. Sonnet meta with adaptive thinking
+# + medium effort genuinely needs 3-4s end-to-end (Haiku specialists
+# parallel ~1s + Sonnet meta serial ~2-3s). 4s gives the median LLM
+# call room while still capping the worst case.
+DEFAULT_GATE_LLM_TIMEOUT_S = 4.0
 
 
 class EnsembleWrapper:

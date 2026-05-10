@@ -1,12 +1,17 @@
-"""Meta-decider (Sonnet 4.6 with adaptive thinking).
+"""Meta-decider (Sonnet 4.6, effort=medium, no adaptive thinking).
 
 Synthesises 3 specialist votes plus the deterministic composite into a
 final FIRE/ABSTAIN action. Prompt is in prompts/meta.md.
 
 Per the Anthropic API skill: Sonnet 4.6 supports adaptive thinking + the
-effort parameter. We use `thinking={"type": "adaptive"}` and
-`effort="medium"` — fast enough for the 5m cadence, deep enough to
-synthesise across 3 specialists + a composite.
+effort parameter. Originally used `thinking={"type": "adaptive"}` +
+`effort="medium"` but the audit 2026-05-10 14:38 UTC showed 2/3 of
+gate-mode LLM votes timing out at the runner's 2.5s budget — adaptive
+thinking adds ~2-3s of inference time per call. Disabling it brings
+typical Sonnet-medium round-trips into the 1-2s range so gate-mode
+actually delivers LLM gating instead of perpetually falling back to
+base. Effort=medium is preserved (fast enough for 5m cadence, deep
+enough to synthesise across 3 specialists + composite).
 """
 
 from __future__ import annotations
@@ -44,7 +49,7 @@ class MetaDecider:
         model: str = DEFAULT_MODEL,
         max_tokens: int = DEFAULT_MAX_TOKENS,
         effort: str | None = DEFAULT_EFFORT,
-        adaptive_thinking: bool = True,
+        adaptive_thinking: bool = False,
         prompt_path: str | Path | None = None,
     ) -> None:
         self._adapter = adapter
