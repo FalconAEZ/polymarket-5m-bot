@@ -2,6 +2,7 @@ import { motion, AnimatePresence } from "framer-motion"
 import { useDashboard } from "../store/dashboardStore"
 import { fmtUsd } from "../lib/format"
 import { cn } from "../lib/cn"
+import { PulseDot } from "../motion/PulseDot"
 import { Panel } from "./_Panel"
 import type { DecisionTapeRow } from "../store/types"
 
@@ -28,15 +29,21 @@ export function DecisionsTape() {
   // is precise to milliseconds, well within the precision we need to
   // render an MM:SS countdown.
   const nowS = Date.parse(s.now_utc_iso) / 1000
+  // Current 5m window open at this moment (UTC). Independent of whether
+  // the bot has fired — surfaces "the live market" to the operator even
+  // when v2 is being patient (ev_min=0.05 → ~1 fire/day).
+  const currentWindowTs = Math.floor(nowS / WINDOW_DURATION_S) * WINDOW_DURATION_S
+  // Has the bot already fired in the current window? If yes, the existing
+  // row at the top of the tape covers it — don't render a duplicate
+  // "WAITING" banner. If no, the banner shows below.
+  const firedInCurrentWindow =
+    s.decisions.length > 0 && s.decisions[0].window_ts === currentWindowTs
 
   return (
     <Panel title="DECISIONS TAPE" subtitle={`${s.n_decisions_total} total · newest first`}>
-      {/*
-        flex-1 + min-h-0 is the canonical "let me shrink under flex"
-        idiom — without min-h-0 the table's intrinsic size forces the
-        scroll container to grow past its parent on Safari (operator
-        screenshot — 89 rows × 22px overflowed the panel boundary).
-      */}
+      {!firedInCurrentWindow && (
+        <LiveWindowBanner currentWindowTs={currentWindowTs} nowS={nowS} />
+      )}
       <div className="flex-1 min-h-0 overflow-y-auto">
         <table className="w-full text-[10.5px] tabular-nums">
           <thead className="sticky top-0 bg-bg-panel z-10">
@@ -62,6 +69,64 @@ export function DecisionsTape() {
         </table>
       </div>
     </Panel>
+  )
+}
+
+/** Banner shown ABOVE the tape when the bot has not (yet) fired in the
+ * current 5m window. Surfaces the live market with a countdown so the
+ * operator can see "the bot is watching this window" rather than a tape
+ * full of stale fires. Replaced by a normal DecisionRow once the bot
+ * commits to a fire.
+ *
+ * Per the 2026-05-10 operator feedback ("decisions tape is not showing
+ * current 5min btc market"). v2 with ev_min=0.05 fires ~1/day, so most
+ * windows look "empty" in the tape — this banner makes the live state
+ * explicit. */
+function LiveWindowBanner({
+  currentWindowTs,
+  nowS,
+}: {
+  currentWindowTs: number
+  nowS: number
+}) {
+  const windowEndS = currentWindowTs + WINDOW_DURATION_S
+  const secondsLeft = Math.max(0, windowEndS - nowS)
+  const minutesElapsed = WINDOW_DURATION_S - secondsLeft
+  // Progress 0→1 across the 5m window, used for the inset bar fill.
+  const progress = Math.min(1, Math.max(0, minutesElapsed / WINDOW_DURATION_S))
+  return (
+    <div
+      key={currentWindowTs}
+      className={cn(
+        "pmb-fade-in relative mb-1 flex items-center gap-3 overflow-hidden rounded-sm border bg-bg-panel-hi px-2.5 py-1.5",
+        "border-[rgba(255,184,74,0.32)]",
+      )}
+    >
+      <PulseDot tone="warn" />
+      <div className="flex flex-col leading-tight">
+        <span className="text-[8.5px] font-bold uppercase tracking-[0.10em] text-text-muted">
+          live window · waiting for signal
+        </span>
+        <span className="font-mono text-[11px] font-bold tabular-nums text-text-primary">
+          {currentWindowTs}
+        </span>
+      </div>
+      <div className="ml-auto flex flex-col items-end leading-tight">
+        <span className="text-[8.5px] font-bold uppercase tracking-[0.10em] text-text-muted">
+          closes in
+        </span>
+        <span className="font-mono text-[12px] font-bold tabular-nums text-warn">
+          {fmtCountdown(secondsLeft)}
+        </span>
+      </div>
+      {/* progress bar — fills left→right across the 5m window */}
+      <motion.div
+        className="absolute bottom-0 left-0 h-[2px] bg-warn/60"
+        initial={false}
+        animate={{ width: `${progress * 100}%` }}
+        transition={{ duration: 0.6, ease: "easeOut" }}
+      />
+    </div>
   )
 }
 
