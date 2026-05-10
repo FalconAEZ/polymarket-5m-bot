@@ -68,6 +68,45 @@ If VPS HEAD is unexpectedly past b6b3599 or the dashboard track has
 landed, STOP and re-read the latest checkpoint.
 
 ================================================================================
+OPERATOR HOUSEKEEPING — surface to operator at session start
+================================================================================
+
+Three items inherited from the 2026-05-10 close-out (NOT Phase 15
+work, but should not be lost). Ask the operator whether to handle each
+before / during / after Phase 15:
+
+1. **Resolve VPS dashboard track.** ~80 uncommitted lines on
+   `src/polymarket_bot/dashboard/loaders.py` (adding systemd MainPID
+   integration) + mods to `dashboard/theme.py` + `state/token_side_index.json`
+   + 10 untracked dashboard files + new `dashboard_server/` dir.
+   Until this is committed or stashed, VPS cannot `git pull` Phase 14
+   (b6b3599) or Phase 15.
+
+2. **Commit 3 untracked session notes on Mac main** at
+   `/Users/hamad/Desktop/PolyMarket-5m/`:
+     - `state/sessions/2026-05-09-dashboard-v2-v3-vps-deploy.md`
+     - `state/sessions/2026-05-10-phase-12-planning.md`
+     - `state/sessions/2026-05-11-phase-12-master-plan.md`
+   These exist as untracked files on Mac main but appear to be
+   documentation meant to be tracked. (Mac main is at HEAD 9723f5f as
+   of 2026-05-11; these notes pre-date the worktree session-note
+   commits and represent prior-session work that was copied to the
+   project root for stable access outside the worktree, per the Phase
+   12 master-plan checkpoint memory. May already be redundant with
+   the committed copies — diff before committing.)
+
+3. **Push origin/main forward (operator's call).** Local Mac main is
+   at `9723f5f` after the Phase 14 vault refresh; GitHub `origin/main`
+   is at `1baf993` (Phase 11.A.2 closeout) — operator-controlled
+   pattern. If the operator wants GitHub's main to reflect current
+   work: `git push origin main`. If they prefer the lagging-canonical
+   pattern continues, leave it.
+
+These are not Phase 15 blockers, but item (1) IS a deploy blocker for
+Phase 15. If the operator declines to resolve it, Phase 15 ships in
+the same "code+tests committed; deploy deferred" state as Phase 14.
+
+================================================================================
 THE WORK — three items in strict order
 ================================================================================
 
