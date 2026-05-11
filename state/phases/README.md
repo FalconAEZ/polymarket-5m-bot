@@ -34,7 +34,8 @@ Chronological + status. Each phase has its own note when work begins; tags are p
 
 ## In progress / next
 
-- **Phase 17** — Position sizing modes scaffolding (`POSITION_SIZING_MODE` env). Revisits decision #9 ($5 flat for first 100 trades → fractional). **GATED on operator approval** — we are at ~480 settled, well past the original 100-trade trigger, so the locked-decision revisit is justified. Prompt to be drafted at `phase-prompts/phase-17-position-sizing-2026-05-14.txt`.
+- **Phase 16.B** — every-window mode with signal-driven router. 🟡 **RESEARCH 2026-05-11.** Operator-authorized revisit of locked decision #6 (composite ≥0.6 threshold) + partial revisit of #9 ($5 flat — down-shaping only). Comprehensive research study landed at [[../research/phase-16b-every-window-study]]; companion phase prompt at `phase-prompts/phase-16b-every-window-mode-2026-05-11.txt`. **No code shipped — operator must sign off on §8 questions before design doc lock (Phase 16.B.2).** Six sub-phases planned: counterfactual audit → design lock → router primitives → wrapper wire → 24h shadow → 7-day soak gate.
+- **Phase 17** — Position sizing modes scaffolding (`POSITION_SIZING_MODE` env). Revisits decision #9 ($5 flat for first 100 trades → fractional). **GATED on operator approval** — we are at ~480 settled, well past the original 100-trade trigger, so the locked-decision revisit is justified. Phase 16.B partially relaxes #9 (down-shaping only); Phase 17 adds upward Kelly. Prompt to be drafted at `phase-prompts/phase-17-position-sizing-2026-05-14.txt`.
 - **Phase 19** — LLM async pre-compute. Now unblocked by Phase 18B `meta_outcome` data — the first 24h soak will surface whether the 22.1% meta=None rate is dominated by API errors (retry layer), refusals (prompt routing), or validation failures (schema tightening). Phase 19 design should wait for that breakdown.
 - **Phase 18** — Kelly sizing. Operator-gated, follows Phase 17.
 

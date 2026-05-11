@@ -1,0 +1,314 @@
+Subject: Phase 16.B — every-window mode with signal-driven router
+       (operator-authorized revisit of locked decision #6)
+
+> Operator framing (2026-05-11): "We already have so many gates and
+> filters and ways to know if a trade will win or lose. Let's fire on
+> every 5-min window, and use those gates as best-side / right-tier /
+> right-size pickers instead of FIRE-or-ABSTAIN binary gates. Make this
+> work with max edge and WR."
+
+The research study at state/research/phase-16b-every-window-study.md
+is the anchoring document. **Read it first.** It surveys 8 strong
+signals (regime, tier, |delta_bps|, side, p_win, EV, book_imbalance,
+LLM confidence) and proposes a router architecture that turns the 5
+existing FIRE/ABSTAIN gates into continuous routing decisions.
+
+This phase is the IMPLEMENTATION half of that study. Code lands;
+ships dark; 7-day soak gate before promotion.
+
+================================================================================
+LOCKED-DECISION REVISITS (operator authorized this session)
+================================================================================
+
+- **#6 — Composite ≥0.6 threshold.** REVISITED. Composite-sign still
+  picks BASE side; composite-magnitude now shapes SIZE (not FIRE/ABSTAIN).
+- **#9 — $5 flat per trade.** PARTIALLY revisited. Down-shaping
+  authorized ($1-$5 range only; never above $5). Phase 17 introduces
+  upward Kelly sizing — out of scope here.
+- **#10 — $1k paper bankroll.** UNTOUCHED.
+- **#5 — 3 specialists + meta.** UNTOUCHED (ensemble structure stays;
+  router consumes confidences differently).
+
+================================================================================
+READ FIRST (in order — do NOT skip)
+================================================================================
+
+1. /Users/hamad/Desktop/PolyMarket-5m/.claude/worktrees/elastic-banzai-0ba669/state/research/phase-16b-every-window-study.md
+   — Anchoring research. §2 signal inventory, §4 router architecture,
+     §5 counterfactual, §6 risks, §7 sub-phase plan.
+2. ~/.claude/projects/.../memory/project_decisions.md
+   — Decisions #6 + #9 (the revisits) + the rest (untouched).
+3. ~/.claude/projects/.../memory/project_strategy_intent.md
+   — The "trade every window = losing strategy" warning. The router
+     thesis is that signal-aware routing avoids this trap.
+4. state/concepts/kill-switches.md
+   — Five existing kill-switches. Phase 16.B adds two new ones below.
+5. runbooks/research/regime-shift-investigation-2026-05-09.md
+   — The case study showing regime is the master switch.
+6. runbooks/research/edge-discovery-2026-05-09.md
+   — Tier 50-70% is structurally lossy; the 30-50% tier is the quiet
+     winner. Router uses this directly.
+7. design/phase-14-tier-gate.md + design/phase-15-regime-gate.md
+   — The two binary gates that the router converts into shape inputs.
+
+================================================================================
+STATE AT HAND-OFF
+================================================================================
+
+Branch:  claude/jovial-hermann-7e103f (where the worktree's commits go)
+HEAD:    3c324fe (Phase 15.5 vault refresh — v3 dashboard recovery + 18B + 16 in v3)
+Bot:     bot-staging.service active since 2026-05-10 23:50:50 UTC at 831c756
+         STRATEGY=ensemble  ENSEMBLE_MODE=gate  ENSEMBLE_BASE_STRATEGY=wide_fire
+         TIER_GATE_ENABLED=false  REGIME_GATE_ENABLED=false
+         ANTHROPIC_DAILY_BUDGET_USD=10
+Dashboard: dashboard-server.service active since 2026-05-11 06:25:15 UTC at f0ee20d
+
+Pre-flight (run BEFORE driving):
+  ssh -i $HOME/Downloads/LightsailDefaultKey-eu-west-1.pem -p 2222 \
+      ops@108.132.51.116 'systemctl is-active bot-staging.service dashboard-server.service'
+  # expected: active / active
+
+================================================================================
+THE WORK — six sub-phases in strict order
+================================================================================
+
+------------------------------------------------------------------------
+PHASE 16.B.1 — Counterfactual audit script (~1h, NO code in src/)
+------------------------------------------------------------------------
+
+Build `scripts/audit_router_counterfactual.py`. For every existing
+fired record in state/decisions/*.jsonl, compute the router's INTENDED
+action (side, size, ttl, fill_style) and emit a per-cohort delta vs
+actual outcome.
+
+Output: per-tier / per-regime / per-|Δ_bps| projected PnL delta
+under the proposed router.
+
+This is the "would-it-have-helped" check. Operator reviews the report
+before the design doc locks.
+
+DELIVERABLE: a markdown report at state/research/2026-05-11-router-
+counterfactual.md.
+
+OPERATOR SIGN-OFF GATE: post the counterfactual report. Wait for "go"
+before Phase 16.B.2.
+
+------------------------------------------------------------------------
+PHASE 16.B.2 — Design doc lock (~30min, anti-vibe #1)
+------------------------------------------------------------------------
+
+Write design/phase-16b-every-window-mode.md. Locks:
+
+- Router architecture (see study §4)
+- Env vars + their defaults (study §7.4)
+- Kill-switch triggers (study §6.3 + new):
+  * NEW kill-switch A: rolling-100-trade WR < 45% → flip
+    EVERY_WINDOW_MODE=false
+  * NEW kill-switch B: daily PnL < -$30 → flip
+    EVERY_WINDOW_MODE=false + alert
+- Test plan (study §7.3 unit tests + counterfactual replay regression)
+- Soak gate criteria (study §7.6)
+- Rollback plan (env flip — instant)
+
+OPERATOR SIGN-OFF GATE: post design doc to chat. Wait for "go" before
+Phase 16.B.3.
+
+------------------------------------------------------------------------
+PHASE 16.B.3 — Router primitives in src/ (~3h)
+------------------------------------------------------------------------
+
+New module `src/polymarket_bot/strategies/every_window/`:
+
+  router.py     # pick_side(), size_for(), ttl_for(), tier_routing dict,
+                # vetoes
+  types.py      # RouterContext dataclass + RouterDecision
+  config.py     # tunable thresholds (env-driven, defaults from study §4)
+
+Plus `tests/strategies/test_every_window_router.py`:
+
+  - test_pick_side_agreement
+  - test_pick_side_trending_disagreement_takes_llm
+  - test_pick_side_chop_disagreement_takes_deterministic
+  - test_size_for_caps_at_5_floor_at_1
+  - test_size_for_chop_halves
+  - test_size_for_50_70_tier_halves
+  - test_size_for_5plus_bps_unshaped
+  - test_ttl_for_chop_longer_trending_shorter
+  - test_tier_routing_extremes_taker_fallback
+  - test_veto_phantom_fill_preserved (Phase 11.A regression)
+  - test_veto_catastrophic_ev_threshold
+  - test_router_100_evals_under_500ms (queue-overflow guard)
+
+Gates: ruff + mypy --strict + pytest + lint-imports all green.
+
+THIS PHASE = pure function additions. No call sites change. ZERO
+behavior risk. Commit + push but DO NOT deploy.
+
+Commit: feat(phase-16b): router primitives (pick_side, size_for,
+                        ttl_for, tier_routing, vetoes)
+
+------------------------------------------------------------------------
+PHASE 16.B.4 — Wire into EnsembleWrapper as opt-in (~2h)
+------------------------------------------------------------------------
+
+Hook the router into `EnsembleWrapper.on_event` AFTER specialists+meta
+vote (so the LLM still computes inputs for the router). Add env:
+
+  EVERY_WINDOW_MODE=false  (bool, default false)
+    false → ZERO behavior change. All current gates intact.
+    true  → router replaces the FIRE/ABSTAIN dispatch; every window
+            emits a (side, size, ttl, fill_style) Decision.
+
+  EVERY_WINDOW_TAKER_FALLBACK_TIERS=  (CSV, default empty)
+  EVERY_WINDOW_SIZE_FLOOR_USD=1.0     (float, default 1.0)
+  EVERY_WINDOW_SIZE_DOWNSHAPE_TIERS=  (CSV, default empty)
+  EVERY_WINDOW_ROLLING_WR_FLOOR=0.45  (float — kill-switch threshold)
+  EVERY_WINDOW_DAILY_PNL_FLOOR_USD=-30.0  (kill-switch threshold)
+
+Plus 7 new tests in `tests/strategies/test_ensemble_wrapper.py`:
+
+  - test_every_window_mode_off_no_behavior_change (the bulwark test —
+    if this fails, do not deploy)
+  - test_every_window_mode_emits_on_every_window
+  - test_every_window_mode_taker_fallback_for_extreme_tiers
+  - test_every_window_mode_consumes_llm_confidence
+  - test_every_window_mode_kill_switch_wr_floor
+  - test_every_window_mode_kill_switch_pnl_floor
+  - test_every_window_mode_preserves_phantom_fill_defense
+
+Gates: ruff + mypy --strict + pytest + lint-imports all green.
+
+Commit: feat(phase-16b): EVERY_WINDOW_MODE wired in EnsembleWrapper +
+                        kill-switches
+
+------------------------------------------------------------------------
+PHASE 16.B.5 — Dark deploy + 24h shadow audit (~30min ops + 24h wait)
+------------------------------------------------------------------------
+
+  a. Push to claude/jovial-hermann-7e103f.
+  b. SSH VPS, git pull --ff-only.
+  c. sudo systemctl restart bot-staging.service (env unchanged →
+     EVERY_WINDOW_MODE=false → no behavior change). Verify clean
+     restart per feedback_vps_deploy_verify_late (+5min, +30min checks).
+  d. **Shadow mode for 24h:**
+     Add a feature flag EVERY_WINDOW_SHADOW=true that runs the router
+     IN PARALLEL with the current strategy (router decision LOGGED to
+     state/router/<date>.jsonl, but current strategy still drives fires).
+  e. After 24h, audit: scripts/audit_router_shadow.py compares
+     router-would-fire vs actual-fired. Operator reviews divergence.
+
+OPERATOR SIGN-OFF GATE: post shadow-audit report. Wait for "go" before
+Phase 16.B.6.
+
+If router goes wild in shadow: flip EVERY_WINDOW_SHADOW=false; iterate
+the router until shadow is sane.
+
+------------------------------------------------------------------------
+PHASE 16.B.6 — Gate-mode soak + 7-day gate (~30min ops + 7d wait)
+------------------------------------------------------------------------
+
+After shadow looks sane:
+
+  a. Flip EVERY_WINDOW_MODE=true on VPS (.envrc). Restart bot-staging.
+  b. 7-day soak. Monitor:
+     - rolling-100-trade WR (kill-switch at 45%)
+     - daily PnL (kill-switch at -$30)
+     - per-tier / per-regime / per-|Δ| behavior changes
+     - LLM cost (should stay <$5/day)
+  c. After 7 days, run scripts/audit_router_promote.py to compute the
+     PROMOTE criteria:
+     - WR ≥ baseline +1pp
+     - PnL/trade ≥ baseline +20%
+     - No day-low below -$30
+  d. PROMOTE if all 3 pass. Otherwise ROLLBACK (env flip back to false).
+
+If PROMOTE: commit update to memory/project_decisions.md (#6 + #9
+revisit recorded). Update state/phases/README.md.
+
+================================================================================
+WHAT THIS PHASE EXPLICITLY DOES NOT DO
+================================================================================
+
+- Does NOT touch decision #10 ($1k paper bankroll).
+- Does NOT introduce upward sizing (Kelly is Phase 17/18).
+- Does NOT change the LLM ensemble structure (#5 untouched).
+- Does NOT flip any existing kill-switch defaults (Phase 14 + 15 stay
+  dark; #6 revisit is via a NEW env, not flipping the existing ones).
+- Does NOT ship without a 7-day soak gate.
+
+================================================================================
+ANTI-VIBE RULES — relevant this session
+================================================================================
+
+- Design doc before code (#1): Phase 16.B.2 is the design doc lock.
+- Bug → failing test → fix → green (#2): every router function ships
+  with a unit test; the kill-switch tests are the safety-net regression.
+- 3-fix rule (#3): if the counterfactual or shadow audit doesn't
+  converge after 3 iterations of router tuning, STOP and write
+  runbooks/incidents/<date>-router-tuning-stuck.md.
+- Test under load (feedback_test_under_load): router 100-eval bench
+  < 500ms. Kill-switch is a runtime check, must be O(1).
+- Honest pushback (feedback_honest_pushback): if the shadow audit
+  shows the router LOSES money on the current data, say so. Don't
+  ship through.
+- Locked decision discipline: every revisit is documented in the
+  commit message AND in memory/project_decisions.md only after
+  promotion.
+
+================================================================================
+HARD LIMITS
+================================================================================
+
+- Bankroll: $1,000 paper (locked decision #10). Phase 16.B does NOT touch.
+- bot.service stays DISABLED.
+- Funder key NEVER on VPS.
+- Anthropic spend ~$1-3/day → expect ~$1.40-4.20/day. Hard cap $10/day.
+- Kill-switches AUTOMATIC. If WR < 45% rolling-100 or daily PnL < -$30,
+  the router REVERTS itself. Operator gets a Telegram alert.
+
+================================================================================
+SESSION BOUNDARY — ENDS WHEN ONE OF
+================================================================================
+
+(a) Phases 16.B.1 through 16.B.4 shipped (audit + design + router +
+    wrapper wire); 16.B.5 ready to deploy at next natural restart.
+    ✅ partial.
+(b) Phases 16.B.1 through 16.B.5 shipped; 24h shadow soak underway.
+    ✅ partial (next session reviews shadow + flips to gate mode).
+(c) Counterfactual or shadow audit reveals the router LOSES money on
+    historical data → STOP, iterate router, do not deploy.
+    🛑
+(d) Context ≥60% before 16.B.3 done → close out, restart with what
+    landed.
+    ⏸
+
+================================================================================
+WHAT THIS PHASE UNLOCKS
+================================================================================
+
+- Phase 17 (sizing modes) can build on top of the router's size-shaping
+  primitives.
+- Phase 18 (Kelly) becomes the UPWARD-shaping half of what's already
+  installed.
+- Phase 19 (async LLM pre-compute) becomes more valuable — the router
+  consumes LLM confidence, so pre-computing it eliminates the gate-
+  mode blocking that today drops fills.
+- Phase 23 (statistical-significance gate) inherits the 7-day-gate
+  pattern from this phase.
+
+After Phase 16.B PROMOTE: re-run the regime-gate audit + tier-gate
+audit on the new data. The promoted router may obsolete those two
+binary gates entirely (their work is now done by size shaping).
+
+================================================================================
+QUESTIONS FOR OPERATOR (answer before Phase 16.B.2 design lock)
+================================================================================
+
+1. Size shaping — is $1-$5 down-shaping acceptable, or do you want
+   strictly $5 flat?
+2. Taker fallback on <15% and 85-100% — is paying 1-2¢ slippage worth
+   the fill rate boost?
+3. Should the router use meta.confidence as a size scaler from day 1,
+   or observation-only first?
+4. Chop-regime size-halving aggressive enough, or chop-skipping?
+5. Kill-switch trigger thresholds correct (WR<45%, PnL<-$30)?
