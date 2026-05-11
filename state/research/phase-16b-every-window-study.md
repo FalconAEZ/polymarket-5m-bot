@@ -492,6 +492,121 @@ These revisits require the 7-day gate + operator explicit confirmation in writin
 
 ---
 
+## §12. ADDENDUM 2026-05-11 — operator-locked v2 scope
+
+Operator answered §8 questions and expanded the scope materially. **v2 scope locked here.**
+
+### §12.1 What changed from v1
+
+| v1 (research draft) | **v2 (operator-locked)** |
+|---|---|
+| Size shaping $1–$5 (down-only) | **$5–$30 confidence-weighted** (up-shaping) |
+| LLM `meta.confidence` observation-only first 24h | LLM in size scaler **from day 1** |
+| Rolling WR kill-switch < 45% | **< 48%** (catches the 2026-05-09 −20pp collapse class while tolerating 2-3 trade variance) |
+| Daily PnL kill-switch −$30 | **−$100** (operator preference; 10% of bankroll) |
+| Phase 17 + 18 separate phases later | **Phase 17 + 18 SUBSUMED INTO PHASE 16.B** — Kelly sizing built here |
+| Skip chop regime: NO | NO — halve stake instead (unchanged) |
+| Taker fallback `<15%` + `85-100%`: optional | **YES, required** for fills |
+
+### §12.2 The unified confidence score (locked)
+
+```
+confidence ∈ [0, 1] = weighted sum of 5 normalized signals:
+
+  w_det  = 0.25  · normalize(|delta_bps|, ranges [0,1,2,5,10] → [0, 0.25, 0.5, 0.85, 1.0])
+  w_reg  = 0.20  · regime_score: trending 1.0 / mixed 0.7 / chop 0.4 / unknown 0.5
+  w_tier = 0.15  · tier_score (historical WR × payoff):
+                   15-30% → 1.0 (unicorn), 30-50% → 0.85, 70-85% → 0.75
+                   50-70% → 0.40 (loss-prone), <15% / 85-100% → 0.50
+  w_llm  = 0.25  · llm_score:
+                   meta.action=FIRE & confidence: clip(meta.confidence, 0.3, 1.0)
+                   meta.action=ABSTAIN: 0.30 (still fire but small)
+                   meta=None: 0.50 (deterministic-only, neutral weight)
+  w_kel  = 0.15  · kelly_score = min(1.0, kelly_suggested_size_usd / 22.0)
+                   (kelly_suggested from half-Kelly formula, p_win from priors,
+                   capped at 3% bankroll = $30)
+
+Weights start equal-ish (sum = 1.0); calibrated post-soak.
+```
+
+Then:
+
+```
+size_usd = max(5.0, min(30.0, 5.0 + 25.0 · confidence))
+```
+
+So:
+- confidence=0.0 → **$5 floor** (every window fires ≥ $5 — operator's "no skip")
+- confidence=0.5 → $17.50
+- confidence=1.0 → **$30 cap**
+
+### §12.3 Hybrid-Kelly integration (Phase 18 subsumed)
+
+New `src/polymarket_bot/strategies/sizing.py`:
+
+```python
+def kelly_suggested_size_usd(
+    p_win: float,
+    fill_price: float,
+    bankroll: float,
+    fraction: float = 0.5,    # half-Kelly default
+    max_bankroll_pct: float = 0.03,  # hard 3% cap (= $30 at $1k bankroll)
+) -> float:
+    """Half-Kelly suggestion. Returns 0.0 if no edge OR formula misfit.
+
+    This is a SIGNAL fed into the confidence score, not the final size.
+    The router applies the $5-$30 lerp on top.
+    """
+    if p_win <= fill_price or p_win >= 1.0 or fill_price <= 0:
+        return 0.0
+    b = (1.0 - fill_price) / fill_price            # payoff odds
+    f = (p_win * b - (1.0 - p_win)) / b
+    f = max(0.0, min(max_bankroll_pct, f * fraction))
+    return round(f * bankroll, 2)
+```
+
+This replaces the standalone Phase 18 deliverable. The `p_win` input comes from `spot_aware_priors.SpotAwarePriors.lookup(tier, abs_delta_bps)` (already in codebase).
+
+### §12.4 Risk controls (calibrated to $5–$30 ceiling)
+
+| Control | Threshold | Action |
+|---|---|---|
+| Per-trade max | **$30** | hard router cap; cannot bypass |
+| Daily total stake | **$300** (30% bankroll) | flip to $5 floor for rest of day; Telegram alert |
+| Per-trade max during cooldown | $5 | after kill-switch trip, all fires at $5 floor for 24h |
+| Concurrent open positions | 6 (worst case $180) | natural cadence (1 per 5min) |
+| **Rolling-100-trade WR floor** | **< 48%** | `EVERY_WINDOW_MODE=false`; Telegram alert |
+| **Daily PnL floor** | **−$100** (10% bankroll) | `EVERY_WINDOW_MODE=false`; Telegram alert |
+| Per-tier daily loss | −$30 in any tier in 24h | cap that tier's size to $5 for 24h |
+
+### §12.5 Locked-decision impacts (FINAL — recorded on PROMOTE)
+
+| Decision | v1 status | **v2 status** |
+|---|---|---|
+| #6 (composite ≥0.6 hard gate) | REVISED → router input | **REVISED → confidence input via `w_det`** |
+| #9 ($5 flat first 100 trades, then fractional Kelly) | PARTIAL — $1–$5 down-only | **REVISED — $5–$30 confidence-weighted hybrid-Kelly.** Past 100-trade trigger (~480 settled), so Kelly transition is within original-locked plan. |
+| #10 ($1k paper bankroll) | UNTOUCHED | **UNTOUCHED** |
+| #5 (3 specialists + meta) | UNTOUCHED | **UNTOUCHED** |
+| Phase 17 (sizing modes) | separate phase | **MERGED into 16.B** (size shaping is the router's size_for) |
+| Phase 18 (Kelly) | separate phase | **MERGED into 16.B** (sizing.py here) |
+
+### §12.6 Sub-phase plan (v2)
+
+Unchanged in structure from §7, with updates to deliverables:
+
+- **16.B.1** Counterfactual audit script — runs $5-$30 confidence sizing against existing 513 fires, projects per-cohort PnL delta
+- **16.B.2** Design doc lock at `design/phase-16b-every-window-mode.md`
+- **16.B.3** Router primitives + **new `sizing.py`** + tests
+- **16.B.4** Wire into `EnsembleWrapper` behind `EVERY_WINDOW_MODE=false` env
+- **16.B.5** Dark deploy + 24h shadow mode + audit
+- **16.B.6** 7-day soak gate → PROMOTE or ROLLBACK
+
+### §12.7 What still needs operator review before code
+
+After v2 locked here, the **only remaining gate** is the counterfactual audit output (Phase 16.B.1). If the audit shows the $5-$30 sizing would have LOST money on the existing 513-fire data, **STOP and re-tune the weights** before Phase 16.B.2 design lock.
+
+---
+
 ## §11. TL;DR for the operator
 
 > The bot has 8 strong signals (regime, tier, `|delta_bps|`, side, p_win, EV, book_imbalance, LLM confidence). Today the strategy uses them as **abstain gates** and skips 28% of windows. Operator-thesis: turn the same signals into a **router** that emits a (side, size, ttl, fill_style) decision for every window. The data already shows enough signal-conditional behavior (regime 23pp WR delta, tier 60% volume / negative PnL leak, side 9pp WR delta) that this is plausible.

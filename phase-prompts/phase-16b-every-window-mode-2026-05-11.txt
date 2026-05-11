@@ -17,17 +17,21 @@ This phase is the IMPLEMENTATION half of that study. Code lands;
 ships dark; 7-day soak gate before promotion.
 
 ================================================================================
-LOCKED-DECISION REVISITS (operator authorized this session)
+LOCKED-DECISION REVISITS (operator authorized this session — v2 SCOPE)
 ================================================================================
 
-- **#6 — Composite ≥0.6 threshold.** REVISITED. Composite-sign still
-  picks BASE side; composite-magnitude now shapes SIZE (not FIRE/ABSTAIN).
-- **#9 — $5 flat per trade.** PARTIALLY revisited. Down-shaping
-  authorized ($1-$5 range only; never above $5). Phase 17 introduces
-  upward Kelly sizing — out of scope here.
+- **#6 — Composite ≥0.6 threshold.** REVISITED. Composite-magnitude
+  feeds the unified confidence score (no longer a FIRE/ABSTAIN gate).
+- **#9 — $5 flat for first 100 trades, then fractional Kelly.**
+  REVISITED. We're at ~480 settled (past the 100-trade trigger).
+  New size formula: $5–$30 confidence-weighted hybrid-Kelly
+  (linear lerp on confidence, with half-Kelly suggestion as one
+  of 5 confidence inputs). $5 floor + $30 cap are hard limits.
 - **#10 — $1k paper bankroll.** UNTOUCHED.
-- **#5 — 3 specialists + meta.** UNTOUCHED (ensemble structure stays;
-  router consumes confidences differently).
+- **#5 — 3 specialists + meta.** UNTOUCHED (LLM confidence becomes a
+  size-scaler input via `w_llm` weight).
+- **Phases 17 + 18 SUBSUMED** into Phase 16.B. The standalone
+  `POSITION_SIZING_MODE` env and `sizing.py` Kelly file now ship here.
 
 ================================================================================
 READ FIRST (in order — do NOT skip)
@@ -159,11 +163,22 @@ vote (so the LLM still computes inputs for the router). Add env:
     true  → router replaces the FIRE/ABSTAIN dispatch; every window
             emits a (side, size, ttl, fill_style) Decision.
 
-  EVERY_WINDOW_TAKER_FALLBACK_TIERS=  (CSV, default empty)
-  EVERY_WINDOW_SIZE_FLOOR_USD=1.0     (float, default 1.0)
-  EVERY_WINDOW_SIZE_DOWNSHAPE_TIERS=  (CSV, default empty)
-  EVERY_WINDOW_ROLLING_WR_FLOOR=0.45  (float — kill-switch threshold)
-  EVERY_WINDOW_DAILY_PNL_FLOOR_USD=-30.0  (kill-switch threshold)
+  EVERY_WINDOW_TAKER_FALLBACK_TIERS=<15%,85-100%  (CSV, REQUIRED)
+  EVERY_WINDOW_SIZE_FLOOR_USD=5.0     (float, hard floor — never below)
+  EVERY_WINDOW_SIZE_CAP_USD=30.0      (float, hard cap — never above)
+  EVERY_WINDOW_DAILY_STAKE_CAP_USD=300.0  (float, 30% bankroll daily limit)
+  EVERY_WINDOW_KELLY_FRACTION=0.5     (float, half-Kelly default)
+  EVERY_WINDOW_KELLY_MAX_PCT=0.03     (float, 3% bankroll cap on Kelly suggestion)
+
+  # Confidence weights (initial; tuned post-soak):
+  EVERY_WINDOW_W_DET=0.25    EVERY_WINDOW_W_REG=0.20
+  EVERY_WINDOW_W_TIER=0.15   EVERY_WINDOW_W_LLM=0.25
+  EVERY_WINDOW_W_KELLY=0.15
+
+  # Kill-switches (auto-revert to EVERY_WINDOW_MODE=false):
+  EVERY_WINDOW_ROLLING_WR_FLOOR=0.48      (rolling-100-trade WR < 48% → flip)
+  EVERY_WINDOW_DAILY_PNL_FLOOR_USD=-100.0 (daily PnL < -$100 → flip)
+  EVERY_WINDOW_PER_TIER_DAILY_LOSS=-30.0  (tier loses >$30 in 24h → cap that tier to $5)
 
 Plus 7 new tests in `tests/strategies/test_ensemble_wrapper.py`:
 
