@@ -201,3 +201,91 @@ completes — flagged in checkpoint memory, NOT shipped this phase.
   unfilled-lift audit using the corrected accessor.
 - Phase 17 (sizing modes) is the next master-plan slot — but requires
   explicit operator approval to revisit decision #9.
+
+## ADDENDUM 2026-05-11 — v3 dashboard recovery + Phase 16 re-shipped
+
+The Phase 15.5 deploy had two latent problems that surfaced when the
+operator opened the dashboard:
+
+1. **Phase 16 landed in the wrong surface.** I shipped the scenarios
+   panel into `scripts/dashboard.py` (Streamlit fallback), not the v3
+   React app that the operator actually uses.
+2. **`git pull --ff-only` silently deleted `dashboard_server/` source
+   from VPS.** The v3 dashboard source lived only on
+   `claude/dashboard-pm-truth-fix-7e103f`; jovial-hermann never had it.
+   The pull removed the working-tree files. `dashboard-server.service`
+   kept serving on memory-loaded bytecode, but any restart would crash.
+
+### What the recovery did (4 commits)
+
+| Commit | Summary |
+|---|---|
+| `90ba46a` | `feat(dashboard): retire Streamlit; restore v3 (FastAPI+React); land Phase 16 scenarios in v3` |
+| `c4d3315` | `chore(gitignore): fix state/staging/ rule (trailing comment broke match)` |
+| `7441a6b` | `chore(gitignore): reformat inline comments to their own lines` |
+| `831c756` | `chore(state): untrack VPS-pulled decision-log audit data` |
+
+**Restore** — `git checkout origin/claude/dashboard-pm-truth-fix-7e103f
+-- src/polymarket_bot/dashboard_server/ apps/dashboard-v3/` + 7
+helpers (`dashboard/bankroll.py`, `gamma_resolver.py`,
+`pipeline_latency.py`, `polymarket_orderbook.py`, `profit_pace.py`,
+`rtt_loader.py`, `streaks.py`). 50+ files recovered.
+
+**Delete** (operator directive: "full delete the streamlit dashboard
+never use it is outdated"):
+- `scripts/dashboard.py`, `demo_live.py`, `demo_state.py`
+- `src/polymarket_bot/dashboard/theme.py`, `agents_loader.py`
+- `tests/dashboard/test_agents_loader.py`
+- `.streamlit/config.toml`
+- Makefile targets `dashboard / sync-staging / dash-staging`
+- pyproject deps `altair`, `streamlit`, `streamlit-autorefresh`
+  (replaced with `fastapi`, `uvicorn`)
+
+**Phase 16 re-shipped in v3**:
+- `src/polymarket_bot/dashboard_server/state.py snapshot()` now emits
+  `scenarios` field (5 rows: $500/$1k/$2k/$5k/$10k) AND applies
+  `apply_settled_corrections()` on top of resolver_loop-resolved rows
+  (catches the phantom-fill-neutralized + chainlink/polymarket flip
+  classes the resolver_loop's gamma re-resolve doesn't see).
+- `apps/dashboard-v3/src/panels/ScenariosPanel.tsx` (NEW) +
+  `store/types.ts` (ScenarioRow + DashboardState.scenarios) + wired
+  into App.tsx ROW D alongside RTT / trip-wires / tier breakdown.
+  Active row (matching live $1k bankroll) tagged "LIVE".
+
+### Verification
+
+- Python gates ✓ (ruff + mypy --strict on 75 src files + pytest 487 +
+  lint-imports 3 contracts kept)
+- React gates ✓ (`tsc --noEmit` + `vite build` → 497 modules,
+  index-Bml--cBm.js 577.35kB, gzipped 181.30kB)
+- Local preview ✓ (PMB_DASH_STATE_DIR=state/staging) — ScenariosPanel
+  renders, math correct, $1k row tagged LIVE
+- VPS deploy ✓
+  - `git pull --ff-only` `8406c2d → 831c756`
+  - `cd apps/dashboard-v3 && npm install && npm run build`
+  - `sudo systemctl restart dashboard-server.service`
+  - Active since **2026-05-11 06:25:15 UTC**, MainPID `534976`
+  - `/api/state.scenarios` populated for all 5 buckets;
+    `agg.total_pnl_usd = $75.26` (the v4-truth number the operator
+    predicted, consistent with the Item 1 reconciliation)
+
+### Lesson + how to apply
+
+Any future deploy that does `git pull --ff-only` between divergent
+branches MUST first run
+`git diff --name-only HEAD..origin/<target>` on the VPS and refuse to
+proceed if any `src/` file would be removed, unless explicitly
+accepted. Worktree branch hygiene matters — when two branches diverge
+on the same kind of file (here: `dashboard_server/` source), pulling
+either erases the other's contribution. The v3 dashboard work on
+`claude/dashboard-pm-truth-fix-7e103f` should ideally be merged back
+to jovial-hermann at the earliest opportunity to remove the divergence
+risk altogether.
+
+### How to open the live dashboard
+
+```bash
+ssh -i $HOME/Downloads/LightsailDefaultKey-eu-west-1.pem -p 2222 \
+    -L 8505:127.0.0.1:8505 -N -f ops@108.132.51.116
+open http://127.0.0.1:8505
+```
