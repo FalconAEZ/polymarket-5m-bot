@@ -137,6 +137,33 @@ Otherwise ROLLBACK (env flip).
 
 **Today's downturn is exactly what the router was designed to dampen** — regime-aware size shaping would halve stake in chop. Worth shipping 16.B.4 + 16.B.5 sooner than later so we have shadow-mode data tomorrow.
 
+## 2026-05-11 PM update — 16.B.4 + 16.B.5 SHIPPED + SHADOW SOAK UNDERWAY
+
+| Sub-phase | State | Commit | Live? |
+|---|---|---|---|
+| 16.B.4 wrapper wire | ✅ **shipped** | `2eb54fd` | yes (since 17:56:22 UTC) |
+| 16.B.5 dark deploy + 24h shadow | ⏳ **underway** | env flip only | yes (since 18:02:05 UTC) |
+| 16.B.6 7-day soak gate | ⏳ pending | — | next-next session |
+
+`EVERY_WINDOW_MODE=false` (default — no behavior change); `EVERY_WINDOW_SHADOW=true` (audit mode); router runs as observer, logs `router_shadow` records to `state/router/<UTC-date>.jsonl`. 18 records in first 1h25m, rate matches the 12-13 candidate windows/hour wide_fire produces.
+
+24h shadow audit window closes ~2026-05-12 18:02 UTC.
+
+## 2026-05-11 PM sidebar — wide_fire phantom-zone fix (`3875d3c`)
+
+Mid-session, operator flagged "many unfilled trades." Fill-rate audit on today's 70 fires:
+
+- 36 filled (51.4%), 34 unfilled
+- WR on filled trades: **50.0%** (matches baseline; the dashboard's 26.8% counted unfilled-at-$0 as losses)
+- **100% of unfilled fires** caught by `FillSimulator._refuse_for_no_depth` (Phase 11.A defense) — `ask_size_top=None AND best_ask <= $0.05`
+- **0 genuine maker misses or TTL expiries**
+
+Implication for Phase 16.B: the router's `taker_fallback` design (§3.8) for `<15%` tier solves the WRONG failure mode. Phantom defense triggers on the depth signal, not the price-cross. Right fix is upstream: abstain in the strategy when the simulator would refuse.
+
+Shipped `3875d3c` — adds `if ask_size_top is None AND ask <= $0.05: return None` to `WideFireStrategy._maybe_fire`. **NOT deployed** (defer per `feedback_defer_deploys_to_natural_restart`). PnL impact = $0 (those 35 fires would have settled at $0 anyway); operational hygiene only.
+
+Updated `taker_fallback` prescription for Phase 16.B: still valid *in principle* but unobserved in today's data; would only matter if `<15%` tier books develop depth signals during the shadow soak. For the dominant failure mode today (phantom-zone), `wide_fire` abstention is the cleaner fix.
+
 ## Related
 
 - [[../runbooks/README|Runbooks]]
