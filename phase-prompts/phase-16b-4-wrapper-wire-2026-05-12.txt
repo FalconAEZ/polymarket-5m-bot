@@ -1,0 +1,353 @@
+Subject: Phase 16.B.4 + 16.B.5 — wire router into EnsembleWrapper +
+       VPS dark deploy + 24h shadow mode
+       (Plan A continuation: router is built, now wire + ship dark)
+
+> Operator framing (2026-05-11 EOS): Phase 16.B.0-3 shipped clean.
+> Design doc locked, router primitives + 49 tests + 4 gates green at
+> commit `707786c`. Bot continues to soak on the existing strategy
+> (17h uptime, +$39 cumulative, today -$42). Today's downturn matches
+> the 2026-05-09 chop-regime case study — exactly the scenario the
+> router was built to dampen. Operator chose Plan A (proper router)
+> over Plan B (band-aid env flips). This session ships the wrapper
+> wire + VPS dark deploy + 24h shadow audit. Default behavior
+> UNCHANGED until env flip.
+
+================================================================================
+LOCKED-DECISION REVISITS (from prior session — operator authorized)
+================================================================================
+
+- **#6** (composite ≥0.6 hard gate) — REVISED. Magnitude feeds
+  confidence-input `det` (W=0.25); sign still picks base side.
+- **#9** ($5 flat for first 100 trades, then fractional Kelly) — REVISED.
+  $5-$30 confidence-weighted hybrid-Kelly. Past 100-trade trigger
+  (~543 fired), so Kelly transition is within the original locked plan.
+- **#10** ($1k paper bankroll) — UNTOUCHED.
+- **#5** (3 specialists + meta) — UNTOUCHED.
+- **Phase 17 + 18** — SUBSUMED into Phase 16.B (sizing.py + size_for).
+
+These revisits get written into `memory/project_decisions.md` only on
+Phase 16.B.6 PROMOTE — NOT today.
+
+================================================================================
+READ FIRST (vault context, in order — do NOT skip)
+================================================================================
+
+1. **design/phase-16b-every-window-mode.md**
+   — LOCKED SPEC. This session implements §11 (implementation order).
+2. **state/research/phase-16b-every-window-study.md** §12 ADDENDUM
+   — Operator-locked v2 scope (5 weights, $5-$30 lerp, kill-switches).
+3. **state/research/2026-05-11-router-counterfactual.md**
+   — Projected +$344 net delta on 517 historical fires.
+4. **src/polymarket_bot/strategies/every_window/router.py**
+   — The Router class already built. Today's work: WIRE it into the
+   ensemble wrapper, env-gated.
+5. ~/.claude/projects/.../memory/checkpoint_phase_16b_router.md
+   — Last session's hand-off.
+6. ~/.claude/projects/.../memory/feedback_vps_deploy_verify_late.md
+   — Re-poll the live endpoint at +5min AND +30min after VPS restart.
+7. ~/.claude/projects/.../memory/feedback_test_under_load.md
+   — Router 100-eval bench <500ms guard is REQUIRED.
+
+================================================================================
+STATE AT HAND-OFF (verify before driving)
+================================================================================
+
+Branch:  claude/jovial-hermann-7e103f (active deploy branch)
+HEAD:    707786c feat(phase-16b): design lock + router primitives + sizing.py + 49 tests
+         (vault refresh `3c324fe` was on VPS; today's session note + phase ledger
+          + checkpoint memory will push it to ~`xxxxxxx`.)
+
+VPS:
+  bot-staging.service active since 2026-05-10 23:50:50 UTC, MainPID 527106, NRestarts=0
+  HEAD on VPS: 3c324fe (Phase 15.5 ADDENDUM — router code is on `707786c`
+  but NOT yet pulled to VPS. Today's deploy is the first time router code
+  lands on the box.)
+  STRATEGY=ensemble  ENSEMBLE_MODE=gate  ENSEMBLE_BASE_STRATEGY=wide_fire
+  TIER_GATE_ENABLED=false  REGIME_GATE_ENABLED=false
+  ANTHROPIC_DAILY_BUDGET_USD=10
+  Phase 18B meta_outcome telemetry GREEN: 200+ votes, 98% `ok`, 2% `invariant_violated`
+
+Dashboard:
+  dashboard-server.service active since 2026-05-11 06:25:15 UTC at HEAD f0ee20d
+  Access via SSH tunnel `-L 8505:127.0.0.1:8505 ops@108.132.51.116`
+
+Pre-flight (run BEFORE driving):
+  ssh -i $HOME/Downloads/LightsailDefaultKey-eu-west-1.pem -p 2222 \
+      ops@108.132.51.116 'systemctl is-active bot-staging.service dashboard-server.service && \
+      cd /home/ops/polymarket-5m-bot && git rev-parse --short HEAD'
+  Expected: active / active / 3c324fe (or later if I push first)
+
+================================================================================
+THE WORK — three items in strict order
+================================================================================
+
+------------------------------------------------------------------------
+ITEM 1 — Phase 16.B.4: wire router into EnsembleWrapper (~1.5h)
+------------------------------------------------------------------------
+
+Hook the router into `EnsembleWrapper.on_event` AFTER specialists+meta
+vote (so the LLM still computes inputs for the router). Add env vars:
+
+```
+EVERY_WINDOW_MODE=false   (bool, default false — MASTER kill-switch)
+  false → ZERO behavior change. Current strategy fires.
+  true  → router replaces FIRE/ABSTAIN dispatch. Every window emits a
+          Decision per the locked router spec.
+
+EVERY_WINDOW_SHADOW=false  (bool, default false)
+  true → router.decide(ctx) runs and LOGS to state/router/<date>.jsonl
+         but base strategy still drives the actual fire. For 24h audit.
+
+EVERY_WINDOW_SIZE_FLOOR_USD=5.0
+EVERY_WINDOW_SIZE_CAP_USD=30.0
+EVERY_WINDOW_CONFIDENCE_KINK=0.30
+EVERY_WINDOW_TAKER_FALLBACK_TIERS=<15%,85-100%
+EVERY_WINDOW_TIER_PER_TRADE_CAP_USD=<15%:10.0,85-100%:10.0
+EVERY_WINDOW_KELLY_FRACTION=0.5
+EVERY_WINDOW_KELLY_MAX_PCT=0.03
+EVERY_WINDOW_BANKROLL_USD=1000.0
+
+EVERY_WINDOW_W_DET=0.25
+EVERY_WINDOW_W_REG=0.20
+EVERY_WINDOW_W_TIER=0.15
+EVERY_WINDOW_W_LLM=0.25
+EVERY_WINDOW_W_KELLY=0.15
+
+EVERY_WINDOW_DAILY_STAKE_CAP_USD=300.0     (auto-flip if exceeded)
+EVERY_WINDOW_ROLLING_WR_FLOOR=0.48          (auto-flip if rolling-100 WR drops)
+EVERY_WINDOW_DAILY_PNL_FLOOR_USD=-100.0     (auto-flip if daily PnL drops)
+EVERY_WINDOW_PER_TIER_DAILY_LOSS_USD=-30.0  (per-tier $5 cap for 24h)
+```
+
+Files to modify (the wrapper):
+  - src/polymarket_bot/strategies/ensemble_wrapper.py
+  - scripts/run_paper.py (env wiring + RouterConfig construction)
+
+New file:
+  - src/polymarket_bot/strategies/every_window/runner.py (router-driven
+    fire path; logs `kind=router_fired` and `kind=router_vetoed` to
+    state/router/<date>.jsonl)
+
+Plus 7 new tests in tests/strategies/test_ensemble_wrapper.py:
+
+  1. **test_every_window_mode_off_no_behavior_change** (THE BULWARK
+     TEST — if this fails, do not deploy. Asserts identical
+     decision-log output as the current strategy when MODE=false.)
+  2. test_every_window_mode_emits_on_every_window
+  3. test_every_window_mode_uses_router_confidence
+  4. test_every_window_shadow_logs_only
+  5. test_every_window_mode_kill_switch_wr_floor
+  6. test_every_window_mode_kill_switch_daily_pnl
+  7. test_every_window_mode_preserves_phantom_fill_defense (Phase 11.A
+     regression)
+
+Gates: ruff + mypy --strict + pytest + lint-imports all green.
+
+Commit: `feat(phase-16b): EVERY_WINDOW_MODE wired in EnsembleWrapper +
+        kill-switches`
+
+Push to origin/claude/jovial-hermann-7e103f.
+
+OPERATOR SIGN-OFF GATE: post the wrapper-wire commit + the test
+results. Wait for "go" before Item 2 (VPS deploy).
+
+------------------------------------------------------------------------
+ITEM 2 — Phase 16.B.5: VPS dark deploy + 24h shadow mode (~45min ops)
+------------------------------------------------------------------------
+
+This is operator-authorized (THIS PROMPT). The VPS deploy DOES NOT
+change strategy — env stays unset so `EVERY_WINDOW_MODE=false` →
+router is ON DISK but not in the decision path.
+
+  a. SSH to VPS. git pull --ff-only origin claude/jovial-hermann-7e103f.
+  b. Verify HEAD updated to the wrapper-wire commit.
+  c. sudo systemctl restart bot-staging.service (NOT shadow yet).
+  d. Per feedback_vps_deploy_verify_late:
+     - +5min check: is-active active, NRestarts unchanged, no new
+       WARN/ERROR/Traceback (excluding wide_fire base notice).
+     - +30min check: same. Plus check state/decisions/<today>.jsonl
+       continues to fire as before.
+     - +24h check: confirm 100% fired records are router-routed but
+       with `EVERY_WINDOW_MODE=false` (i.e., the wrapper short-circuit
+       at the top of _run_ensemble fires; no router decisions emit).
+  e. NOW flip `EVERY_WINDOW_SHADOW=true` in .envrc + restart.
+     Strategy STILL doesn't change — but state/router/<today>.jsonl
+     starts filling with router decisions for audit.
+  f. Wait 24h.
+  g. Run scripts/audit_router_shadow.py (NEW — write this too):
+     compares router-would-fire (side, size, ttl, fill_style)
+     against actual-fired for each window. Output per-cohort
+     divergence report at
+     state/research/2026-05-12-router-shadow-audit.md.
+
+Commits:
+  - (no source change needed for ITEM 2 if env-flip-only)
+  - feat(phase-16b): router shadow audit script (if scripts/audit_router_shadow.py is new)
+
+OPERATOR SIGN-OFF GATE: post the 24h shadow audit. Wait for "go"
+before any flip to gate mode.
+
+------------------------------------------------------------------------
+ITEM 3 — Phase 16.B.6 prep: build the 7-day soak gate (~30min, NO DEPLOY)
+------------------------------------------------------------------------
+
+Build the soak-gate auditing script + the auto-revert kill-switch
+implementation in src/polymarket_bot/_paper/runner.py (or wherever
+the runtime checks live).
+
+Files:
+  - scripts/audit_router_soak_gate.py (NEW)
+    Computes the PROMOTE criteria per design doc §8:
+      rolling_wr_at_d7 >= baseline_wr + 0.01
+      AND pnl_per_trade_at_d7 >= baseline_pnl_per_trade * 1.20
+      AND min_daily_pnl >= -30.0
+  - src/polymarket_bot/_paper/runner.py — add a periodic check (every
+    60s) that reads recent state/decisions/<today>.jsonl and:
+    - Computes rolling-100-trade WR
+    - Computes daily PnL
+    - Flips `EVERY_WINDOW_MODE` to "false" in process state if either
+      kill-switch trips (no .envrc edit needed; runtime state holder)
+    - Writes a Telegram alert via the alerter
+
+Plus 3 new tests:
+  - test_runtime_kill_switch_wr_floor
+  - test_runtime_kill_switch_daily_pnl
+  - test_runtime_kill_switch_telegram_alerted
+
+Gates: ruff + mypy --strict + pytest + lint-imports all green.
+
+Commit: `feat(phase-16b): runtime kill-switches + 7-day soak gate audit`
+
+NO DEPLOY in Item 3 — just the safety net + auditing infrastructure
+for when the operator flips to gate mode.
+
+================================================================================
+WHAT THIS PHASE EXPLICITLY DOES NOT DO
+================================================================================
+
+- Does NOT flip `EVERY_WINDOW_MODE=true`. That's Phase 16.B.6 next
+  session, after operator reviews the 24h shadow audit.
+- Does NOT touch decision #10 ($1k paper bankroll).
+- Does NOT touch the LLM ensemble structure.
+- Does NOT modify the existing Phase 14 / Phase 15 kill-switch envs
+  (TIER_GATE_ENABLED + REGIME_GATE_ENABLED stay dark).
+- Does NOT change the bot's CURRENT firing behavior (EVERY_WINDOW_MODE
+  stays false on VPS at deploy time).
+
+================================================================================
+ANTI-VIBE RULES — relevant this session
+================================================================================
+
+- Design doc before code (#1): satisfied last session — anchor doc is
+  design/phase-16b-every-window-mode.md. This session implements
+  against §11 verbatim.
+- Bug → failing test → fix → green (#2): every new function ships
+  with a unit test. The bulwark "MODE=off → no behavior change" test
+  is the regression guard against future router-bug-breaks-existing
+  scenarios.
+- 3-fix rule (#3): if Item 1 wrapper wire doesn't converge after 3
+  iterations of test-fix loops, STOP and write
+  runbooks/incidents/<date>-wrapper-wire-stuck.md.
+- Test under load (`feedback_test_under_load`): router decide() is
+  already <500ms / 100 evals (Phase 16.B.3 test). The wrapper's
+  short-circuit at MODE=false must add <1ms — keep it a single
+  `if not config.every_window_enabled: return base_decision` check.
+- Honest pushback (`feedback_honest_pushback`): if the 24h shadow
+  audit shows the router would have LOST money in real conditions,
+  say so. Don't ship to gate mode.
+- VPS deploy verify late (`feedback_vps_deploy_verify_late`):
+  +5min, +30min, +24h checks are required.
+
+================================================================================
+HARD LIMITS
+================================================================================
+
+- Bankroll: $1,000 paper (locked decision #10). Phase 16.B.4 + .5 do
+  NOT change.
+- bot.service stays DISABLED.
+- Anthropic spend ~$1-3/day. Router decisions are LOCAL — no extra
+  LLM calls. Spend remains within current envelope.
+- 4 gates green at every commit.
+- 24h shadow audit BEFORE any flip to gate mode (= Phase 16.B.6 next
+  session).
+- If at any point the shadow audit reveals the router silently
+  vetoing >50% of windows, STOP — the veto logic is too aggressive.
+
+================================================================================
+SESSION BOUNDARY — ENDS WHEN ONE OF
+================================================================================
+
+(a) Items 1-3 shipped + VPS deploy + 24h shadow underway with
+    `EVERY_WINDOW_SHADOW=true,_MODE=false`; router decisions flowing
+    to state/router/<today>.jsonl; soak-gate audit script ready.
+    ✅ full
+(b) Items 1-2 shipped (wrapper + deploy + shadow), Item 3 deferred
+    to next session.
+    ✅ partial
+(c) Item 1 reveals an architectural problem with the router
+    integration → STOP, write design addendum, get operator sign-off
+    before iteration 2.
+    🛑
+(d) Context ≥60% before Item 2 done → close out at "wrapper wire
+    SHIPPED, deploy DEFERRED". The wrapper is env-gated so this is
+    safe.
+    ⏸
+
+================================================================================
+WHAT THIS PHASE UNLOCKS
+================================================================================
+
+- Phase 16.B.6 (7-day soak gate → PROMOTE or ROLLBACK) becomes
+  executable next session.
+- Phase 19 (LLM async pre-compute) gets a 24h slice of router-shadow
+  data plus the existing meta_outcome data — much better attribution
+  signal than either alone.
+- Operator gains a fast kill-switch path: in any future
+  router-related incident, `EVERY_WINDOW_MODE=false` env flip reverts
+  to current strategy with zero code change.
+- The `sizing.py` module (which was Phase 18 work) is shipped — Phase
+  18 is now retroactively closed.
+
+================================================================================
+DASHBOARD ACCESS (for soak monitoring)
+================================================================================
+
+SSH tunnel:
+  ssh -i $HOME/Downloads/LightsailDefaultKey-eu-west-1.pem -p 2222 \
+      -L 8505:127.0.0.1:8505 -N -o ServerAliveInterval=15 \
+      -o ServerAliveCountMax=3 -o ExitOnForwardFailure=yes \
+      -f ops@108.132.51.116
+
+Then open http://127.0.0.1:8505 in browser.
+
+The dashboard already has:
+- BANKROLL SCENARIOS panel (Phase 16 — 5 rows)
+- Phase 18B `meta_outcome` data in /api/state
+- Decisions tape with router-routed fires visible once shadow is on
+
+Watch the `meta_outcome` distribution + the router-shadow JSONL during
+the 24h soak.
+
+================================================================================
+QUICK PRE-SESSION CHECKLIST
+================================================================================
+
+Before driving:
+[ ] Bot still active on VPS (`systemctl is-active bot-staging.service`)
+[ ] Dashboard still active (`is-active dashboard-server.service`)
+[ ] Current PnL via /api/state — note for baseline comparison
+[ ] No incidents in /api/state.incidents
+[ ] HEAD on VPS confirmed (FF from previous session)
+[ ] Reviewed yesterday's session note: state/sessions/2026-05-11-phase-16b.md
+[ ] Reviewed the design doc: design/phase-16b-every-window-mode.md
+
+After session:
+[ ] Update state/sessions/2026-05-12-phase-16b-4.md with outcomes
+[ ] Update state/phases/phase-16b-every-window-mode.md (sub-phase 4 + 5
+    status)
+[ ] Update memory/checkpoint_phase_16b_router.md with deploy state
+[ ] Update memory/MEMORY.md if checkpoint changes
+[ ] git push origin claude/jovial-hermann-7e103f
+[ ] git status across Mac main + worktree + VPS all in sync
+[ ] Operator decision recorded in state/sessions/ if 16.B.6 trigger
+    pulled

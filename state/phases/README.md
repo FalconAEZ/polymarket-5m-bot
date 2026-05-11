@@ -34,10 +34,10 @@ Chronological + status. Each phase has its own note when work begins; tags are p
 
 ## In progress / next
 
-- **Phase 16.B** — every-window mode with signal-driven router. 🟡 **RESEARCH 2026-05-11.** Operator-authorized revisit of locked decision #6 (composite ≥0.6 threshold) + partial revisit of #9 ($5 flat — down-shaping only). Comprehensive research study landed at [[../research/phase-16b-every-window-study]]; companion phase prompt at `phase-prompts/phase-16b-every-window-mode-2026-05-11.txt`. **No code shipped — operator must sign off on §8 questions before design doc lock (Phase 16.B.2).** Six sub-phases planned: counterfactual audit → design lock → router primitives → wrapper wire → 24h shadow → 7-day soak gate.
-- **Phase 17** — Position sizing modes scaffolding (`POSITION_SIZING_MODE` env). Revisits decision #9 ($5 flat for first 100 trades → fractional). **GATED on operator approval** — we are at ~480 settled, well past the original 100-trade trigger, so the locked-decision revisit is justified. Phase 16.B partially relaxes #9 (down-shaping only); Phase 17 adds upward Kelly. Prompt to be drafted at `phase-prompts/phase-17-position-sizing-2026-05-14.txt`.
-- **Phase 19** — LLM async pre-compute. Now unblocked by Phase 18B `meta_outcome` data — the first 24h soak will surface whether the 22.1% meta=None rate is dominated by API errors (retry layer), refusals (prompt routing), or validation failures (schema tightening). Phase 19 design should wait for that breakdown.
-- **Phase 18** — Kelly sizing. Operator-gated, follows Phase 17.
+- [[phase-16b-every-window-mode|**Phase 16.B**]] — every-window mode with signal-driven router. 🟡 **DESIGN + PRIMITIVES SHIPPED 2026-05-11.** Operator-authorized revisit of decision #6 + partial #9. **Phase 17 (sizing modes) + Phase 18 (Kelly) MERGED INTO THIS PHASE** — sizing.py + size_for ship here. Sub-phases 16.B.0-3 done (research → counterfactual → design lock → router primitives + 49 tests, all gates green, commit `707786c`). Remaining: 16.B.4 wrapper wire + 16.B.5 VPS dark deploy + 24h shadow + 16.B.6 7-day soak gate. Next-session prompt: `phase-prompts/phase-16b-4-wrapper-wire-2026-05-12.txt`.
+- **Phase 19** — LLM async pre-compute. Now unblocked by Phase 18B `meta_outcome` data (206 votes flowed during the 2026-05-11 soak — 98.1% `ok`, 1.9% `invariant_violated`). Phase 19 design should wait for ≥24h of router-shadow data first.
+- ~~Phase 17 (sizing modes scaffolding)~~ — **SUBSUMED by Phase 16.B**.
+- ~~Phase 18 (Kelly sizing)~~ — **SUBSUMED by Phase 16.B** (`sizing.py` ships there).
 
 ## Master-plan phases 16-25 (planned)
 
