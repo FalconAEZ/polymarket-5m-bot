@@ -20,18 +20,23 @@ Chronological + status. Each phase has its own note when work begins; tags are p
 - [[phase-11-spot-aware|Phase 11.A SpotAware soak]] — superseded by Phase 5 LLM-ensemble experiment 2026-05-10. Bot promoted shadow→gate at 2026-05-10 16:31:15 UTC after operator-confirmed +4.1pp WR uplift.
 - Phase 12 (master plan) — planning artifact only; `pdfs/PHASE_12_MASTER_PLAN.pdf` (36 pages) drafted 2026-05-10. Locks the 12-phase optimization roadmap targeting fill-rate 85%+ and 60% WR Phase-23 gate.
 - [[phase-13-fill-rate]] — **NULL result** 2026-05-10. Audit closed by operator choice; no `SPOT_AWARE_LIMIT_LIFT_BPS` env, no code change. Commit `d4f3fde`.
-- [[phase-14-tier-gate]] — **infra dark-shipped** 2026-05-10. `TIER_GATE_ENABLED` + `TIER_GATE_BLOCKLIST` envs in `EnsembleWrapper` + `scripts/run_paper.py`, default OFF. Commit `b6b3599`. **VPS deploy DEFERRED** — parallel dashboard track on VPS has ~80 uncommitted lines on `loaders.py` + 10 untracked dashboard files. 481 tests green.
+- [[phase-14-tier-gate]] — **infra dark-shipped** 2026-05-10. `TIER_GATE_ENABLED` + `TIER_GATE_BLOCKLIST` envs in `EnsembleWrapper` + `scripts/run_paper.py`, default OFF. Commit `b6b3599`. **DEPLOYED via Phase 15 bundle** 2026-05-10 21:58:44 UTC. 481 tests green.
+- [[phase-15-regime-gate]] — **infra dark-shipped** 2026-05-10. `REGIME_GATE_ENABLED` + `REGIME_GATE_ABSTAIN_REGIMES` envs added; default OFF. Commit `fbcd38a`. Bundled VPS deploy with Phase 14 + dashboard track. Audit (n=477) found chop MARGINAL but PnL-dominant — infra-only ship per honest pushback, abstain set empty. 487 tests green.
+- [[phase-15.5-pnl-truth-bundle]] — **SHIPPED + LIVE** 2026-05-11. Triage bundle of Phase 15.5 (PnL truth pass) + Phase 18B (`meta_outcome` telemetry) + Phase 16 (bankroll scenarios) + v3 dashboard recovery. Naive sum +$2,556 → corrected +$75.26; entire gap = 41 `settled_correction` records (20 polymarket-flips + 21 phantom-neutralized). Commits `d6f02d1 → f0ee20d` (10 total). 487 tests green + React build clean. **Streamlit dashboard fully deleted** per operator directive.
 
 ## Live operation
 
-- **bot-staging.service** active since 2026-05-10 16:31:15 UTC on VPS at HEAD `c66fc07`.
+- **bot-staging.service** active since **2026-05-10 23:50:50 UTC** on VPS at HEAD `831c756` (Phase 15.5 deploy chain). MainPID stable; orphan-recovery primed at startup.
+- **dashboard-server.service** (v3 FastAPI + React) active since **2026-05-11 06:25:15 UTC** on VPS at HEAD `f0ee20d`. Bound to `127.0.0.1:8505`; access via SSH local-port-forward. `/api/state.scenarios` returns 5-row bankroll projection. `decisions_truth_source=polymarket`.
 - Strategy: `ensemble` (`ENSEMBLE_MODE=gate`, `ENSEMBLE_BASE_STRATEGY=wide_fire`).
-- Edge: 52.0% WR / +$76.79 / 402 settled / 12.5% LLM timeout rate / 62.5% effective fire rate (2026-05-10).
-- Phase 14 default behavior unchanged on production until env is flipped on (or until VPS pull arrives, then no behavior change with default false).
+- Edge (live, 2026-05-11): `agg.total_pnl_usd=$75.26` over 428 settled; aligned with the Phase 15.5 Item 1 reconciliation prediction. 70 post-restart `ensemble_vote` records with `meta_outcome` populated: 97.1% `ok`, 2.9% `invariant_violated`.
+- Phase 14 + 15 default behavior unchanged on production — both kill-switches dark (env unset / `=false`).
 
 ## In progress / next
 
-- **Phase 15** — regime gate wired to ensemble (`REGIME_GATE_ENABLED` + `REGIME_GATE_ABSTAIN_REGIMES`). Same audit→design→implement→test→ship-dark pattern as Phase 14. Prompt at `phase-prompts/phase-15-regime-gate-2026-05-12.txt`. Next session.
+- **Phase 17** — Position sizing modes scaffolding (`POSITION_SIZING_MODE` env). Revisits decision #9 ($5 flat for first 100 trades → fractional). **GATED on operator approval** — we are at ~480 settled, well past the original 100-trade trigger, so the locked-decision revisit is justified. Prompt to be drafted at `phase-prompts/phase-17-position-sizing-2026-05-14.txt`.
+- **Phase 19** — LLM async pre-compute. Now unblocked by Phase 18B `meta_outcome` data — the first 24h soak will surface whether the 22.1% meta=None rate is dominated by API errors (retry layer), refusals (prompt routing), or validation failures (schema tightening). Phase 19 design should wait for that breakdown.
+- **Phase 18** — Kelly sizing. Operator-gated, follows Phase 17.
 
 ## Master-plan phases 16-25 (planned)
 

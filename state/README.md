@@ -19,19 +19,24 @@ tags: [moc, index, vault-root]
 | Phase 1B — Wallet funding + first $5 order | ⏸ deferred to head of Phase 6 per [[decisions/README#decision-20\|decision #20]] |
 | [[phases/phase-2-data-plane\|Phase 2 — Data plane]] | ✅ closed |
 | Phase 3 — LLM A/B | ✅ closed at `3cd4a70`, tag `phase-3-pass`. Verdict CUT (latency + cost fail decision #16); ensemble retained for Phase 4 re-run |
-| Phase 4 + 4.5 — Paper runtime + dashboard | ✅ closed at `c1ff257` |
+| Phase 4 + 4.5 — Paper runtime + dashboard | ✅ closed at `c1ff257`. **Streamlit dashboard retired 2026-05-11** in favor of v3 React+FastAPI. |
 | [[phases/phase-5-vps\|Phase 5 — VPS + LLM ensemble]] | ✅ closed 2026-05-08, tag `phase-5-pass`. ENSEMBLE_MODE=gate promoted 2026-05-10 16:31:15 UTC after shadow-mode validation. Five defense layers live |
 | [[phases/phase-11-spot-aware\|Phase 11.A — SpotAware paper soak]] | ✅ superseded by ensemble experiment |
 | Phase 12 — Master plan drafted | ✅ planning artifact 2026-05-10; 36-page PDF, 12-phase optimization roadmap |
 | [[phases/phase-13-fill-rate\|Phase 13 — Fill-rate lift]] | 🛑 **NULL result** 2026-05-10. Audit showed 1-2¢ unfilled subset W=46.2% (below bot's 52% WR); 0-1¢ bucket empty. No code shipped. Commit `d4f3fde` |
 | [[phases/phase-14-tier-gate\|Phase 14 — Entry-price tier blocklist]] | 🟢 **infra DEPLOYED dark** 2026-05-10 at `b6b3599`. `TIER_GATE_ENABLED=false` default; live on VPS since 21:58:44 UTC bundle restart |
 | [[phases/phase-15-regime-gate\|Phase 15 — Regime gate wired to ensemble]] | 🟢 **infra DEPLOYED dark** 2026-05-10 at `fbcd38a`. `REGIME_GATE_ENABLED=false` default; bundled with Phase 14 deploy. Audit found chop MARGINAL (51.4% WR) but +$1725 PnL dominant — operator-approved infra-only ship, abstain set empty |
-| Phase 16 — Bankroll display experiment | ⏳ next session. Prompt at `phase-prompts/phase-16-bankroll-display-2026-05-13.txt` |
-| Phases 17-25 | ⏳ per master plan §4; one phase per session |
+| [[phases/phase-15.5-pnl-truth-bundle\|Phase 15.5 — PnL truth + 18B + 16 + v3 dashboard recovery]] | ✅ **SHIPPED + LIVE** 2026-05-11. Naive sum +$2,556 → corrected **+$75.26** (entire gap = 41 `settled_correction` records). Phase 18B `meta_outcome` telemetry, Phase 16 scenarios panel + `apply_settled_corrections` wired into v3 dashboard, Streamlit fully deleted, v3 source recovered from `claude/dashboard-pm-truth-fix-7e103f`. Commits `d6f02d1 → f0ee20d` (10 total) |
+| Phase 17 — Position sizing modes (`POSITION_SIZING_MODE`) | ⏳ next master-plan slot. **GATED on operator approval to revisit decision #9** ($5 flat → fractional) |
+| Phase 18 — Kelly sizing | ⏳ revisits decision #9 — operator-gated |
+| Phase 19 — LLM async pre-compute (`LLM_PRECOMPUTE_ENABLED`) | ⏳ Phase 18B telemetry now feeding it real attribution data instead of guesses |
+| Phases 20-25 | ⏳ per master plan §4; one phase per session |
 
-**Bot live:** bot-staging.service active since **2026-05-10 21:58:44 UTC** on VPS at `fbcd38a` (Phase 14 + 15 bundled). Strategy = ensemble + ENSEMBLE_MODE=gate + ENSEMBLE_BASE_STRATEGY=wide_fire. Both kill-switches dark (`TIER_GATE_ENABLED=false`, `REGIME_GATE_ENABLED=false`). Six defense layers live (background-settle, instant-settle, periodic-orphan-recovery, post-hoc gamma retry, ensemble timeout, regime/tier dark-ship infra ready).
+**Bot live:** `bot-staging.service` active since **2026-05-10 23:50:50 UTC** on VPS at `831c756` (Phase 15.5 bundle). Strategy = `ensemble` + `ENSEMBLE_MODE=gate` + `ENSEMBLE_BASE_STRATEGY=wide_fire`. Both kill-switches dark (`TIER_GATE_ENABLED=false`, `REGIME_GATE_ENABLED=false`). Six defense layers live (background-settle, instant-settle, periodic-orphan-recovery, post-hoc gamma retry, ensemble timeout, regime/tier dark-ship infra ready). 70+ post-restart `ensemble_vote` records carry the new `meta_outcome` field; 97.1% `ok`, 2.9% `invariant_violated` — first attribution data Phase 18B was built to surface.
 
-Latest commit on `claude/jovial-hermann-7e103f`: `fbcd38a` (Phase 15). Tags: `phase-0-pass`, `phase-1a-pass`, `phase-3-pass`, `phase-5-pass`, `study-A-final`, `study-A-abort`. (Master-plan optimization phases 13-25 don't carry git tags by design — only structural milestones do.)
+**Dashboard live:** `dashboard-server.service` active since **2026-05-11 06:25:15 UTC** on VPS at `f0ee20d` (FastAPI + React v3 on `127.0.0.1:8505`). Access via SSH tunnel `-L 8505:127.0.0.1:8505 ops@108.132.51.116` then open `http://127.0.0.1:8505`. New BANKROLL SCENARIOS panel in row D. `decisions_truth_source=polymarket`, `agg.total_pnl_usd=$75.26`.
+
+Latest commit on `claude/jovial-hermann-7e103f`: `f0ee20d` (Phase 15.5 ADDENDUM). Tags: `phase-0-pass`, `phase-1a-pass`, `phase-3-pass`, `phase-5-pass`, `study-A-final`, `study-A-abort`. (Master-plan optimization phases 13-25 don't carry git tags by design — only structural milestones do.)
 
 Funder address: `0x512DA3825E69A8c19d2e0D00b66dd23d3ec95d22`. Signer address: `0x8d9759A73D65aD32cd858eb3AdE46ce56F5F2B4A`. Both public; keys live in age-encrypted backups + (Signer only) gitignored `.envrc`.
 
