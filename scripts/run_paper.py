@@ -22,6 +22,10 @@ import signal
 import sys
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from polymarket_bot.strategies.every_window import Router
 
 ROOT = Path(__file__).resolve().parent.parent
 SRC = ROOT / "src"
@@ -159,6 +163,84 @@ def _env_bool(name: str, default: bool = False) -> bool:
     if not raw:
         return default
     return raw in ("1", "true", "yes", "on")
+
+
+def _env_csv(name: str) -> tuple[str, ...]:
+    """Read a comma-separated env var into a tuple of trimmed strings.
+    Empty string -> empty tuple; whitespace-only items dropped."""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return ()
+    return tuple(p.strip() for p in raw.split(",") if p.strip())
+
+
+def _env_csv_dict_float(name: str) -> dict[str, float] | None:
+    """Read a 'key:value,key:value' env var into dict[str, float].
+    Returns None on unset; raises ValueError on malformed entries."""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return None
+    out: dict[str, float] = {}
+    for pair in raw.split(","):
+        pair = pair.strip()
+        if not pair:
+            continue
+        if ":" not in pair:
+            raise ValueError(f"env var {name}: expected 'key:value', got {pair!r}")
+        key, val = pair.split(":", 1)
+        out[key.strip()] = float(val.strip())
+    return out
+
+
+def _build_router_from_env() -> Router:
+    """Build a Phase 16.B Router from `EVERY_WINDOW_*` env vars.
+
+    Defaults match `design/phase-16b-every-window-mode.md` §4. Any
+    unset env var leaves the RouterConfig field at its locked default.
+    """
+    from polymarket_bot.strategies.every_window import Router, RouterConfig
+    from polymarket_bot.strategies.every_window.config import (
+        DEFAULT_REGIME_SCORE,
+        DEFAULT_TAKER_FALLBACK_TIERS,
+        DEFAULT_TIER_PER_TRADE_CAP_USD,
+        DEFAULT_TIER_SCORE,
+    )
+
+    size_floor = _env_float("EVERY_WINDOW_SIZE_FLOOR_USD", 5.0) or 5.0
+    size_cap = _env_float("EVERY_WINDOW_SIZE_CAP_USD", 30.0) or 30.0
+    kink = _env_float("EVERY_WINDOW_CONFIDENCE_KINK", 0.30) or 0.30
+    kelly_frac = _env_float("EVERY_WINDOW_KELLY_FRACTION", 0.5) or 0.5
+    kelly_cap = _env_float("EVERY_WINDOW_KELLY_MAX_PCT", 0.03) or 0.03
+    bankroll = _env_float("EVERY_WINDOW_BANKROLL_USD", 1000.0) or 1000.0
+    w_det = _env_float("EVERY_WINDOW_W_DET", 0.25) or 0.25
+    w_reg = _env_float("EVERY_WINDOW_W_REG", 0.20) or 0.20
+    w_tier = _env_float("EVERY_WINDOW_W_TIER", 0.15) or 0.15
+    w_llm = _env_float("EVERY_WINDOW_W_LLM", 0.25) or 0.25
+    w_kelly = _env_float("EVERY_WINDOW_W_KELLY", 0.15) or 0.15
+
+    taker_fb = _env_csv("EVERY_WINDOW_TAKER_FALLBACK_TIERS") or DEFAULT_TAKER_FALLBACK_TIERS
+    tier_caps = _env_csv_dict_float("EVERY_WINDOW_TIER_PER_TRADE_CAP_USD") or dict(
+        DEFAULT_TIER_PER_TRADE_CAP_USD
+    )
+
+    config = RouterConfig(
+        w_det=w_det,
+        w_reg=w_reg,
+        w_tier=w_tier,
+        w_llm=w_llm,
+        w_kelly=w_kelly,
+        size_floor_usd=size_floor,
+        size_cap_usd=size_cap,
+        confidence_kink=kink,
+        kelly_fraction=kelly_frac,
+        kelly_max_pct=kelly_cap,
+        bankroll_usd=bankroll,
+        regime_score=dict(DEFAULT_REGIME_SCORE),
+        tier_score=dict(DEFAULT_TIER_SCORE),
+        tier_per_trade_cap_usd=tier_caps,
+        taker_fallback_tiers=taker_fb,
+    )
+    return Router(config=config)
 
 
 def _build_strategy(name: str) -> Strategy:
@@ -418,6 +500,25 @@ def _build_strategy(name: str) -> Strategy:
                     "REGIME_GATE_ENABLED=true but abstain_regimes empty; "
                     "detector observes spot ticks but gate is a no-op"
                 )
+        # Phase 16.B.4 — every-window router env wiring. Defaults OFF;
+        # when EVERY_WINDOW_MODE=true the router takes over the wrapper's
+        # FIRE/ABSTAIN dispatch (design/phase-16b-every-window-mode.md
+        # §4). Build the Router unconditionally so SHADOW mode can use
+        # it for 24h audit even when MASTER is off.
+        every_window_mode = _env_bool("EVERY_WINDOW_MODE", False)
+        every_window_shadow = _env_bool("EVERY_WINDOW_SHADOW", False)
+        router = _build_router_from_env() if (every_window_mode or every_window_shadow) else None
+        router_log_root: Path | None = None
+        if router is not None:
+            router_log_root = Path(os.environ.get("PMB_DASH_STATE_DIR", "state")) / "router"
+            LOG.warning(
+                "EVERY_WINDOW_MODE=%s SHADOW=%s — router=%s log_root=%s",
+                every_window_mode,
+                every_window_shadow,
+                "WIRED" if router is not None else "OFF",
+                router_log_root,
+            )
+
         if mode != "off":
             adapter = AnthropicAdapter(budget=budget, api_key=api_key)
             specialists = [
@@ -442,6 +543,10 @@ def _build_strategy(name: str) -> Strategy:
                 tier_blocklist=tier_blocklist,
                 regime_detector=regime_detector,
                 abstain_regimes=regime_abstain,
+                router=router,
+                every_window_mode=every_window_mode,
+                every_window_shadow=every_window_shadow,
+                router_log_root=router_log_root,
             )
         if tier_blocklist:
             LOG.warning(

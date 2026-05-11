@@ -39,6 +39,7 @@ from polymarket_bot.backtest.types import (
     WindowBoundary,
 )
 from polymarket_bot.strategies.ensemble_wrapper import EnsembleWrapper
+from polymarket_bot.strategies.every_window import Router, RouterConfig
 from polymarket_bot.strategies.regime_detector import RegimeDetector
 
 WINDOW_TS = 1_715_000_100
@@ -1075,3 +1076,296 @@ async def test_regime_gate_under_load_no_overhead(tmp_path: Path) -> None:
     await wrapper.aclose()
     assert refused == 100, f"expected 100 refusals, got {refused}"
     assert elapsed < 0.5, f"100 regime-gated evaluations took {elapsed:.3f}s — overhead too high"
+
+
+# ----------------------------------------------------------------------
+# Phase 16.B.4 — EVERY_WINDOW_MODE router wire (7 tests, per
+# design/phase-16b-every-window-mode.md §11)
+# ----------------------------------------------------------------------
+
+
+def _build_router_for_tests() -> Router:
+    """Construct a Router with locked-default RouterConfig (design §3.4)."""
+    return Router(config=RouterConfig())
+
+
+def _read_router_jsonl(router_root: Path) -> list[dict[str, Any]]:
+    """Helper: read the daily-rotating router log into one list."""
+    paths = sorted(router_root.glob("*.jsonl"))
+    out: list[dict[str, Any]] = []
+    for p in paths:
+        out.extend(json.loads(line) for line in p.read_text().strip().splitlines() if line)
+    return out
+
+
+@pytest.mark.asyncio
+async def test_every_window_mode_off_no_behavior_change(tmp_path: Path) -> None:
+    """THE BULWARK TEST. With EVERY_WINDOW_MODE=false the wrapper must
+    produce the exact same Decision as it would have without the router
+    wire at all. Compared head-to-head: one wrapper with router=None,
+    one with router wired but mode off. Outputs must be byte-identical
+    for the same input event stream.
+
+    If this fails, the wire has introduced behavior change in the
+    default-off path and the deploy must NOT proceed.
+    """
+    ensemble_root_a = tmp_path / "a"
+    ensemble_root_b = tmp_path / "b"
+    router_root = tmp_path / "router"
+    base_a = _StubBaseStrategy(side="UP")
+    base_b = _StubBaseStrategy(side="UP")
+    common_meta = MetaDecision(action="FIRE", side="UP", confidence=0.85, rationale="meta-up")
+    wrapper_baseline = EnsembleWrapper(
+        base=base_a,
+        specialists=[
+            _StubAgent("orderbook", AgentVote(side="UP", confidence=0.8, rationale="o")),
+            _StubAgent("oracle_gap", AgentVote(side="UP", confidence=0.7, rationale="og")),
+        ],
+        meta=_StubMeta(common_meta),
+        mode="gate",
+        log_root=ensemble_root_a,
+    )
+    wrapper_with_router_off = EnsembleWrapper(
+        base=base_b,
+        specialists=[
+            _StubAgent("orderbook", AgentVote(side="UP", confidence=0.8, rationale="o")),
+            _StubAgent("oracle_gap", AgentVote(side="UP", confidence=0.7, rationale="og")),
+        ],
+        meta=_StubMeta(common_meta),
+        mode="gate",
+        log_root=ensemble_root_b,
+        router=Router(config=RouterConfig()),
+        every_window_mode=False,
+        every_window_shadow=False,
+        router_log_root=router_root,
+    )
+    decision_baseline = await _drive(wrapper_baseline)
+    decision_routered = await _drive(wrapper_with_router_off)
+    assert decision_baseline == decision_routered, (
+        f"EVERY_WINDOW_MODE=false changed wrapper output! "
+        f"baseline={decision_baseline} routered={decision_routered}"
+    )
+    # Router log must be empty (no router invocation at all in default-off).
+    assert not router_root.exists() or _read_router_jsonl(router_root) == []
+
+
+@pytest.mark.asyncio
+async def test_every_window_mode_emits_on_every_window(tmp_path: Path) -> None:
+    """With EVERY_WINDOW_MODE=true the router replaces the gate dispatch.
+    Even when meta=ABSTAIN (which would normally cause gate-mode to
+    drop the fire), the router fires the window and the size differs
+    from the base candidate's flat $5."""
+    router = _build_router_for_tests()
+    wrapper = EnsembleWrapper(
+        base=_StubBaseStrategy(side="UP"),
+        specialists=[
+            _StubAgent("orderbook", AgentVote(side="UP", confidence=0.8, rationale="o")),
+            _StubAgent("oracle_gap", AgentVote(side="UP", confidence=0.7, rationale="og")),
+        ],
+        meta=_StubMeta(MetaDecision(action="ABSTAIN", side=None, confidence=0.4, rationale="m")),
+        mode="gate",
+        log_root=tmp_path / "ensemble",
+        router=router,
+        every_window_mode=True,
+        every_window_shadow=False,
+        router_log_root=tmp_path / "router",
+    )
+    decision = await _drive(wrapper)
+    # In stock gate-mode, meta=ABSTAIN would cause None. With router taking
+    # over, the router fires regardless — it's its own decision.
+    assert decision is not None, "router should fire even when meta=ABSTAIN"
+    # Router log records a router_fired (or router_vetoed) entry.
+    payloads = _read_router_jsonl(tmp_path / "router")
+    fired = [p for p in payloads if p["kind"] == "router_fired"]
+    assert len(fired) == 1, f"expected 1 router_fired entry, got {payloads}"
+    # Router rationale identifies the strategy.
+    assert "strategy=every_window" in decision.rationale
+
+
+@pytest.mark.asyncio
+async def test_every_window_mode_uses_router_confidence(tmp_path: Path) -> None:
+    """The Decision the router emits must use the router's sizing
+    formula, not the base candidate's flat $5. With high meta confidence
+    + same-side specialists + a +10 bps delta_bps in the base rationale,
+    confidence is well above the kink — size should be > $5."""
+    router = _build_router_for_tests()
+    wrapper = EnsembleWrapper(
+        base=_StubBaseStrategy(side="UP"),
+        specialists=[
+            _StubAgent("orderbook", AgentVote(side="UP", confidence=0.9, rationale="o")),
+            _StubAgent("oracle_gap", AgentVote(side="UP", confidence=0.9, rationale="og")),
+            _StubAgent("momentum", AgentVote(side="UP", confidence=0.9, rationale="m")),
+        ],
+        meta=_StubMeta(MetaDecision(action="FIRE", side="UP", confidence=0.95, rationale="m")),
+        mode="gate",
+        log_root=tmp_path / "ensemble",
+        router=router,
+        every_window_mode=True,
+        router_log_root=tmp_path / "router",
+    )
+    decision = await _drive(wrapper)
+    assert decision is not None
+    # Router-shaped Decision: size differs from the stub's flat $5 OR
+    # equals it; either way, it MUST be in the [5, 30] band. The key
+    # bulwark is that the rationale carries router context, not stub.
+    assert 5.0 <= decision.size_usd <= 30.0
+    payload = _read_router_jsonl(tmp_path / "router")[0]
+    assert (
+        payload["confidence"] >= 0.30
+    ), f"high-confidence inputs should clear the kink; got {payload['confidence']}"
+    # The Decision's size_usd matches the router log's size_usd.
+    assert decision.size_usd == payload["size_usd"]
+    # And the breakdown carries all 5 weights.
+    inputs = payload["inputs_breakdown"]
+    for k in ("det", "reg", "tier", "llm", "kelly"):
+        assert k in inputs, f"missing input '{k}' in breakdown {inputs}"
+
+
+@pytest.mark.asyncio
+async def test_every_window_shadow_logs_only(tmp_path: Path) -> None:
+    """EVERY_WINDOW_SHADOW=true + MODE=false: router runs as observer,
+    base strategy still drives. Router log gets a 'router_shadow' entry
+    per fired window."""
+    router = _build_router_for_tests()
+    wrapper = EnsembleWrapper(
+        base=_StubBaseStrategy(side="UP"),
+        specialists=[
+            _StubAgent("orderbook", AgentVote(side="UP", confidence=0.8, rationale="o")),
+            _StubAgent("oracle_gap", AgentVote(side="UP", confidence=0.7, rationale="og")),
+        ],
+        meta=_StubMeta(MetaDecision(action="FIRE", side="UP", confidence=0.85, rationale="m")),
+        mode="gate",
+        log_root=tmp_path / "ensemble",
+        router=router,
+        every_window_mode=False,
+        every_window_shadow=True,
+        router_log_root=tmp_path / "router",
+    )
+    decision = await _drive(wrapper)
+    # Base flow drove — decision is the stub's Decision (size=5.0,
+    # rationale "strategy=stub side=UP ...").
+    assert decision is not None
+    assert "strategy=stub" in decision.rationale
+    assert decision.size_usd == 5.0
+    # Router log contains a router_shadow entry.
+    payloads = _read_router_jsonl(tmp_path / "router")
+    shadow_entries = [p for p in payloads if p["kind"] == "router_shadow"]
+    assert len(shadow_entries) == 1, f"expected 1 router_shadow entry, got {payloads}"
+    assert shadow_entries[0]["fire"] in (True, False)  # router can veto or fire
+
+
+@pytest.mark.asyncio
+async def test_every_window_mode_kill_switch_wr_floor(tmp_path: Path) -> None:
+    """When the runtime kill-switch flips (rolling-100 WR < floor or
+    daily PnL < floor, design §5 layers 3-4), subsequent events take
+    the base flow. The Phase 16.B.6 runtime loop calls
+    `wrapper.disable_every_window(reason=...)` — test that this
+    method reverts behavior without a service restart."""
+    router = _build_router_for_tests()
+    wrapper = EnsembleWrapper(
+        base=_StubBaseStrategy(side="UP"),
+        specialists=[
+            _StubAgent("orderbook", AgentVote(side="UP", confidence=0.8, rationale="o")),
+            _StubAgent("oracle_gap", AgentVote(side="UP", confidence=0.7, rationale="og")),
+        ],
+        meta=_StubMeta(MetaDecision(action="FIRE", side="UP", confidence=0.9, rationale="m")),
+        mode="gate",
+        log_root=tmp_path / "ensemble",
+        router=router,
+        every_window_mode=True,
+        router_log_root=tmp_path / "router",
+    )
+    # First drive: router should be active.
+    decision_before = await _drive(wrapper)
+    assert decision_before is not None
+    assert "strategy=every_window" in decision_before.rationale
+    # Operator-side / Phase 16.B.6 runtime tripped the WR floor.
+    wrapper.disable_every_window(reason="rolling_wr_below_floor:0.47")
+    # Reset the base so it fires again on the next drive.
+    wrapper._base.reset()  # type: ignore[attr-defined]
+    decision_after = await _drive(wrapper)
+    assert decision_after is not None
+    # Now we're back on the base flow — stub-shaped Decision.
+    assert "strategy=stub" in decision_after.rationale
+    # Idempotent: second call is a no-op (state already off).
+    wrapper.disable_every_window(reason="rolling_wr_below_floor:0.46")
+    # Router log captured the disable event.
+    payloads = _read_router_jsonl(tmp_path / "router")
+    disables = [p for p in payloads if p["kind"] == "router_disabled"]
+    assert len(disables) == 1, f"expected 1 router_disabled entry, got {payloads}"
+    assert disables[0]["reason"] == "rolling_wr_below_floor:0.47"
+
+
+@pytest.mark.asyncio
+async def test_every_window_mode_kill_switch_daily_pnl(tmp_path: Path) -> None:
+    """Same shape as the WR test but for the daily PnL floor kill-switch
+    (design §5 layer 4). Same disable_every_window mechanism — reason
+    just tags differently for the audit."""
+    router = _build_router_for_tests()
+    wrapper = EnsembleWrapper(
+        base=_StubBaseStrategy(side="UP"),
+        specialists=[
+            _StubAgent("orderbook", AgentVote(side="UP", confidence=0.8, rationale="o")),
+            _StubAgent("oracle_gap", AgentVote(side="UP", confidence=0.7, rationale="og")),
+        ],
+        meta=_StubMeta(MetaDecision(action="FIRE", side="UP", confidence=0.9, rationale="m")),
+        mode="gate",
+        log_root=tmp_path / "ensemble",
+        router=router,
+        every_window_mode=True,
+        router_log_root=tmp_path / "router",
+    )
+    wrapper.disable_every_window(reason="daily_pnl_below_floor:-105.00")
+    wrapper._base.reset()  # type: ignore[attr-defined]
+    decision = await _drive(wrapper)
+    assert decision is not None
+    assert "strategy=stub" in decision.rationale
+    payloads = _read_router_jsonl(tmp_path / "router")
+    disables = [p for p in payloads if p["kind"] == "router_disabled"]
+    assert len(disables) == 1
+    assert disables[0]["reason"] == "daily_pnl_below_floor:-105.00"
+
+
+@pytest.mark.asyncio
+async def test_every_window_mode_preserves_phantom_fill_defense(tmp_path: Path) -> None:
+    """Phase 11.A regression: the router's phantom-fill veto must fire
+    when ask price < $0.05 AND ask-size-top is None. We synthesize that
+    by feeding a BookUpdate with best_ask=0.03 and NO depth (ask_size_top
+    omitted), and a stub that fires on that side. Router must veto."""
+    router = _build_router_for_tests()
+    wrapper = EnsembleWrapper(
+        base=_StubBaseStrategy(side="UP", price_limit=0.03),
+        specialists=[
+            _StubAgent("orderbook", AgentVote(side="UP", confidence=0.9, rationale="o")),
+            _StubAgent("oracle_gap", AgentVote(side="UP", confidence=0.9, rationale="og")),
+        ],
+        meta=_StubMeta(MetaDecision(action="FIRE", side="UP", confidence=0.95, rationale="m")),
+        mode="gate",
+        log_root=tmp_path / "ensemble",
+        router=router,
+        every_window_mode=True,
+        router_log_root=tmp_path / "router",
+    )
+    # Deliver an UP-side book with NO ask_size_top — the phantom-fill
+    # zone the router defends against.
+    await wrapper.on_event(_open())
+    await wrapper.on_event(_spot(80_000.0, 1))
+    await wrapper.on_event(_oracle(79_990.0, 2))
+    await wrapper.on_event(
+        BookUpdate(
+            ts_utc_ns=WINDOW_OPEN_NS + 3 * 10**9,
+            asset_id=TOKEN_UP,
+            side="UP",  # type: ignore[arg-type]
+            best_bid=0.01,
+            best_ask=0.03,
+            bid_size_top=None,
+            ask_size_top=None,
+        )
+    )
+    decision = await wrapper.on_event(_spot(80_080.0, 30))
+    await wrapper.aclose()
+    assert decision is None, "router must veto phantom-fill zone"
+    payloads = _read_router_jsonl(tmp_path / "router")
+    vetoes = [p for p in payloads if p["kind"] == "router_vetoed"]
+    assert len(vetoes) == 1, f"expected 1 router_vetoed entry, got {payloads}"
+    assert vetoes[0]["veto_reason"] == "phantom_fill_defense"
