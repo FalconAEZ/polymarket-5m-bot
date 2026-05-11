@@ -3,12 +3,10 @@
 Driven by the operator's "what's the point lol" question (2026-05-08): the
 live bot at threshold 0.6 may go many windows without firing. Rather than
 lower the threshold reflexively, this script runs the backtest engine over
-recent captured data at thresholds {0.3, 0.4, 0.5, 0.6} and emits
-dashboard-readable JSONL so the operator can SEE what each threshold
-would have decided across the captured days. Output structure mirrors
-`state/decisions/<UTC-date>.jsonl` so `PMB_DASH_STATE_DIR=state/replay/
-threshold_0.4 streamlit run scripts/dashboard.py` renders without any
-dashboard code change.
+recent captured data at thresholds {0.3, 0.4, 0.5, 0.6} and emits JSONL
+with the same shape as `state/decisions/<UTC-date>.jsonl` so the existing
+audit scripts (scripts/audit_*.py) can be re-run against each
+per-threshold output to compare counterfactual win-rates / PnL.
 
 Usage:
   uv run python scripts/run_replay_calibration.py \
@@ -304,13 +302,6 @@ async def main(
     print()
     print(f"==> wrote per-threshold JSONL + summary to {out_root}")
     print(f"==> elapsed: {elapsed:.1f}s")
-    print()
-    print("    open the dashboard for any threshold with:")
-    for threshold in thresholds:
-        print(
-            f"      PMB_DASH_STATE_DIR={out_root}/threshold_{threshold:.1f} "
-            f"uv run streamlit run scripts/dashboard.py"
-        )
     return 0
 
 

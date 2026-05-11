@@ -1,0 +1,154 @@
+"""FastAPI app — wires REST snapshot + WS push + static React build.
+
+Bind to 127.0.0.1:8505 only; the SSH tunnel is the only access path.
+Serves the v3 React app from apps/dashboard-v3/dist/ as static files,
+plus /api/state (current snapshot JSON) and /api/live (WebSocket diff
+stream). Per design/dashboard-v3.md §4.5.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import os
+from contextlib import asynccontextmanager
+from pathlib import Path
+from typing import Any
+
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
+
+from polymarket_bot.dashboard.loaders import load_decisions
+from polymarket_bot.dashboard_server.resolver_loop import (
+    ResolverConfig,
+    ResolverState,
+    cancel_resolver_task,
+    spawn_resolver_task,
+)
+from polymarket_bot.dashboard_server.state import (
+    DECISIONS_SUBDIR,
+    UpstreamCache,
+    snapshot,
+)
+from polymarket_bot.dashboard_server.upstream import (
+    cancel_upstream_tasks,
+    spawn_upstream_tasks,
+)
+from polymarket_bot.resolver import active_window_ts
+
+log = logging.getLogger("dashboard_server.app")
+
+ROOT = Path(__file__).resolve().parent.parent.parent.parent
+STATIC_DIR = ROOT / "apps" / "dashboard-v3" / "dist"
+
+PUSH_INTERVAL_S: float = 1.0
+PUSH_FAST_INTERVAL_S: float = 0.25  # when on_update set, push within this
+
+
+def _state_dir() -> Path:
+    return Path(os.environ.get("PMB_DASH_STATE_DIR", str(ROOT / "state")))
+
+
+def _resolve_current_window_side() -> tuple[int | None, str | None]:
+    """Returns (window_ts, side) for the CTF orderbook poller to subscribe to.
+
+    Audit 2026-05-10: previously returned the most-recent FIRED decision's
+    (window_ts, side) — which meant the OUR MARKET panel locked onto the
+    last-fire window forever, even after that window closed and was hours
+    stale. With the v2 ev_min=0.05 tightening firing ~1/day, this caused
+    the panel to show empty books for the closed-and-removed market.
+
+    New behavior: always return the CURRENT 5m window's window_ts. For
+    side, prefer the most-recent fired decision's side IF that fire is
+    still in the current window (active bet); otherwise default to "UP"
+    so the panel shows live depth on at least one side rather than going
+    blank.
+    """
+    import time
+
+    current_window = active_window_ts(int(time.time()))
+    state_dir = _state_dir()
+    rows = load_decisions(state_dir / DECISIONS_SUBDIR, since_utc_date=None)
+    if not rows:
+        return (current_window, "UP")
+    most_recent = max(rows, key=lambda r: r.decision_dt_utc)
+    if most_recent.window_ts == current_window:
+        return (current_window, most_recent.side)
+    return (current_window, "UP")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> Any:
+    cache = UpstreamCache()
+    on_update = asyncio.Event()
+    tasks = spawn_upstream_tasks(
+        cache,
+        state_dir_resolver=_resolve_current_window_side,
+        on_update=on_update,
+    )
+    resolver_state = ResolverState()
+    resolver_task = spawn_resolver_task(_state_dir(), resolver_state, config=ResolverConfig())
+    app.state.upstream_cache = cache
+    app.state.on_update = on_update
+    app.state.upstream_tasks = tasks
+    app.state.resolver_state = resolver_state
+    app.state.resolver_task = resolver_task
+    try:
+        yield
+    finally:
+        await cancel_upstream_tasks(tasks)
+        await cancel_resolver_task(resolver_task)
+
+
+app = FastAPI(title="Polymarket bot dashboard v3", lifespan=lifespan)
+
+
+@app.get("/api/state")
+async def get_state() -> JSONResponse:
+    cache: UpstreamCache = app.state.upstream_cache
+    snap = snapshot(_state_dir(), upstream=cache)
+    return JSONResponse(snap)
+
+
+@app.get("/api/health")
+async def get_health() -> JSONResponse:
+    return JSONResponse({"ok": True})
+
+
+@app.websocket("/api/live")
+async def live_ws(ws: WebSocket) -> None:
+    await ws.accept()
+    cache: UpstreamCache = app.state.upstream_cache
+    on_update: asyncio.Event = app.state.on_update
+    state_dir = _state_dir()
+    try:
+        snap = snapshot(state_dir, upstream=cache)
+        await ws.send_text(json.dumps({"type": "snapshot", "state": snap}))
+        while True:
+            try:
+                await asyncio.wait_for(on_update.wait(), timeout=PUSH_INTERVAL_S)
+                on_update.clear()
+                await asyncio.sleep(PUSH_FAST_INTERVAL_S)  # batch quick updates
+            except TimeoutError:
+                pass
+            snap = snapshot(state_dir, upstream=cache)
+            await ws.send_text(json.dumps({"type": "snapshot", "state": snap}))
+    except WebSocketDisconnect:
+        log.info("ws client disconnected")
+    except Exception as exc:  # never crash the route
+        log.exception("ws error: %s", exc)
+
+
+def _maybe_mount_static() -> None:
+    """Mount the Vite build output if it exists. During dev (vite dev
+    server on 5173) the React app proxies /api/* to FastAPI, so the
+    static mount is empty — that's fine."""
+    if STATIC_DIR.exists():
+        app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="dist")
+    else:
+        log.info("static build %s does not exist; serving API only", STATIC_DIR)
+
+
+_maybe_mount_static()

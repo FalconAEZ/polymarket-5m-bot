@@ -2,55 +2,16 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "dashboard",
+      "name": "dashboard-server",
       "runtimeExecutable": "uv",
-      "runtimeArgs": [
-        "run",
-        "streamlit",
-        "run",
-        "scripts/dashboard.py",
-        "--server.headless=true",
-        "--server.port=8501",
-        "--browser.gatherUsageStats=false"
-      ],
-      "port": 8501
-    },
-    {
-      "name": "dashboard-staging",
-      "runtimeExecutable": "bash",
-      "runtimeArgs": [
-        "-c",
-        "PMB_DASH_STATE_DIR=state/staging uv run streamlit run scripts/dashboard.py --server.headless=true --server.port=8503 --browser.gatherUsageStats=false"
-      ],
-      "port": 8503
-    },
-    {
-      "name": "vps-dashboard-tunnel",
-      "runtimeExecutable": "ssh",
-      "runtimeArgs": [
-        "-i",
-        "/Users/hamad/Downloads/LightsailDefaultKey-eu-west-1.pem",
-        "-p",
-        "2222",
-        "-L",
-        "8505:127.0.0.1:8505",
-        "-N",
-        "-o",
-        "StrictHostKeyChecking=no",
-        "-o",
-        "ServerAliveInterval=30",
-        "ops@108.132.51.116"
-      ],
-      "port": 8505
-    },
-    {
-      "name": "vps-dashboard-attach",
-      "runtimeExecutable": "bash",
-      "runtimeArgs": [
-        "-c",
-        "if lsof -i :8505 >/dev/null 2>&1; then echo 'tunnel already up on :8505'; while true; do sleep 3600; done; else echo 'no tunnel; run: ssh -i ~/Downloads/LightsailDefaultKey-eu-west-1.pem -p 2222 -L 8505:127.0.0.1:8505 -N -f ops@108.132.51.116'; exit 1; fi"
-      ],
-      "port": 8505
+      "runtimeArgs": ["run", "python", "-m", "polymarket_bot.dashboard_server"],
+      "port": 8505,
+      "env": {
+        "PMB_DASH_STATE_DIR": "state/staging",
+        "PMB_DASHBOARD_HOST": "127.0.0.1",
+        "PMB_DASHBOARD_PORT": "8505",
+        "PMB_DASH_PAPER_SYSTEMD_UNIT": "bot-staging.service"
+      }
     }
   ]
 }

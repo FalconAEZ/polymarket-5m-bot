@@ -1,16 +1,18 @@
 #!/usr/bin/env bash
-# sync_staging.sh — pull VPS bot-staging state to laptop for dashboard viewing.
+# sync_staging.sh — pull VPS bot-staging state to laptop for local audits.
 #
 # Mirrors /home/ops/polymarket-5m-bot/state/decisions/ + token_side_index.json
 # into ./state/staging/, dumps the bot-staging journal as state/staging/paper.log,
-# synthesizes a feeds_health.json from journal grep so the existing Phase 4.5
-# dashboard can render the staging data unchanged. Then prints a one-shot
-# numerical summary (uptime, queue depth, decision count, dropped, sentinel)
-# pulled live over SSH.
+# synthesizes a feeds_health.json so audit scripts can read a complete state
+# tree, then prints a one-shot numerical summary (uptime, queue depth, decision
+# count, dropped, sentinel) pulled live over SSH.
 #
-# Usage:  bash runbooks/scripts/sync_staging.sh
-# After:  PMB_DASH_STATE_DIR=state/staging uv run streamlit run scripts/dashboard.py
-# Or:     make dash-staging   (does both)
+# Usage: bash runbooks/scripts/sync_staging.sh
+# After: re-run any of scripts/audit_*.py against state/staging/decisions/,
+#        or build the dashboard-v3 dist and serve it locally via the
+#        dashboard-server module (-m polymarket_bot.dashboard_server).
+# Note:  the production dashboard runs on the VPS as dashboard-server.service;
+#        this sync is for ad-hoc local audits, not for production browsing.
 
 set -euo pipefail
 
@@ -90,6 +92,6 @@ ssh -i "$KEY" -p "$PORT" "$HOST" '
   echo "  fired decisions: ${count:-0}"
 '
 
-echo "==> done. open the dashboard with:"
-echo "    PMB_DASH_STATE_DIR=state/staging uv run streamlit run scripts/dashboard.py"
-echo "    (or just: make dash-staging)"
+echo "==> done. staging now mirrors VPS state/ — the dashboard-server"
+echo "    on VPS reads from there; this local copy is for ad-hoc audits"
+echo "    (scripts/audit_pnl_truth.py, scripts/audit_per_tier_wr.py, etc)."
