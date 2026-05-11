@@ -234,3 +234,80 @@ def test_wide_fire_rejects_invalid_ttl() -> None:
         WideFireStrategy(ttl_low_s=-5)
     with pytest.raises(ValueError, match="ttl_low_s"):
         WideFireStrategy(ttl_low_s=60, ttl_high_s=10)
+
+
+# ----------------------------------------------------------------------
+# Phantom-fill defense alignment (Phase 16.B sidebar, 2026-05-11 audit)
+# ----------------------------------------------------------------------
+#
+# Audit 2026-05-11: 100% of today's 35 unfilled fires were in the
+# `<15%` / `85-100%` tiers with `ask_size_top=None` AND best_ask <= $0.05.
+# Every one was refused downstream by FillSimulator._refuse_for_no_depth
+# (the Phase 11.A phantom-fill defense). They wasted a "fired" record +
+# a window slot for zero behavior change.
+#
+# Mirror the simulator's threshold at the strategy layer: when the
+# chosen side has no depth signal AND the ask is in the phantom-defense
+# zone (<= 0.05, same constant as DEFAULT_FLOOR_BEST_ASK), abstain.
+# Hands the fire to the next window instead of writing a no-op.
+
+
+def _book_no_depth(side: str, asset_id: str, ask: float, ts_offset_s: int = 2) -> BookUpdate:
+    return BookUpdate(
+        ts_utc_ns=WINDOW_OPEN_NS + ts_offset_s * 1_000_000_000,
+        asset_id=asset_id,
+        side=side,  # type: ignore[arg-type]
+        best_bid=max(0.0, ask - 0.02),
+        best_ask=ask,
+        bid_size_top=None,
+        ask_size_top=None,  # phantom-defense zone signal
+    )
+
+
+@pytest.mark.asyncio
+async def test_wide_fire_abstains_on_phantom_floor_without_depth() -> None:
+    """Best_ask <= $0.05 + ask_size_top is None → strategy abstains.
+
+    Mirrors FillSimulator._refuse_for_no_depth so the strategy doesn't
+    waste a fired record on a fill the simulator will refuse. Today's
+    audit found 33/35 unfilled fires matched this pattern."""
+    strat = WideFireStrategy()
+    await strat.on_event(_open())
+    await strat.on_event(_spot(80_000.0, ts_offset_s=1))
+    # UP side at $0.03 with no depth (phantom-defense zone)
+    await strat.on_event(_book_no_depth("UP", TOKEN_UP, ask=0.03, ts_offset_s=2))
+    await strat.on_event(_book("DOWN", TOKEN_DOWN, ask=0.95, ts_offset_s=2))
+    decision = await strat.on_event(_spot(80_080.0, ts_offset_s=30))
+    assert decision is None, "wide_fire must abstain on phantom-floor zone without depth"
+
+
+@pytest.mark.asyncio
+async def test_wide_fire_fires_on_phantom_floor_when_depth_known() -> None:
+    """Best_ask <= $0.05 BUT ask_size_top known → fire (depth backs it)."""
+    strat = WideFireStrategy()
+    await strat.on_event(_open())
+    await strat.on_event(_spot(80_000.0, ts_offset_s=1))
+    # UP side at $0.03 WITH depth — simulator wouldn't refuse, neither should strategy
+    await strat.on_event(_book("UP", TOKEN_UP, ask=0.03, ts_offset_s=2))
+    await strat.on_event(_book("DOWN", TOKEN_DOWN, ask=0.95, ts_offset_s=2))
+    decision = await strat.on_event(_spot(80_080.0, ts_offset_s=30))
+    assert decision is not None
+    assert "side=UP" in decision.rationale
+
+
+@pytest.mark.asyncio
+async def test_wide_fire_fires_above_floor_without_depth() -> None:
+    """Best_ask > $0.05 + ask_size_top is None → fire (above phantom zone).
+
+    Outside the defense zone the strategy should still emit so the LLM
+    ensemble + router get the candidate. The defense exists for the
+    near-floor pricing where the simulator would over-fill."""
+    strat = WideFireStrategy()
+    await strat.on_event(_open())
+    await strat.on_event(_spot(80_000.0, ts_offset_s=1))
+    # UP side at $0.55 with no depth — fine, depth-unknown not in phantom zone
+    await strat.on_event(_book_no_depth("UP", TOKEN_UP, ask=0.55, ts_offset_s=2))
+    await strat.on_event(_book("DOWN", TOKEN_DOWN, ask=0.43, ts_offset_s=2))
+    decision = await strat.on_event(_spot(80_080.0, ts_offset_s=30))
+    assert decision is not None
+    assert "side=UP" in decision.rationale

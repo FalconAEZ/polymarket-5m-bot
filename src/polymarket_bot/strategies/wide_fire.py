@@ -26,6 +26,7 @@ guaranteed-loss: 50% baseline WR with fees + simulator impact.
 
 from __future__ import annotations
 
+from polymarket_bot.backtest.fills import DEFAULT_FLOOR_BEST_ASK
 from polymarket_bot.backtest.types import (
     BookUpdate,
     Decision,
@@ -79,6 +80,11 @@ class WideFireStrategy:
         self._fired_for_window: int | None = None
         self._token_for_side: dict[Side, str] = {}
         self._best_ask_for_side: dict[Side, float] = {}
+        # ask_size_top per side — None means "no depth signal", which is
+        # the trigger for FillSimulator._refuse_for_no_depth (Phase 11.A
+        # phantom-fill defense). Mirrored here so we abstain BEFORE
+        # emitting a fired record the simulator would later refuse.
+        self._ask_size_for_side: dict[Side, float | None] = {}
 
     def reset(self) -> None:
         self._spot_now = None
@@ -87,6 +93,7 @@ class WideFireStrategy:
         self._fired_for_window = None
         self._token_for_side = {}
         self._best_ask_for_side = {}
+        self._ask_size_for_side = {}
 
     async def on_event(self, event: MarketEvent) -> Decision | None:
         if isinstance(event, SpotTick):
@@ -98,6 +105,10 @@ class WideFireStrategy:
             self._token_for_side[event.side] = event.asset_id
             if event.best_ask is not None:
                 self._best_ask_for_side[event.side] = event.best_ask
+            # Track depth signal (may be None on certain Polymarket book
+            # updates — best_bid_ask / price_change events). The latest
+            # observation wins per side.
+            self._ask_size_for_side[event.side] = event.ask_size_top
             return self._maybe_fire(event.ts_utc_ns)
         if isinstance(event, OracleUpdate):
             return None
@@ -128,6 +139,18 @@ class WideFireStrategy:
             return None
         ask = self._best_ask_for_side.get(side)
         if ask is None:
+            return None
+
+        # Phantom-fill defense alignment (audit 2026-05-11).
+        # FillSimulator refuses fills when ask_size_top is None AND
+        # fill_price <= DEFAULT_FLOOR_BEST_ASK ($0.05). Mirror that
+        # threshold here so we don't emit a "fired" record for a
+        # decision the simulator will immediately refuse — wastes a
+        # decision-log slot, burns an LLM round-trip when ensemble-
+        # wrapped, and clouds the audit numbers. 33/35 unfilled fires
+        # on 2026-05-11 matched this pattern.
+        ask_size = self._ask_size_for_side.get(side)
+        if ask_size is None and ask <= DEFAULT_FLOOR_BEST_ASK:
             return None
 
         # No tier rejection. No priors lookup. No EV gate. Just fire.
