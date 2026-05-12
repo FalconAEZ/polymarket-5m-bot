@@ -364,6 +364,57 @@ ssh -i $HOME/Downloads/LightsailDefaultKey-eu-west-1.pem -p 2222 ops@108.132.51.
 
 All gates green. Soak underway at validated v3 defaults. Watcher armed.
 
+## PHASE-F-3 final restart — deploy the v3 source rationale rewrite
+
+Operator-directed third restart of the day to deploy the source-level v3 rationale-rewrite fix at commit `74f7541`. Trade-off acknowledged: third soak-clock reset same day; gain is that v3 fires now self-tag correctly (`strategy=spot_aware_v3 mode=trending_only ... regime=trending`) and downstream tooling no longer needs the `--strategy-override` flag for new fires.
+
+### Deploy timestamps (PHASE-F-3)
+
+- VPS HEAD: `5fedb9d → 7aaf337` (3 commits: 74f7541 v3 source fix + f34cad1 stability sweep + 7aaf337 vault refresh)
+- `DEPLOY_TS_UNIX_3 = 1778598389` (date +%s captured BEFORE the restart command, 2026-05-12 15:06:29 UTC)
+- ActiveEnterTimestamp: `Tue 2026-05-12 15:06:59 UTC` (canonical soak start)
+- ActiveEnterTimestamp in ns: `1778598419000000000` (use this for tooling --since-ts-ns)
+- MainPID: `584489 → 585607`, NRestarts=0
+- v3 source fix confirmed loaded (md5sum `2ca73f95f1d7bef875e0577a87fa47fd`; grep on _RE_STRATEGY + regime=trending hits the new code)
+
+### Watcher restarted
+
+- Old PID 585131 (PHASE-F-2 watcher) killed; log archived as `state/watch_first_v3_fire.log.phase-F-2-pid-585131`
+- New PID **585690** running with `--since-ts-ns 1778598419000000000`
+- Process alive 2s post-launch
+
+### CANONICAL SOAK CLOCK (PHASE-F-3 deploy, replaces all earlier baselines)
+
+- Start: **2026-05-12 15:06:59 UTC** (epoch 1778598419)
+- +24h watcher TIMEOUT alert: **2026-05-13 15:06:59 UTC**
+- +48h F.3 audit verdict: **2026-05-14 15:06:59 UTC**
+
+### What the operator should run at F.3 (+48h)
+
+```
+ssh -i $HOME/Downloads/LightsailDefaultKey-eu-west-1.pem -p 2222 ops@108.132.51.116 \
+    'cd /home/ops/polymarket-5m-bot && python3 -u scripts/four_day_audit.py \
+        --strategy-override "2026-05-12T12:25:33+00:00" "spot_aware_v3"'
+```
+
+NOTE: the `--strategy-override` flag is still needed because the single pre-PHASE-F-3 v3 fire (at 13:35:16 on 2026-05-12) was logged with v2's inherited rationale. Any fire AFTER 15:06:59 UTC will self-tag as `strategy=spot_aware_v3` without needing the override; the override only handles the historical mis-tagged fire.
+
+### Session-final state (after PHASE-F-3)
+
+| Item | State |
+|------|-------|
+| Phase F Item 1 (operator sign-off) | ✅ via auto-resume |
+| Phase F Item 2 (cut deploy) | ✅ 12:25:33 UTC |
+| PHASE-F-2 (EV_min tighten) | ✅ 14:27:13 UTC |
+| PHASE-F-3 (v3 source fix deploy) | ✅ 15:06:59 UTC ← canonical soak start |
+| Phase F Item 3 (passive 48h soak) | ⏳ active; +48h = 2026-05-14 15:06:59 UTC |
+| Phase F Item 4 (Phase 6 readiness) | ⏸ gated on F.3 PROMOTE |
+
+15 commits on `claude/jovial-hermann-7e103f` today:
+`d1510bd` → `1123602` → `ca4336a` → `5b1ab54` → `5801c41` → `1a6ddf8` → `c196e43` → `c30e5ce` → `126a396` → `5fedb9d` → `74f7541` → `f34cad1` → `7aaf337` → (this commit) — and one more for the F.3 prompt + checkpoint update.
+
+VPS HEAD: `7aaf337`. Bot: spot_aware_v3 at validated defaults with v3-tagging fix loaded. Watcher: armed for first v3 fire post-15:06:59 UTC. Dashboard: $1006.01 bankroll, no incidents, no halt.
+
 ## What did NOT happen this session (per prompt §"WHAT THIS PHASE EXPLICITLY DOES NOT DO")
 
 - No code deletions. Ensemble + wide_fire + router code intact; reachable via env flip.

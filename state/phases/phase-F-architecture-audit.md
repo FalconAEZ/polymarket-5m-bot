@@ -29,7 +29,12 @@ Accept the prompt's audit (`phase-prompts/phase-F-final-stage-architecture-audit
 - **PHASE-F-2 follow-up** — EV_min tightening 14:27:13 UTC (MainPID `584489`, second restart same day). ✅
   - `SPOT_AWARE_EV_MIN_DOLLARS=0.003` commented; v3 reverts to default 0.005 (matches regime-classifier validation evidence)
   - Backup at `.envrc.phase-F-2-backup-20260512-142703`
-  - Canonical soak clock now starts at 14:27:13 UTC (not the original 12:25:33)
+- **PHASE-F-3 final restart** — v3 source rationale-rewrite deploy 15:06:59 UTC (MainPID `585607`, third restart same day). ✅
+  - VPS pulled `5fedb9d → 7aaf337` (3 commits): `74f7541` v3 self-tag fix + `f34cad1` stability sweep + `7aaf337` vault refresh
+  - v3 fires now write `strategy=spot_aware_v3 mode=trending_only ... regime=trending` directly (no more rationale-inheritance bug)
+  - Watcher restarted as PID `585690` with `--since-ts-ns 1778598419000000000`
+  - **Canonical soak clock starts at 2026-05-12 15:06:59 UTC** (replaces all earlier baselines)
+  - +24h watcher TIMEOUT: 2026-05-13 15:06:59 UTC; +48h F.3 verdict: 2026-05-14 15:06:59 UTC
 
 ## Items pending
 
