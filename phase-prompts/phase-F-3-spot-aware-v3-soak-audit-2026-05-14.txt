@@ -91,36 +91,24 @@ DECISION FRAMEWORK for this session:
     Re-soak 48h. Document as part of ROLLBACK or EXTEND.
 
 ================================================================================
-DATA-GATHERING — script gap to address up-front
+DATA-GATHERING — script is committed; just run it
 ================================================================================
 
-The Phase F prompt referenced `scripts/four_day_audit.py` as the canonical
-truth-corrected per-day audit. **That script does not exist in the repo.**
-The 5-day audit table in the Phase F prompt was produced ad-hoc.
+`scripts/four_day_audit.py` is the canonical per-day audit tool, committed
+during the Items-1+2 session along with `tests/test_four_day_audit.py`
+(16 passing tests). It reproduces the Phase F prompt's 5-day table row-
+for-row exact (with a minor +2-fires correction to May 12 vs the prompt's
+eyeball estimate) and prints a `TOTAL` footer.
 
-Existing audit scripts in repo (use what's there before writing more):
+Run during F.3.2:
 
-  scripts/audit_pnl_truth.py       — classifies every settled record;
-                                     correlates with settled_correction.
-                                     This is the truth-pass spine.
-  scripts/audit_per_tier_wr.py     — WR by tier bucket.
-  scripts/audit_regime_wr.py       — WR by regime (trending/chop/mixed).
-  scripts/audit_unfilled_by_regime_v3.py — fill-rate by regime.
-  scripts/audit_router_counterfactual.py — Phase 16.B-specific (skip).
-  scripts/audit_unfilled_v2.py     — fill-rate analysis.
+  uv run python -u scripts/four_day_audit.py
+  uv run python -u scripts/four_day_audit.py --days 7
+  uv run python -u scripts/four_day_audit.py --since 2026-05-12
 
-CHOOSE ONE:
-
-(A) Compose existing scripts. Run `audit_pnl_truth.py` for the 48-72h
-    window, group by day in a small ad-hoc loop, derive the same table
-    the Phase F prompt printed. Cost: ~30 min.
-
-(B) Write `scripts/four_day_audit.py` as a committed tool. ~1h with tests.
-    Future audits become repeatable.
-
-RECOMMENDATION: (A) for the F.3 verdict; defer (B) to a follow-up if the
-verdict is PROMOTE (no further audits needed) or to the postmortem if
-ROLLBACK (one more use case justifies the script).
+Baseline output captured at `runbooks/gate-evidence/phase-F-baseline.txt`
+(45 min post-cut). Compare F.3's run to that baseline; the delta is the
+v3 soak signal.
 
 Required output table per the Phase F format:
 

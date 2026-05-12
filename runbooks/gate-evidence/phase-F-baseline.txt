@@ -1,0 +1,133 @@
+================================================================================
+Phase F architecture-audit baseline gate evidence
+captured 2026-05-12 ~13:10 UTC (~45 min post-cut)
+audit script: scripts/four_day_audit.py @ commit (this commit)
+================================================================================
+
+The cut from STRATEGY=ensemble + wide_fire to STRATEGY=spot_aware_v3
+shipped 2026-05-12 12:25:33 UTC at d1510bd. Phase F.3 soak audit (next
+session at +48h) will use this same script against fresh data to produce
+the PROMOTE / ROLLBACK / EXTEND verdict.
+
+This baseline freezes the pre-cut + cut-day data for comparison.
+
+================================================================================
+RAW AUDIT OUTPUT (scripts/four_day_audit.py)
+================================================================================
+
+date         fires  filled  fillR  settled    W    L    Z      WR   naive_pnl    true_pnl  strategy
+---------------------------------------------------------------------------------------------------
+2026-05-08      39      23    59%       35   10   18    7   35.7%      -20.24      -20.24  spot_aware:aggressive
+2026-05-09     262     262   100%      266  137  126    3   52.1%      +44.51      +44.51  spot_aware:aggressive
+2026-05-10     184     102    55%      183   54   49   80   52.4%    +2538.06      +46.34  wide_fire:ensemble_base
+2026-05-11      85      42    49%       85   18   23   44   43.9%      -14.51      -33.69  wide_fire:ensemble_base
+2026-05-12      41      22    54%       42    9   14   19   39.1%     +102.42      -37.18  wide_fire:ensemble_base
+---------------------------------------------------------------------------------------------------
+TOTAL          611     451    74%      611  228  230  153   49.8%    +2650.24       -0.26
+
+================================================================================
+RECONCILIATION WITH PHASE F PROMPT
+================================================================================
+
+Phase F prompt §"HONEST PUSHBACK ON THE FRAMING" printed an ad-hoc audit
+table. The new committed script reproduces it ROW-FOR-ROW EXACT on May 8,
+9, 10, 11. The May 12 row diverges by 2 fires:
+
+  Phase F prompt 5/12:  39 fires  21 filled  35.7% WR  +102.02/-37.57
+  audit script  5/12:   41 fires  22 filled  39.1% WR  +102.42/-37.18
+
+The script's TOTAL of 611 decisions matches the dashboard's
+n_decisions_total=611 exactly. The Phase F prompt's 5/12 row was an
+eyeball estimate captured ~13:30 UTC; the script reflects the file
+as it stands. Treat the script's output as authoritative going forward.
+
+================================================================================
+KEY OBSERVATIONS THAT JUSTIFY THE CUT
+================================================================================
+
+1. spot_aware family (May 8-10, 485 fires):
+     W=201, L=193, Z=90 (settled=484)
+     WR  = 201/(201+193) = 51.0%
+     true_pnl = -20.24 + 44.51 + 46.34 = +$70.61
+     per_fire (truth) = +$70.61 / 485 = +$0.146
+
+2. wide_fire + ensemble gate era (May 11-12, 126 fires):
+     W=27, L=37, Z=63 (settled=127)
+     WR  = 27/(27+37) = 42.2%
+     true_pnl = -33.69 + -37.18 = -$70.87
+     per_fire (truth) = -$70.87 / 126 = -$0.563
+
+ABSOLUTE GAP: the spot_aware family beat ensemble+wide_fire by 8.8pp WR
+and $0.71/trade. Over 126 fires that's $89 of lost edge in one direction.
+
+3. The naive_pnl column is corrupted by phantom-fill PnL (May 10 alone:
+   +$2538 naive vs +$46 truth = +$2492 of phantom inflation removed by
+   53 settled_correction records). The truth column is the only honest
+   one for decision-making.
+
+4. TOTAL 5-day TRUE PnL = -$0.26 over 611 fires. The bot has netted
+   effectively ZERO real edge over the audit window. The May 9 +$44.51
+   day was followed by enough phantom-corrected and ensemble-degraded
+   days to wipe out all positive expectation.
+
+================================================================================
+WHAT THIS BASELINE WILL BE COMPARED AGAINST AT F.3 (+48h, 2026-05-14)
+================================================================================
+
+Post-cut soak window: 2026-05-12 12:25:33 UTC → 2026-05-14 ~12:25 UTC.
+~48 hours of pure spot_aware_v3 production data, plus a partial 2026-05-12
+day that mixes pre-cut (12 hours of wide_fire+ensemble) with post-cut
+(11.5 hours of spot_aware_v3 starting 12:25:33).
+
+PROMOTE criteria (Phase F prompt §"ITEM 3 — Verification window"):
+  rolling_wr_at_72h >= 0.52
+  AND daily_pnl_min >= -10.0
+  AND fires_per_day >= 50
+  AND queue_overflow_incidents == 0
+
+ROLLBACK criteria:
+  WR < 0.45 over 48h
+  OR daily_pnl < -30 on any day
+  OR fires_per_day < 20
+
+The pre-cut baseline shows the spot_aware FAMILY achieved 51% WR but on
+1- and 2-trade-per-window aggressive mode. spot_aware_v3 is far MORE
+selective (regime detector gate → only "trending" windows fire). Expected
+fires/day under v3 ≈ 5min windows/day (288) × ~6% trending qualification
+× ~50% v2-gate passrate = ~9 fires/day.
+
+This is BELOW the 50 fires/day PROMOTE threshold. Two outcomes possible:
+
+(a) v3 under-fires (~9/day) but each fire is high-quality (WR ~70% per
+    regime validation). PnL/day = 9 × ~$0.50 average per fire = ~+$4.50/day.
+    Would meet the PnL gate but fail the volume gate. Operator decision:
+    EXTEND or accept the lower-volume profile.
+
+(b) v3's looser EV_min=0.003 (vs default 0.005) lets through more fires
+    than expected. Volume rises to 20-50/day. WR drops correspondingly.
+    Depends on the data.
+
+The +30min check already showed 0 fires in 30 min — consistent with the
+~9/day expectation. The +24h checkpoint should reveal ~6-9 v3 fires; the
++48h soak should reveal ~12-18 total. The volume gate may need adjustment
+based on what v3 actually does.
+
+================================================================================
+NOTES FOR THE F.3 NEXT-SESSION OPERATOR
+================================================================================
+
+The script `scripts/four_day_audit.py` is now the canonical audit tool.
+Run with: `uv run python -u scripts/four_day_audit.py --days 7`
+(or `--since 2026-05-12` to scope to the post-cut window).
+
+The script has 16 passing tests at `tests/test_four_day_audit.py`. Update
+both when extending the schema (e.g., adding per-strategy breakdown).
+
+The Phase F prompt's `From → To` block did not name SPOT_AWARE_EV_MIN_DOLLARS
+which is still set to 0.003 in production (overrides v3's 0.005 default).
+This biases v3 toward more fires. Decide at F.3 whether the looser EV
+is helping or hurting per F.3 prompt §"KNOWN DIVERGENCE TO RESOLVE".
+
+================================================================================
+END
+================================================================================
