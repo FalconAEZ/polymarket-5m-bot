@@ -1,0 +1,2849 @@
+{
+  "metadata": {
+    "generated": "2026-05-12T18:02:14.833997+00:00",
+    "n_fires": 635,
+    "n_settled": 633,
+    "wr": 0.5,
+    "wr_lo95": 0.4554,
+    "total_truth_pnl": -18.96,
+    "per_trade": -0.03
+  },
+  "dimensions": {
+    "strategy": [
+      {
+        "bucket": "wide_fire",
+        "n": 299,
+        "settled": 299,
+        "W": 74,
+        "L": 82,
+        "Z": 143,
+        "WR": 47.4,
+        "WR_lo95": 39.8,
+        "total_pnl": -42.51,
+        "per_trade": -0.1422,
+        "flag": "marginal-loser"
+      },
+      {
+        "bucket": "spot_aware",
+        "n": 295,
+        "settled": 295,
+        "W": 141,
+        "L": 144,
+        "Z": 10,
+        "WR": 49.5,
+        "WR_lo95": 43.7,
+        "total_pnl": 10.55,
+        "per_trade": 0.0358,
+        "flag": "marginal-loser"
+      },
+      {
+        "bucket": "spot_aware_v2",
+        "n": 41,
+        "settled": 39,
+        "W": 25,
+        "L": 14,
+        "Z": 0,
+        "WR": 64.1,
+        "WR_lo95": 48.4,
+        "total_pnl": 13.0,
+        "per_trade": 0.317,
+        "flag": "marginal-winner"
+      }
+    ],
+    "mode": [
+      {
+        "bucket": "ensemble_base",
+        "n": 299,
+        "settled": 299,
+        "W": 74,
+        "L": 82,
+        "Z": 143,
+        "WR": 47.4,
+        "WR_lo95": 39.8,
+        "total_pnl": -42.51,
+        "per_trade": -0.1422,
+        "flag": "marginal-loser"
+      },
+      {
+        "bucket": "aggressive",
+        "n": 293,
+        "settled": 293,
+        "W": 141,
+        "L": 144,
+        "Z": 8,
+        "WR": 49.5,
+        "WR_lo95": 43.7,
+        "total_pnl": 10.55,
+        "per_trade": 0.036,
+        "flag": "marginal-loser"
+      },
+      {
+        "bucket": "tier_restricted",
+        "n": 41,
+        "settled": 39,
+        "W": 25,
+        "L": 14,
+        "Z": 0,
+        "WR": 64.1,
+        "WR_lo95": 48.4,
+        "total_pnl": 13.0,
+        "per_trade": 0.317,
+        "flag": "marginal-winner"
+      },
+      {
+        "bucket": "?",
+        "n": 2,
+        "settled": 2,
+        "W": 0,
+        "L": 0,
+        "Z": 2,
+        "WR": 0.0,
+        "WR_lo95": 0.0,
+        "total_pnl": 0,
+        "per_trade": 0.0,
+        "flag": "underpowered"
+      }
+    ],
+    "tier": [
+      {
+        "bucket": "50-70%",
+        "n": 349,
+        "settled": 349,
+        "W": 166,
+        "L": 176,
+        "Z": 7,
+        "WR": 48.5,
+        "WR_lo95": 43.3,
+        "total_pnl": -152.62,
+        "per_trade": -0.4373,
+        "flag": "marginal-loser"
+      },
+      {
+        "bucket": "<15%",
+        "n": 99,
+        "settled": 99,
+        "W": 0,
+        "L": 4,
+        "Z": 95,
+        "WR": 0.0,
+        "WR_lo95": 0.0,
+        "total_pnl": -20.0,
+        "per_trade": -0.2021,
+        "flag": "underpowered"
+      },
+      {
+        "bucket": "30-50%",
+        "n": 91,
+        "settled": 90,
+        "W": 41,
+        "L": 47,
+        "Z": 2,
+        "WR": 46.6,
+        "WR_lo95": 36.5,
+        "total_pnl": 40.41,
+        "per_trade": 0.444,
+        "flag": "marginal-loser"
+      },
+      {
+        "bucket": "85-100%",
+        "n": 51,
+        "settled": 51,
+        "W": 3,
+        "L": 0,
+        "Z": 48,
+        "WR": 100.0,
+        "WR_lo95": 43.8,
+        "total_pnl": 1.29,
+        "per_trade": 0.0253,
+        "flag": "underpowered"
+      },
+      {
+        "bucket": "70-85%",
+        "n": 36,
+        "settled": 35,
+        "W": 24,
+        "L": 10,
+        "Z": 1,
+        "WR": 70.6,
+        "WR_lo95": 53.8,
+        "total_pnl": -4.6,
+        "per_trade": -0.1277,
+        "flag": "WINNER"
+      },
+      {
+        "bucket": "15-30%",
+        "n": 9,
+        "settled": 9,
+        "W": 6,
+        "L": 3,
+        "Z": 0,
+        "WR": 66.7,
+        "WR_lo95": 35.4,
+        "total_pnl": 116.56,
+        "per_trade": 12.9517,
+        "flag": "underpowered"
+      }
+    ],
+    "delta_abs_bucket": [
+      {
+        "bucket": "<5",
+        "n": 592,
+        "settled": 592,
+        "W": 215,
+        "L": 226,
+        "Z": 151,
+        "WR": 48.8,
+        "WR_lo95": 44.1,
+        "total_pnl": -31.96,
+        "per_trade": -0.054,
+        "flag": "marginal-loser"
+      },
+      {
+        "bucket": "[5,7)",
+        "n": 35,
+        "settled": 33,
+        "W": 21,
+        "L": 11,
+        "Z": 1,
+        "WR": 65.6,
+        "WR_lo95": 48.3,
+        "total_pnl": 16.31,
+        "per_trade": 0.4661,
+        "flag": "marginal-winner"
+      },
+      {
+        "bucket": "[7,10)",
+        "n": 7,
+        "settled": 7,
+        "W": 3,
+        "L": 3,
+        "Z": 1,
+        "WR": 50.0,
+        "WR_lo95": 18.8,
+        "total_pnl": -5.45,
+        "per_trade": -0.778,
+        "flag": "underpowered"
+      },
+      {
+        "bucket": "[10,15)",
+        "n": 1,
+        "settled": 1,
+        "W": 1,
+        "L": 0,
+        "Z": 0,
+        "WR": 100.0,
+        "WR_lo95": 20.7,
+        "total_pnl": 2.13,
+        "per_trade": 2.1317,
+        "flag": "underpowered"
+      }
+    ],
+    "delta_sign": [
+      {
+        "bucket": "\u0394>0",
+        "n": 279,
+        "settled": 278,
+        "W": 115,
+        "L": 95,
+        "Z": 68,
+        "WR": 54.8,
+        "WR_lo95": 48.0,
+        "total_pnl": 134.0,
+        "per_trade": 0.4803,
+        "flag": "marginal-winner"
+      },
+      {
+        "bucket": "\u0394=0",
+        "n": 187,
+        "settled": 187,
+        "W": 58,
+        "L": 72,
+        "Z": 57,
+        "WR": 44.6,
+        "WR_lo95": 36.3,
+        "total_pnl": -75.21,
+        "per_trade": -0.4022,
+        "flag": "LOSER"
+      },
+      {
+        "bucket": "\u0394<0",
+        "n": 169,
+        "settled": 168,
+        "W": 67,
+        "L": 73,
+        "Z": 28,
+        "WR": 47.9,
+        "WR_lo95": 39.8,
+        "total_pnl": -77.75,
+        "per_trade": -0.46,
+        "flag": "marginal-loser"
+      }
+    ],
+    "p_win_bucket": [
+      {
+        "bucket": "?",
+        "n": 299,
+        "settled": 299,
+        "W": 74,
+        "L": 82,
+        "Z": 143,
+        "WR": 47.4,
+        "WR_lo95": 39.8,
+        "total_pnl": -42.51,
+        "per_trade": -0.1422,
+        "flag": "marginal-loser"
+      },
+      {
+        "bucket": "[0.50,0.55)",
+        "n": 293,
+        "settled": 293,
+        "W": 141,
+        "L": 144,
+        "Z": 8,
+        "WR": 49.5,
+        "WR_lo95": 43.7,
+        "total_pnl": 10.55,
+        "per_trade": 0.036,
+        "flag": "marginal-loser"
+      },
+      {
+        "bucket": "\u22650.70",
+        "n": 32,
+        "settled": 31,
+        "W": 21,
+        "L": 8,
+        "Z": 2,
+        "WR": 72.4,
+        "WR_lo95": 54.3,
+        "total_pnl": 0.32,
+        "per_trade": 0.0099,
+        "flag": "small-n"
+      },
+      {
+        "bucket": "[0.60,0.70)",
+        "n": 9,
+        "settled": 8,
+        "W": 3,
+        "L": 5,
+        "Z": 0,
+        "WR": 37.5,
+        "WR_lo95": 13.7,
+        "total_pnl": -8.37,
+        "per_trade": -0.9302,
+        "flag": "underpowered"
+      },
+      {
+        "bucket": "[0.40,0.50)",
+        "n": 2,
+        "settled": 2,
+        "W": 1,
+        "L": 1,
+        "Z": 0,
+        "WR": 50.0,
+        "WR_lo95": 9.5,
+        "total_pnl": 21.05,
+        "per_trade": 10.527,
+        "flag": "underpowered"
+      }
+    ],
+    "ev_bucket": [
+      {
+        "bucket": "?",
+        "n": 299,
+        "settled": 299,
+        "W": 74,
+        "L": 82,
+        "Z": 143,
+        "WR": 47.4,
+        "WR_lo95": 39.8,
+        "total_pnl": -42.51,
+        "per_trade": -0.1422,
+        "flag": "marginal-loser"
+      },
+      {
+        "bucket": "<0.005",
+        "n": 123,
+        "settled": 123,
+        "W": 65,
+        "L": 54,
+        "Z": 4,
+        "WR": 54.6,
+        "WR_lo95": 45.7,
+        "total_pnl": -9.34,
+        "per_trade": -0.0759,
+        "flag": "marginal-winner"
+      },
+      {
+        "bucket": "[0.02,0.05)",
+        "n": 77,
+        "settled": 77,
+        "W": 27,
+        "L": 48,
+        "Z": 2,
+        "WR": 36.0,
+        "WR_lo95": 26.1,
+        "total_pnl": -112.52,
+        "per_trade": -1.4613,
+        "flag": "LOSER"
+      },
+      {
+        "bucket": "[0.005,0.02)",
+        "n": 55,
+        "settled": 55,
+        "W": 28,
+        "L": 26,
+        "Z": 1,
+        "WR": 51.9,
+        "WR_lo95": 38.9,
+        "total_pnl": -9.61,
+        "per_trade": -0.1748,
+        "flag": "marginal-winner"
+      },
+      {
+        "bucket": "[0.05,0.10)",
+        "n": 46,
+        "settled": 45,
+        "W": 28,
+        "L": 15,
+        "Z": 2,
+        "WR": 65.1,
+        "WR_lo95": 50.2,
+        "total_pnl": 49.19,
+        "per_trade": 1.0694,
+        "flag": "marginal-winner"
+      },
+      {
+        "bucket": "[0.10,0.20)",
+        "n": 27,
+        "settled": 26,
+        "W": 14,
+        "L": 11,
+        "Z": 1,
+        "WR": 56.0,
+        "WR_lo95": 37.1,
+        "total_pnl": 40.18,
+        "per_trade": 1.4882,
+        "flag": "small-n"
+      },
+      {
+        "bucket": "\u22650.20",
+        "n": 8,
+        "settled": 8,
+        "W": 4,
+        "L": 4,
+        "Z": 0,
+        "WR": 50.0,
+        "WR_lo95": 21.5,
+        "total_pnl": 65.65,
+        "per_trade": 8.2059,
+        "flag": "underpowered"
+      }
+    ],
+    "side": [
+      {
+        "bucket": "UP",
+        "n": 405,
+        "settled": 404,
+        "W": 157,
+        "L": 144,
+        "Z": 103,
+        "WR": 52.2,
+        "WR_lo95": 46.5,
+        "total_pnl": 98.0,
+        "per_trade": 0.242,
+        "flag": "marginal-winner"
+      },
+      {
+        "bucket": "DOWN",
+        "n": 230,
+        "settled": 229,
+        "W": 83,
+        "L": 96,
+        "Z": 50,
+        "WR": 46.4,
+        "WR_lo95": 39.2,
+        "total_pnl": -116.96,
+        "per_trade": -0.5085,
+        "flag": "marginal-loser"
+      }
+    ],
+    "fill_class": [
+      {
+        "bucket": "taker_at_fire",
+        "n": 454,
+        "settled": 452,
+        "W": 232,
+        "L": 220,
+        "Z": 0,
+        "WR": 51.3,
+        "WR_lo95": 46.7,
+        "total_pnl": 43.34,
+        "per_trade": 0.0955,
+        "flag": "marginal-winner"
+      },
+      {
+        "bucket": "no_fill",
+        "n": 119,
+        "settled": 119,
+        "W": 0,
+        "L": 0,
+        "Z": 119,
+        "WR": 0.0,
+        "WR_lo95": 0.0,
+        "total_pnl": 0,
+        "per_trade": 0.0,
+        "flag": "underpowered"
+      },
+      {
+        "bucket": "phantom_corrected",
+        "n": 53,
+        "settled": 53,
+        "W": 6,
+        "L": 13,
+        "Z": 34,
+        "WR": 31.6,
+        "WR_lo95": 15.4,
+        "total_pnl": -37.38,
+        "per_trade": -0.7053,
+        "flag": "small-n"
+      },
+      {
+        "bucket": "maker_at_settle",
+        "n": 9,
+        "settled": 9,
+        "W": 2,
+        "L": 7,
+        "Z": 0,
+        "WR": 22.2,
+        "WR_lo95": 6.3,
+        "total_pnl": -24.92,
+        "per_trade": -2.7688,
+        "flag": "underpowered"
+      }
+    ],
+    "spot_dir": [
+      {
+        "bucket": "DOWN_weak",
+        "n": 350,
+        "settled": 349,
+        "W": 125,
+        "L": 137,
+        "Z": 87,
+        "WR": 47.7,
+        "WR_lo95": 41.7,
+        "total_pnl": -107.76,
+        "per_trade": -0.3079,
+        "flag": "marginal-loser"
+      },
+      {
+        "bucket": "UP_weak",
+        "n": 280,
+        "settled": 279,
+        "W": 111,
+        "L": 102,
+        "Z": 66,
+        "WR": 52.1,
+        "WR_lo95": 45.4,
+        "total_pnl": 82.11,
+        "per_trade": 0.2933,
+        "flag": "marginal-winner"
+      },
+      {
+        "bucket": "DOWN_strong",
+        "n": 3,
+        "settled": 3,
+        "W": 2,
+        "L": 1,
+        "Z": 0,
+        "WR": 66.7,
+        "WR_lo95": 20.8,
+        "total_pnl": -0.84,
+        "per_trade": -0.2793,
+        "flag": "underpowered"
+      },
+      {
+        "bucket": "UP_strong",
+        "n": 2,
+        "settled": 2,
+        "W": 2,
+        "L": 0,
+        "Z": 0,
+        "WR": 100.0,
+        "WR_lo95": 34.2,
+        "total_pnl": 7.53,
+        "per_trade": 3.7628,
+        "flag": "underpowered"
+      }
+    ],
+    "hour_utc": [
+      {
+        "bucket": "6",
+        "n": 33,
+        "settled": 33,
+        "W": 9,
+        "L": 13,
+        "Z": 11,
+        "WR": 40.9,
+        "WR_lo95": 23.3,
+        "total_pnl": -23.1,
+        "per_trade": -0.7,
+        "flag": "small-n"
+      },
+      {
+        "bucket": "5",
+        "n": 31,
+        "settled": 31,
+        "W": 8,
+        "L": 14,
+        "Z": 9,
+        "WR": 36.4,
+        "WR_lo95": 19.7,
+        "total_pnl": -35.89,
+        "per_trade": -1.1577,
+        "flag": "small-n"
+      },
+      {
+        "bucket": "7",
+        "n": 31,
+        "settled": 31,
+        "W": 10,
+        "L": 11,
+        "Z": 10,
+        "WR": 47.6,
+        "WR_lo95": 28.3,
+        "total_pnl": -7.71,
+        "per_trade": -0.2486,
+        "flag": "small-n"
+      },
+      {
+        "bucket": "10",
+        "n": 31,
+        "settled": 31,
+        "W": 13,
+        "L": 8,
+        "Z": 10,
+        "WR": 61.9,
+        "WR_lo95": 40.9,
+        "total_pnl": 21.37,
+        "per_trade": 0.6895,
+        "flag": "small-n"
+      },
+      {
+        "bucket": "11",
+        "n": 31,
+        "settled": 31,
+        "W": 12,
+        "L": 16,
+        "Z": 3,
+        "WR": 42.9,
+        "WR_lo95": 26.5,
+        "total_pnl": 1.89,
+        "per_trade": 0.0611,
+        "flag": "small-n"
+      },
+      {
+        "bucket": "12",
+        "n": 30,
+        "settled": 30,
+        "W": 12,
+        "L": 11,
+        "Z": 7,
+        "WR": 52.2,
+        "WR_lo95": 33.0,
+        "total_pnl": 8.64,
+        "per_trade": 0.2879,
+        "flag": "small-n"
+      },
+      {
+        "bucket": "13",
+        "n": 30,
+        "settled": 30,
+        "W": 9,
+        "L": 11,
+        "Z": 10,
+        "WR": 45.0,
+        "WR_lo95": 25.8,
+        "total_pnl": -11.33,
+        "per_trade": -0.3775,
+        "flag": "small-n"
+      },
+      {
+        "bucket": "15",
+        "n": 30,
+        "settled": 30,
+        "W": 8,
+        "L": 12,
+        "Z": 10,
+        "WR": 40.0,
+        "WR_lo95": 21.9,
+        "total_pnl": -18.31,
+        "per_trade": -0.6104,
+        "flag": "small-n"
+      },
+      {
+        "bucket": "4",
+        "n": 29,
+        "settled": 29,
+        "W": 13,
+        "L": 10,
+        "Z": 6,
+        "WR": 56.5,
+        "WR_lo95": 36.8,
+        "total_pnl": 6.96,
+        "per_trade": 0.2401,
+        "flag": "small-n"
+      },
+      {
+        "bucket": "8",
+        "n": 29,
+        "settled": 29,
+        "W": 6,
+        "L": 14,
+        "Z": 9,
+        "WR": 30.0,
+        "WR_lo95": 14.5,
+        "total_pnl": -35.24,
+        "per_trade": -1.2153,
+        "flag": "small-n"
+      },
+      {
+        "bucket": "9",
+        "n": 29,
+        "settled": 29,
+        "W": 14,
+        "L": 9,
+        "Z": 6,
+        "WR": 60.9,
+        "WR_lo95": 40.8,
+        "total_pnl": 11.99,
+        "per_trade": 0.4134,
+        "flag": "small-n"
+      },
+      {
+        "bucket": "17",
+        "n": 29,
+        "settled": 27,
+        "W": 19,
+        "L": 7,
+        "Z": 1,
+        "WR": 73.1,
+        "WR_lo95": 53.9,
+        "total_pnl": 47.18,
+        "per_trade": 1.627,
+        "flag": "small-n"
+      },
+      {
+        "bucket": "16",
+        "n": 27,
+        "settled": 27,
+        "W": 11,
+        "L": 12,
+        "Z": 4,
+        "WR": 47.8,
+        "WR_lo95": 29.2,
+        "total_pnl": -9.45,
+        "per_trade": -0.3501,
+        "flag": "small-n"
+      },
+      {
+        "bucket": "14",
+        "n": 26,
+        "settled": 26,
+        "W": 7,
+        "L": 14,
+        "Z": 5,
+        "WR": 33.3,
+        "WR_lo95": 17.2,
+        "total_pnl": -39.68,
+        "per_trade": -1.5261,
+        "flag": "small-n"
+      },
+      {
+        "bucket": "0",
+        "n": 25,
+        "settled": 25,
+        "W": 12,
+        "L": 8,
+        "Z": 5,
+        "WR": 60.0,
+        "WR_lo95": 38.7,
+        "total_pnl": 32.43,
+        "per_trade": 1.2972,
+        "flag": "small-n"
+      },
+      {
+        "bucket": "3",
+        "n": 25,
+        "settled": 25,
+        "W": 9,
+        "L": 9,
+        "Z": 7,
+        "WR": 50.0,
+        "WR_lo95": 29.0,
+        "total_pnl": 14.79,
+        "per_trade": 0.5916,
+        "flag": "small-n"
+      },
+      {
+        "bucket": "20",
+        "n": 23,
+        "settled": 23,
+        "W": 7,
+        "L": 9,
+        "Z": 7,
+        "WR": 43.8,
+        "WR_lo95": 23.1,
+        "total_pnl": -11.3,
+        "per_trade": -0.4911,
+        "flag": "small-n"
+      },
+      {
+        "bucket": "23",
+        "n": 23,
+        "settled": 23,
+        "W": 8,
+        "L": 10,
+        "Z": 5,
+        "WR": 44.4,
+        "WR_lo95": 24.6,
+        "total_pnl": -18.98,
+        "per_trade": -0.8252,
+        "flag": "small-n"
+      },
+      {
+        "bucket": "22",
+        "n": 22,
+        "settled": 22,
+        "W": 8,
+        "L": 8,
+        "Z": 6,
+        "WR": 50.0,
+        "WR_lo95": 28.0,
+        "total_pnl": 13.24,
+        "per_trade": 0.6019,
+        "flag": "small-n"
+      },
+      {
+        "bucket": "1",
+        "n": 22,
+        "settled": 22,
+        "W": 11,
+        "L": 9,
+        "Z": 2,
+        "WR": 55.0,
+        "WR_lo95": 34.2,
+        "total_pnl": 0.14,
+        "per_trade": 0.0062,
+        "flag": "small-n"
+      },
+      {
+        "bucket": "18",
+        "n": 21,
+        "settled": 21,
+        "W": 6,
+        "L": 10,
+        "Z": 5,
+        "WR": 37.5,
+        "WR_lo95": 18.5,
+        "total_pnl": -21.45,
+        "per_trade": -1.0215,
+        "flag": "small-n"
+      },
+      {
+        "bucket": "21",
+        "n": 20,
+        "settled": 20,
+        "W": 8,
+        "L": 4,
+        "Z": 8,
+        "WR": 66.7,
+        "WR_lo95": 39.1,
+        "total_pnl": 18.38,
+        "per_trade": 0.9188,
+        "flag": "small-n"
+      },
+      {
+        "bucket": "2",
+        "n": 19,
+        "settled": 19,
+        "W": 11,
+        "L": 4,
+        "Z": 4,
+        "WR": 73.3,
+        "WR_lo95": 48.0,
+        "total_pnl": 29.95,
+        "per_trade": 1.5765,
+        "flag": "small-n"
+      },
+      {
+        "bucket": "19",
+        "n": 19,
+        "settled": 19,
+        "W": 9,
+        "L": 7,
+        "Z": 3,
+        "WR": 56.2,
+        "WR_lo95": 33.2,
+        "total_pnl": 6.51,
+        "per_trade": 0.3425,
+        "flag": "small-n"
+      }
+    ],
+    "weekday": [
+      {
+        "bucket": "5",
+        "n": 262,
+        "settled": 262,
+        "W": 137,
+        "L": 125,
+        "Z": 0,
+        "WR": 52.3,
+        "WR_lo95": 46.3,
+        "total_pnl": 49.51,
+        "per_trade": 0.189,
+        "flag": "marginal-winner"
+      },
+      {
+        "bucket": "6",
+        "n": 184,
+        "settled": 184,
+        "W": 54,
+        "L": 49,
+        "Z": 81,
+        "WR": 52.4,
+        "WR_lo95": 42.9,
+        "total_pnl": 46.34,
+        "per_trade": 0.2518,
+        "flag": "marginal-winner"
+      },
+      {
+        "bucket": "0",
+        "n": 85,
+        "settled": 85,
+        "W": 18,
+        "L": 24,
+        "Z": 43,
+        "WR": 42.9,
+        "WR_lo95": 29.1,
+        "total_pnl": -38.69,
+        "per_trade": -0.4552,
+        "flag": "LOSER"
+      },
+      {
+        "bucket": "1",
+        "n": 65,
+        "settled": 63,
+        "W": 21,
+        "L": 23,
+        "Z": 19,
+        "WR": 47.7,
+        "WR_lo95": 33.8,
+        "total_pnl": -50.88,
+        "per_trade": -0.7828,
+        "flag": "marginal-loser"
+      },
+      {
+        "bucket": "4",
+        "n": 39,
+        "settled": 39,
+        "W": 10,
+        "L": 19,
+        "Z": 10,
+        "WR": 34.5,
+        "WR_lo95": 19.9,
+        "total_pnl": -25.24,
+        "per_trade": -0.6472,
+        "flag": "small-n"
+      }
+    ],
+    "has_depth_attested": [
+      {
+        "bucket": "False",
+        "n": 486,
+        "settled": 484,
+        "W": 165,
+        "L": 170,
+        "Z": 149,
+        "WR": 49.3,
+        "WR_lo95": 43.9,
+        "total_pnl": -19.52,
+        "per_trade": -0.0402,
+        "flag": "marginal-loser"
+      },
+      {
+        "bucket": "True",
+        "n": 149,
+        "settled": 149,
+        "W": 75,
+        "L": 70,
+        "Z": 4,
+        "WR": 51.7,
+        "WR_lo95": 43.7,
+        "total_pnl": 0.56,
+        "per_trade": 0.0038,
+        "flag": "marginal-winner"
+      }
+    ],
+    "v2_eligible": [
+      {
+        "bucket": "False",
+        "n": 594,
+        "settled": 594,
+        "W": 216,
+        "L": 226,
+        "Z": 152,
+        "WR": 48.9,
+        "WR_lo95": 44.2,
+        "total_pnl": -26.56,
+        "per_trade": -0.0447,
+        "flag": "marginal-loser"
+      },
+      {
+        "bucket": "True",
+        "n": 41,
+        "settled": 39,
+        "W": 24,
+        "L": 14,
+        "Z": 1,
+        "WR": 63.2,
+        "WR_lo95": 47.3,
+        "total_pnl": 7.6,
+        "per_trade": 0.1855,
+        "flag": "marginal-winner"
+      }
+    ],
+    "day": [
+      {
+        "bucket": "2026-05-09",
+        "n": 262,
+        "settled": 262,
+        "W": 137,
+        "L": 125,
+        "Z": 0,
+        "WR": 52.3,
+        "WR_lo95": 46.3,
+        "total_pnl": 49.51,
+        "per_trade": 0.189,
+        "flag": "marginal-winner"
+      },
+      {
+        "bucket": "2026-05-10",
+        "n": 184,
+        "settled": 184,
+        "W": 54,
+        "L": 49,
+        "Z": 81,
+        "WR": 52.4,
+        "WR_lo95": 42.9,
+        "total_pnl": 46.34,
+        "per_trade": 0.2518,
+        "flag": "marginal-winner"
+      },
+      {
+        "bucket": "2026-05-11",
+        "n": 85,
+        "settled": 85,
+        "W": 18,
+        "L": 24,
+        "Z": 43,
+        "WR": 42.9,
+        "WR_lo95": 29.1,
+        "total_pnl": -38.69,
+        "per_trade": -0.4552,
+        "flag": "LOSER"
+      },
+      {
+        "bucket": "2026-05-12",
+        "n": 65,
+        "settled": 63,
+        "W": 21,
+        "L": 23,
+        "Z": 19,
+        "WR": 47.7,
+        "WR_lo95": 33.8,
+        "total_pnl": -50.88,
+        "per_trade": -0.7828,
+        "flag": "marginal-loser"
+      },
+      {
+        "bucket": "2026-05-08",
+        "n": 39,
+        "settled": 39,
+        "W": 10,
+        "L": 19,
+        "Z": 10,
+        "WR": 34.5,
+        "WR_lo95": 19.9,
+        "total_pnl": -25.24,
+        "per_trade": -0.6472,
+        "flag": "small-n"
+      }
+    ],
+    "has_correction": [
+      {
+        "bucket": "False",
+        "n": 582,
+        "settled": 580,
+        "W": 234,
+        "L": 227,
+        "Z": 119,
+        "WR": 50.8,
+        "WR_lo95": 46.2,
+        "total_pnl": 18.42,
+        "per_trade": 0.0317,
+        "flag": "marginal-winner"
+      },
+      {
+        "bucket": "True",
+        "n": 53,
+        "settled": 53,
+        "W": 6,
+        "L": 13,
+        "Z": 34,
+        "WR": 31.6,
+        "WR_lo95": 15.4,
+        "total_pnl": -37.38,
+        "per_trade": -0.7053,
+        "flag": "small-n"
+      }
+    ]
+  },
+  "crosstabs": {
+    "tier_x_delta_abs_bucket": [
+      {
+        "a": "70-85%",
+        "b": "[7,10)",
+        "n": 6,
+        "W": 2,
+        "L": 3,
+        "WR": 40.0,
+        "pnl": -10.84,
+        "per_trade": -1.8067
+      },
+      {
+        "a": "50-70%",
+        "b": "<5",
+        "n": 347,
+        "W": 165,
+        "L": 176,
+        "WR": 48.4,
+        "pnl": -158.02,
+        "per_trade": -0.4554
+      },
+      {
+        "a": "30-50%",
+        "b": "<5",
+        "n": 83,
+        "W": 39,
+        "L": 42,
+        "WR": 48.1,
+        "pnl": 54.17,
+        "per_trade": 0.6527
+      },
+      {
+        "a": "15-30%",
+        "b": "<5",
+        "n": 7,
+        "W": 5,
+        "L": 2,
+        "WR": 71.4,
+        "pnl": 95.51,
+        "per_trade": 13.6444
+      },
+      {
+        "a": "70-85%",
+        "b": "<5",
+        "n": 5,
+        "W": 3,
+        "L": 2,
+        "WR": 60.0,
+        "pnl": -4.91,
+        "per_trade": -0.9826
+      },
+      {
+        "a": "70-85%",
+        "b": "[5,7)",
+        "n": 24,
+        "W": 18,
+        "L": 5,
+        "WR": 78.3,
+        "pnl": 9.02,
+        "per_trade": 0.376
+      },
+      {
+        "a": "85-100%",
+        "b": "<5",
+        "n": 51,
+        "W": 3,
+        "L": 0,
+        "WR": 100.0,
+        "pnl": 1.29,
+        "per_trade": 0.0253
+      },
+      {
+        "a": "<15%",
+        "b": "<5",
+        "n": 99,
+        "W": 0,
+        "L": 4,
+        "WR": 0.0,
+        "pnl": -20.0,
+        "per_trade": -0.2021
+      },
+      {
+        "a": "30-50%",
+        "b": "[5,7)",
+        "n": 8,
+        "W": 2,
+        "L": 5,
+        "WR": 28.6,
+        "pnl": -13.77,
+        "per_trade": -1.7208
+      }
+    ],
+    "strategy_x_hour_utc": [
+      {
+        "a": "spot_aware",
+        "b": "20",
+        "n": 14,
+        "W": 7,
+        "L": 5,
+        "WR": 58.3,
+        "pnl": 8.71,
+        "per_trade": 0.6221
+      },
+      {
+        "a": "spot_aware",
+        "b": "21",
+        "n": 13,
+        "W": 5,
+        "L": 3,
+        "WR": 62.5,
+        "pnl": 10.24,
+        "per_trade": 0.7881
+      },
+      {
+        "a": "spot_aware",
+        "b": "22",
+        "n": 15,
+        "W": 5,
+        "L": 7,
+        "WR": 41.7,
+        "pnl": 10.49,
+        "per_trade": 0.6994
+      },
+      {
+        "a": "spot_aware",
+        "b": "23",
+        "n": 12,
+        "W": 3,
+        "L": 9,
+        "WR": 25.0,
+        "pnl": -30.82,
+        "per_trade": -2.568
+      },
+      {
+        "a": "spot_aware",
+        "b": "0",
+        "n": 12,
+        "W": 8,
+        "L": 4,
+        "WR": 66.7,
+        "pnl": 20.46,
+        "per_trade": 1.7048
+      },
+      {
+        "a": "spot_aware",
+        "b": "1",
+        "n": 12,
+        "W": 8,
+        "L": 4,
+        "WR": 66.7,
+        "pnl": 17.02,
+        "per_trade": 1.4184
+      },
+      {
+        "a": "spot_aware",
+        "b": "2",
+        "n": 12,
+        "W": 9,
+        "L": 3,
+        "WR": 75.0,
+        "pnl": 25.76,
+        "per_trade": 2.1463
+      },
+      {
+        "a": "spot_aware",
+        "b": "3",
+        "n": 12,
+        "W": 6,
+        "L": 6,
+        "WR": 50.0,
+        "pnl": 14.77,
+        "per_trade": 1.2309
+      },
+      {
+        "a": "spot_aware",
+        "b": "4",
+        "n": 12,
+        "W": 7,
+        "L": 5,
+        "WR": 58.3,
+        "pnl": 3.89,
+        "per_trade": 0.3239
+      },
+      {
+        "a": "spot_aware",
+        "b": "5",
+        "n": 12,
+        "W": 5,
+        "L": 7,
+        "WR": 41.7,
+        "pnl": -11.8,
+        "per_trade": -0.9836
+      },
+      {
+        "a": "spot_aware",
+        "b": "6",
+        "n": 12,
+        "W": 5,
+        "L": 7,
+        "WR": 41.7,
+        "pnl": -12.57,
+        "per_trade": -1.0478
+      },
+      {
+        "a": "spot_aware",
+        "b": "7",
+        "n": 12,
+        "W": 6,
+        "L": 6,
+        "WR": 50.0,
+        "pnl": -1.95,
+        "per_trade": -0.1627
+      },
+      {
+        "a": "spot_aware",
+        "b": "8",
+        "n": 12,
+        "W": 3,
+        "L": 9,
+        "WR": 25.0,
+        "pnl": -25.89,
+        "per_trade": -2.1577
+      },
+      {
+        "a": "spot_aware",
+        "b": "9",
+        "n": 12,
+        "W": 6,
+        "L": 6,
+        "WR": 50.0,
+        "pnl": -3.97,
+        "per_trade": -0.331
+      },
+      {
+        "a": "spot_aware",
+        "b": "10",
+        "n": 12,
+        "W": 7,
+        "L": 5,
+        "WR": 58.3,
+        "pnl": 12.56,
+        "per_trade": 1.0471
+      },
+      {
+        "a": "spot_aware",
+        "b": "11",
+        "n": 12,
+        "W": 4,
+        "L": 8,
+        "WR": 33.3,
+        "pnl": -14.22,
+        "per_trade": -1.1852
+      },
+      {
+        "a": "spot_aware",
+        "b": "12",
+        "n": 12,
+        "W": 6,
+        "L": 6,
+        "WR": 50.0,
+        "pnl": 5.05,
+        "per_trade": 0.4208
+      },
+      {
+        "a": "spot_aware",
+        "b": "13",
+        "n": 13,
+        "W": 8,
+        "L": 5,
+        "WR": 61.5,
+        "pnl": 14.61,
+        "per_trade": 1.1236
+      },
+      {
+        "a": "spot_aware",
+        "b": "14",
+        "n": 12,
+        "W": 4,
+        "L": 8,
+        "WR": 33.3,
+        "pnl": -20.59,
+        "per_trade": -1.7161
+      },
+      {
+        "a": "spot_aware",
+        "b": "15",
+        "n": 12,
+        "W": 4,
+        "L": 8,
+        "WR": 33.3,
+        "pnl": -22.42,
+        "per_trade": -1.8684
+      },
+      {
+        "a": "spot_aware",
+        "b": "16",
+        "n": 12,
+        "W": 5,
+        "L": 7,
+        "WR": 41.7,
+        "pnl": -3.6,
+        "per_trade": -0.3003
+      },
+      {
+        "a": "spot_aware",
+        "b": "17",
+        "n": 12,
+        "W": 8,
+        "L": 4,
+        "WR": 66.7,
+        "pnl": 17.18,
+        "per_trade": 1.4313
+      },
+      {
+        "a": "spot_aware",
+        "b": "18",
+        "n": 12,
+        "W": 5,
+        "L": 7,
+        "WR": 41.7,
+        "pnl": -10.69,
+        "per_trade": -0.8908
+      },
+      {
+        "a": "spot_aware",
+        "b": "19",
+        "n": 12,
+        "W": 7,
+        "L": 5,
+        "WR": 58.3,
+        "pnl": 8.36,
+        "per_trade": 0.6964
+      },
+      {
+        "a": "spot_aware_v2",
+        "b": "0",
+        "n": 6,
+        "W": 4,
+        "L": 2,
+        "WR": 66.7,
+        "pnl": 21.97,
+        "per_trade": 3.6622
+      },
+      {
+        "a": "wide_fire",
+        "b": "3",
+        "n": 11,
+        "W": 2,
+        "L": 2,
+        "WR": 50.0,
+        "pnl": 2.89,
+        "per_trade": 0.2627
+      },
+      {
+        "a": "wide_fire",
+        "b": "4",
+        "n": 17,
+        "W": 6,
+        "L": 5,
+        "WR": 54.5,
+        "pnl": 3.07,
+        "per_trade": 0.1809
+      },
+      {
+        "a": "wide_fire",
+        "b": "5",
+        "n": 19,
+        "W": 3,
+        "L": 7,
+        "WR": 30.0,
+        "pnl": -24.09,
+        "per_trade": -1.2677
+      },
+      {
+        "a": "wide_fire",
+        "b": "6",
+        "n": 21,
+        "W": 4,
+        "L": 6,
+        "WR": 40.0,
+        "pnl": -10.53,
+        "per_trade": -0.5012
+      },
+      {
+        "a": "wide_fire",
+        "b": "7",
+        "n": 19,
+        "W": 4,
+        "L": 5,
+        "WR": 44.4,
+        "pnl": -5.76,
+        "per_trade": -0.3029
+      },
+      {
+        "a": "wide_fire",
+        "b": "8",
+        "n": 17,
+        "W": 3,
+        "L": 5,
+        "WR": 37.5,
+        "pnl": -9.35,
+        "per_trade": -0.55
+      },
+      {
+        "a": "wide_fire",
+        "b": "9",
+        "n": 17,
+        "W": 8,
+        "L": 3,
+        "WR": 72.7,
+        "pnl": 15.96,
+        "per_trade": 0.9389
+      },
+      {
+        "a": "wide_fire",
+        "b": "10",
+        "n": 19,
+        "W": 6,
+        "L": 3,
+        "WR": 66.7,
+        "pnl": 8.81,
+        "per_trade": 0.4636
+      },
+      {
+        "a": "wide_fire",
+        "b": "11",
+        "n": 19,
+        "W": 8,
+        "L": 8,
+        "WR": 50.0,
+        "pnl": 16.12,
+        "per_trade": 0.8482
+      },
+      {
+        "a": "wide_fire",
+        "b": "12",
+        "n": 18,
+        "W": 6,
+        "L": 5,
+        "WR": 54.5,
+        "pnl": 3.59,
+        "per_trade": 0.1993
+      },
+      {
+        "a": "wide_fire",
+        "b": "13",
+        "n": 16,
+        "W": 1,
+        "L": 5,
+        "WR": 16.7,
+        "pnl": -20.93,
+        "per_trade": -1.3082
+      },
+      {
+        "a": "wide_fire",
+        "b": "14",
+        "n": 14,
+        "W": 3,
+        "L": 6,
+        "WR": 33.3,
+        "pnl": -19.09,
+        "per_trade": -1.3633
+      },
+      {
+        "a": "wide_fire",
+        "b": "15",
+        "n": 15,
+        "W": 3,
+        "L": 2,
+        "WR": 60.0,
+        "pnl": 12.08,
+        "per_trade": 0.8054
+      },
+      {
+        "a": "wide_fire",
+        "b": "16",
+        "n": 6,
+        "W": 2,
+        "L": 0,
+        "WR": 100.0,
+        "pnl": 7.02,
+        "per_trade": 1.1693
+      },
+      {
+        "a": "wide_fire",
+        "b": "17",
+        "n": 6,
+        "W": 4,
+        "L": 1,
+        "WR": 80.0,
+        "pnl": 22.87,
+        "per_trade": 3.8122
+      },
+      {
+        "a": "wide_fire",
+        "b": "18",
+        "n": 9,
+        "W": 1,
+        "L": 3,
+        "WR": 25.0,
+        "pnl": -10.76,
+        "per_trade": -1.1958
+      },
+      {
+        "a": "wide_fire",
+        "b": "19",
+        "n": 7,
+        "W": 2,
+        "L": 2,
+        "WR": 50.0,
+        "pnl": -1.85,
+        "per_trade": -0.2642
+      },
+      {
+        "a": "wide_fire",
+        "b": "20",
+        "n": 9,
+        "W": 0,
+        "L": 4,
+        "WR": 0.0,
+        "pnl": -20.0,
+        "per_trade": -2.2227
+      },
+      {
+        "a": "wide_fire",
+        "b": "21",
+        "n": 7,
+        "W": 3,
+        "L": 1,
+        "WR": 75.0,
+        "pnl": 8.13,
+        "per_trade": 1.1615
+      },
+      {
+        "a": "wide_fire",
+        "b": "22",
+        "n": 5,
+        "W": 1,
+        "L": 1,
+        "WR": 50.0,
+        "pnl": -0.22,
+        "per_trade": -0.0435
+      },
+      {
+        "a": "wide_fire",
+        "b": "23",
+        "n": 7,
+        "W": 1,
+        "L": 1,
+        "WR": 50.0,
+        "pnl": 1.08,
+        "per_trade": 0.1549
+      },
+      {
+        "a": "wide_fire",
+        "b": "0",
+        "n": 7,
+        "W": 0,
+        "L": 2,
+        "WR": 0.0,
+        "pnl": -10.0,
+        "per_trade": -1.4289
+      },
+      {
+        "a": "wide_fire",
+        "b": "1",
+        "n": 7,
+        "W": 1,
+        "L": 4,
+        "WR": 20.0,
+        "pnl": -15.76,
+        "per_trade": -2.2518
+      },
+      {
+        "a": "wide_fire",
+        "b": "2",
+        "n": 7,
+        "W": 2,
+        "L": 1,
+        "WR": 66.7,
+        "pnl": 4.2,
+        "per_trade": 0.5997
+      },
+      {
+        "a": "spot_aware_v2",
+        "b": "16",
+        "n": 9,
+        "W": 4,
+        "L": 5,
+        "WR": 44.4,
+        "pnl": -12.87,
+        "per_trade": -1.4295
+      },
+      {
+        "a": "spot_aware_v2",
+        "b": "17",
+        "n": 11,
+        "W": 7,
+        "L": 2,
+        "WR": 77.8,
+        "pnl": 7.13,
+        "per_trade": 0.6486
+      }
+    ],
+    "strategy_x_tier": [
+      {
+        "a": "spot_aware",
+        "b": "50-70%",
+        "n": 228,
+        "W": 109,
+        "L": 112,
+        "WR": 49.3,
+        "pnl": -81.01,
+        "per_trade": -0.3553
+      },
+      {
+        "a": "spot_aware",
+        "b": "30-50%",
+        "n": 60,
+        "W": 30,
+        "L": 28,
+        "WR": 51.7,
+        "pnl": 63.58,
+        "per_trade": 1.0597
+      },
+      {
+        "a": "spot_aware_v2",
+        "b": "70-85%",
+        "n": 30,
+        "W": 21,
+        "L": 8,
+        "WR": 72.4,
+        "pnl": 0.32,
+        "per_trade": 0.0105
+      },
+      {
+        "a": "wide_fire",
+        "b": "30-50%",
+        "n": 23,
+        "W": 9,
+        "L": 14,
+        "WR": 39.1,
+        "pnl": -9.41,
+        "per_trade": -0.4091
+      },
+      {
+        "a": "wide_fire",
+        "b": "85-100%",
+        "n": 51,
+        "W": 3,
+        "L": 0,
+        "WR": 100.0,
+        "pnl": 1.29,
+        "per_trade": 0.0253
+      },
+      {
+        "a": "wide_fire",
+        "b": "50-70%",
+        "n": 120,
+        "W": 56,
+        "L": 64,
+        "WR": 46.7,
+        "pnl": -77.01,
+        "per_trade": -0.6417
+      },
+      {
+        "a": "wide_fire",
+        "b": "<15%",
+        "n": 99,
+        "W": 0,
+        "L": 4,
+        "WR": 0.0,
+        "pnl": -20.0,
+        "per_trade": -0.2021
+      },
+      {
+        "a": "spot_aware_v2",
+        "b": "30-50%",
+        "n": 8,
+        "W": 2,
+        "L": 5,
+        "WR": 28.6,
+        "pnl": -13.77,
+        "per_trade": -1.7208
+      }
+    ],
+    "side_x_spot_dir": [
+      {
+        "a": "DOWN",
+        "b": "DOWN_weak",
+        "n": 201,
+        "W": 69,
+        "L": 87,
+        "WR": 44.2,
+        "pnl": -129.81,
+        "per_trade": -0.6458
+      },
+      {
+        "a": "UP",
+        "b": "UP_weak",
+        "n": 254,
+        "W": 99,
+        "L": 94,
+        "WR": 51.3,
+        "pnl": 68.42,
+        "per_trade": 0.2694
+      },
+      {
+        "a": "UP",
+        "b": "DOWN_weak",
+        "n": 149,
+        "W": 56,
+        "L": 50,
+        "WR": 52.8,
+        "pnl": 22.05,
+        "per_trade": 0.148
+      },
+      {
+        "a": "DOWN",
+        "b": "UP_weak",
+        "n": 26,
+        "W": 12,
+        "L": 8,
+        "WR": 60.0,
+        "pnl": 13.7,
+        "per_trade": 0.5268
+      }
+    ],
+    "fill_class_x_tier": [
+      {
+        "a": "no_fill",
+        "b": "50-70%",
+        "n": 7,
+        "W": 0,
+        "L": 0,
+        "WR": 0,
+        "pnl": 0,
+        "per_trade": 0.0
+      },
+      {
+        "a": "taker_at_fire",
+        "b": "50-70%",
+        "n": 326,
+        "W": 162,
+        "L": 164,
+        "WR": 49.7,
+        "pnl": -108.59,
+        "per_trade": -0.3331
+      },
+      {
+        "a": "taker_at_fire",
+        "b": "30-50%",
+        "n": 83,
+        "W": 38,
+        "L": 44,
+        "WR": 46.3,
+        "pnl": 34.15,
+        "per_trade": 0.4115
+      },
+      {
+        "a": "taker_at_fire",
+        "b": "15-30%",
+        "n": 9,
+        "W": 6,
+        "L": 3,
+        "WR": 66.7,
+        "pnl": 116.56,
+        "per_trade": 12.9517
+      },
+      {
+        "a": "taker_at_fire",
+        "b": "70-85%",
+        "n": 33,
+        "W": 24,
+        "L": 8,
+        "WR": 75.0,
+        "pnl": 5.41,
+        "per_trade": 0.1638
+      },
+      {
+        "a": "no_fill",
+        "b": "85-100%",
+        "n": 44,
+        "W": 0,
+        "L": 0,
+        "WR": 0,
+        "pnl": 0,
+        "per_trade": 0.0
+      },
+      {
+        "a": "phantom_corrected",
+        "b": "50-70%",
+        "n": 12,
+        "W": 3,
+        "L": 9,
+        "WR": 25.0,
+        "pnl": -31.96,
+        "per_trade": -2.663
+      },
+      {
+        "a": "phantom_corrected",
+        "b": "85-100%",
+        "n": 5,
+        "W": 1,
+        "L": 0,
+        "WR": 100.0,
+        "pnl": 0.49,
+        "per_trade": 0.0975
+      },
+      {
+        "a": "phantom_corrected",
+        "b": "<15%",
+        "n": 30,
+        "W": 0,
+        "L": 0,
+        "WR": 0,
+        "pnl": 0,
+        "per_trade": 0.0
+      },
+      {
+        "a": "no_fill",
+        "b": "<15%",
+        "n": 65,
+        "W": 0,
+        "L": 0,
+        "WR": 0,
+        "pnl": 0,
+        "per_trade": 0.0
+      }
+    ],
+    "hour_utc_x_delta_sign": [
+      {
+        "a": "20",
+        "b": "\u0394<0",
+        "n": 9,
+        "W": 4,
+        "L": 2,
+        "WR": 66.7,
+        "pnl": 10.25,
+        "per_trade": 1.1393
+      },
+      {
+        "a": "21",
+        "b": "\u0394>0",
+        "n": 12,
+        "W": 7,
+        "L": 1,
+        "WR": 87.5,
+        "pnl": 30.46,
+        "per_trade": 2.538
+      },
+      {
+        "a": "21",
+        "b": "\u0394<0",
+        "n": 5,
+        "W": 1,
+        "L": 3,
+        "WR": 25.0,
+        "pnl": -12.08,
+        "per_trade": -2.416
+      },
+      {
+        "a": "22",
+        "b": "\u0394<0",
+        "n": 8,
+        "W": 3,
+        "L": 2,
+        "WR": 60.0,
+        "pnl": -1.36,
+        "per_trade": -0.1701
+      },
+      {
+        "a": "22",
+        "b": "\u0394>0",
+        "n": 9,
+        "W": 5,
+        "L": 3,
+        "WR": 62.5,
+        "pnl": 29.61,
+        "per_trade": 3.2895
+      },
+      {
+        "a": "22",
+        "b": "\u0394=0",
+        "n": 5,
+        "W": 0,
+        "L": 3,
+        "WR": 0.0,
+        "pnl": -15.0,
+        "per_trade": -3.0006
+      },
+      {
+        "a": "23",
+        "b": "\u0394<0",
+        "n": 6,
+        "W": 3,
+        "L": 3,
+        "WR": 50.0,
+        "pnl": -5.37,
+        "per_trade": -0.8949
+      },
+      {
+        "a": "23",
+        "b": "\u0394=0",
+        "n": 7,
+        "W": 1,
+        "L": 4,
+        "WR": 20.0,
+        "pnl": -15.75,
+        "per_trade": -2.2494
+      },
+      {
+        "a": "23",
+        "b": "\u0394>0",
+        "n": 10,
+        "W": 4,
+        "L": 3,
+        "WR": 57.1,
+        "pnl": 2.14,
+        "per_trade": 0.2136
+      },
+      {
+        "a": "0",
+        "b": "\u0394<0",
+        "n": 5,
+        "W": 4,
+        "L": 1,
+        "WR": 80.0,
+        "pnl": 12.11,
+        "per_trade": 2.4226
+      },
+      {
+        "a": "0",
+        "b": "\u0394=0",
+        "n": 7,
+        "W": 0,
+        "L": 4,
+        "WR": 0.0,
+        "pnl": -20.0,
+        "per_trade": -2.8577
+      },
+      {
+        "a": "0",
+        "b": "\u0394>0",
+        "n": 13,
+        "W": 8,
+        "L": 3,
+        "WR": 72.7,
+        "pnl": 40.32,
+        "per_trade": 3.1016
+      },
+      {
+        "a": "1",
+        "b": "\u0394>0",
+        "n": 16,
+        "W": 8,
+        "L": 6,
+        "WR": 57.1,
+        "pnl": 3.52,
+        "per_trade": 0.2198
+      },
+      {
+        "a": "2",
+        "b": "\u0394>0",
+        "n": 13,
+        "W": 8,
+        "L": 2,
+        "WR": 80.0,
+        "pnl": 27.15,
+        "per_trade": 2.0886
+      },
+      {
+        "a": "3",
+        "b": "\u0394>0",
+        "n": 15,
+        "W": 5,
+        "L": 4,
+        "WR": 55.6,
+        "pnl": 16.64,
+        "per_trade": 1.1093
+      },
+      {
+        "a": "3",
+        "b": "\u0394=0",
+        "n": 8,
+        "W": 3,
+        "L": 4,
+        "WR": 42.9,
+        "pnl": -0.78,
+        "per_trade": -0.097
+      },
+      {
+        "a": "4",
+        "b": "\u0394>0",
+        "n": 15,
+        "W": 6,
+        "L": 6,
+        "WR": 50.0,
+        "pnl": -5.91,
+        "per_trade": -0.3943
+      },
+      {
+        "a": "4",
+        "b": "\u0394=0",
+        "n": 7,
+        "W": 4,
+        "L": 2,
+        "WR": 66.7,
+        "pnl": 2.89,
+        "per_trade": 0.4122
+      },
+      {
+        "a": "4",
+        "b": "\u0394<0",
+        "n": 7,
+        "W": 3,
+        "L": 2,
+        "WR": 60.0,
+        "pnl": 9.99,
+        "per_trade": 1.4272
+      },
+      {
+        "a": "5",
+        "b": "\u0394<0",
+        "n": 10,
+        "W": 1,
+        "L": 6,
+        "WR": 14.3,
+        "pnl": -24.61,
+        "per_trade": -2.4612
+      },
+      {
+        "a": "5",
+        "b": "\u0394=0",
+        "n": 10,
+        "W": 2,
+        "L": 6,
+        "WR": 25.0,
+        "pnl": -20.54,
+        "per_trade": -2.0545
+      },
+      {
+        "a": "5",
+        "b": "\u0394>0",
+        "n": 11,
+        "W": 5,
+        "L": 2,
+        "WR": 71.4,
+        "pnl": 9.27,
+        "per_trade": 0.8425
+      },
+      {
+        "a": "6",
+        "b": "\u0394=0",
+        "n": 13,
+        "W": 6,
+        "L": 4,
+        "WR": 60.0,
+        "pnl": 9.72,
+        "per_trade": 0.7478
+      },
+      {
+        "a": "6",
+        "b": "\u0394>0",
+        "n": 12,
+        "W": 2,
+        "L": 4,
+        "WR": 33.3,
+        "pnl": -12.62,
+        "per_trade": -1.0514
+      },
+      {
+        "a": "6",
+        "b": "\u0394<0",
+        "n": 8,
+        "W": 1,
+        "L": 5,
+        "WR": 16.7,
+        "pnl": -20.2,
+        "per_trade": -2.5253
+      },
+      {
+        "a": "7",
+        "b": "\u0394>0",
+        "n": 8,
+        "W": 2,
+        "L": 5,
+        "WR": 28.6,
+        "pnl": -16.15,
+        "per_trade": -2.0189
+      },
+      {
+        "a": "7",
+        "b": "\u0394=0",
+        "n": 18,
+        "W": 5,
+        "L": 4,
+        "WR": 55.6,
+        "pnl": 5.06,
+        "per_trade": 0.281
+      },
+      {
+        "a": "7",
+        "b": "\u0394<0",
+        "n": 5,
+        "W": 3,
+        "L": 2,
+        "WR": 60.0,
+        "pnl": 3.38,
+        "per_trade": 0.677
+      },
+      {
+        "a": "8",
+        "b": "\u0394>0",
+        "n": 13,
+        "W": 4,
+        "L": 5,
+        "WR": 44.4,
+        "pnl": -0.26,
+        "per_trade": -0.0203
+      },
+      {
+        "a": "8",
+        "b": "\u0394=0",
+        "n": 13,
+        "W": 2,
+        "L": 6,
+        "WR": 25.0,
+        "pnl": -19.98,
+        "per_trade": -1.5366
+      },
+      {
+        "a": "9",
+        "b": "\u0394=0",
+        "n": 11,
+        "W": 6,
+        "L": 2,
+        "WR": 75.0,
+        "pnl": 16.99,
+        "per_trade": 1.5447
+      },
+      {
+        "a": "9",
+        "b": "\u0394>0",
+        "n": 14,
+        "W": 5,
+        "L": 6,
+        "WR": 45.5,
+        "pnl": -12.2,
+        "per_trade": -0.8717
+      },
+      {
+        "a": "10",
+        "b": "\u0394<0",
+        "n": 14,
+        "W": 8,
+        "L": 2,
+        "WR": 80.0,
+        "pnl": 27.54,
+        "per_trade": 1.9672
+      },
+      {
+        "a": "10",
+        "b": "\u0394>0",
+        "n": 8,
+        "W": 5,
+        "L": 3,
+        "WR": 62.5,
+        "pnl": 8.84,
+        "per_trade": 1.1044
+      },
+      {
+        "a": "10",
+        "b": "\u0394=0",
+        "n": 9,
+        "W": 0,
+        "L": 3,
+        "WR": 0.0,
+        "pnl": -15.0,
+        "per_trade": -1.667
+      },
+      {
+        "a": "11",
+        "b": "\u0394=0",
+        "n": 11,
+        "W": 5,
+        "L": 4,
+        "WR": 55.6,
+        "pnl": 6.77,
+        "per_trade": 0.6152
+      },
+      {
+        "a": "11",
+        "b": "\u0394<0",
+        "n": 11,
+        "W": 3,
+        "L": 7,
+        "WR": 30.0,
+        "pnl": -20.66,
+        "per_trade": -1.8784
+      },
+      {
+        "a": "11",
+        "b": "\u0394>0",
+        "n": 9,
+        "W": 4,
+        "L": 5,
+        "WR": 44.4,
+        "pnl": 15.79,
+        "per_trade": 1.7544
+      },
+      {
+        "a": "12",
+        "b": "\u0394<0",
+        "n": 5,
+        "W": 2,
+        "L": 2,
+        "WR": 50.0,
+        "pnl": -2.32,
+        "per_trade": -0.4647
+      },
+      {
+        "a": "12",
+        "b": "\u0394>0",
+        "n": 14,
+        "W": 4,
+        "L": 6,
+        "WR": 40.0,
+        "pnl": -5.18,
+        "per_trade": -0.3699
+      },
+      {
+        "a": "12",
+        "b": "\u0394=0",
+        "n": 11,
+        "W": 6,
+        "L": 3,
+        "WR": 66.7,
+        "pnl": 16.14,
+        "per_trade": 1.4672
+      },
+      {
+        "a": "13",
+        "b": "\u0394=0",
+        "n": 8,
+        "W": 3,
+        "L": 2,
+        "WR": 60.0,
+        "pnl": 5.17,
+        "per_trade": 0.6463
+      },
+      {
+        "a": "13",
+        "b": "\u0394>0",
+        "n": 11,
+        "W": 2,
+        "L": 3,
+        "WR": 40.0,
+        "pnl": -8.77,
+        "per_trade": -0.7973
+      },
+      {
+        "a": "13",
+        "b": "\u0394<0",
+        "n": 11,
+        "W": 4,
+        "L": 6,
+        "WR": 40.0,
+        "pnl": -7.73,
+        "per_trade": -0.7024
+      },
+      {
+        "a": "14",
+        "b": "\u0394>0",
+        "n": 9,
+        "W": 3,
+        "L": 5,
+        "WR": 37.5,
+        "pnl": -11.5,
+        "per_trade": -1.2782
+      },
+      {
+        "a": "14",
+        "b": "\u0394<0",
+        "n": 7,
+        "W": 2,
+        "L": 3,
+        "WR": 40.0,
+        "pnl": -6.52,
+        "per_trade": -0.9315
+      },
+      {
+        "a": "14",
+        "b": "\u0394=0",
+        "n": 10,
+        "W": 2,
+        "L": 6,
+        "WR": 25.0,
+        "pnl": -21.65,
+        "per_trade": -2.1655
+      },
+      {
+        "a": "15",
+        "b": "\u0394<0",
+        "n": 13,
+        "W": 3,
+        "L": 5,
+        "WR": 37.5,
+        "pnl": -15.59,
+        "per_trade": -1.199
+      },
+      {
+        "a": "15",
+        "b": "\u0394=0",
+        "n": 5,
+        "W": 1,
+        "L": 3,
+        "WR": 25.0,
+        "pnl": -14.75,
+        "per_trade": -2.9493
+      },
+      {
+        "a": "15",
+        "b": "\u0394>0",
+        "n": 12,
+        "W": 4,
+        "L": 4,
+        "WR": 50.0,
+        "pnl": 12.02,
+        "per_trade": 1.0019
+      },
+      {
+        "a": "16",
+        "b": "\u0394<0",
+        "n": 13,
+        "W": 6,
+        "L": 7,
+        "WR": 46.2,
+        "pnl": -14.36,
+        "per_trade": -1.1048
+      },
+      {
+        "a": "16",
+        "b": "\u0394>0",
+        "n": 10,
+        "W": 4,
+        "L": 4,
+        "WR": 50.0,
+        "pnl": 4.71,
+        "per_trade": 0.4708
+      },
+      {
+        "a": "17",
+        "b": "\u0394=0",
+        "n": 8,
+        "W": 4,
+        "L": 3,
+        "WR": 57.1,
+        "pnl": 14.95,
+        "per_trade": 1.8685
+      },
+      {
+        "a": "17",
+        "b": "\u0394>0",
+        "n": 15,
+        "W": 12,
+        "L": 2,
+        "WR": 85.7,
+        "pnl": 33.82,
+        "per_trade": 2.2544
+      },
+      {
+        "a": "17",
+        "b": "\u0394<0",
+        "n": 6,
+        "W": 3,
+        "L": 2,
+        "WR": 60.0,
+        "pnl": -1.58,
+        "per_trade": -0.2635
+      },
+      {
+        "a": "18",
+        "b": "\u0394<0",
+        "n": 6,
+        "W": 2,
+        "L": 4,
+        "WR": 33.3,
+        "pnl": -10.44,
+        "per_trade": -1.7394
+      },
+      {
+        "a": "18",
+        "b": "\u0394>0",
+        "n": 10,
+        "W": 3,
+        "L": 4,
+        "WR": 42.9,
+        "pnl": -5.8,
+        "per_trade": -0.5797
+      },
+      {
+        "a": "18",
+        "b": "\u0394=0",
+        "n": 5,
+        "W": 1,
+        "L": 2,
+        "WR": 33.3,
+        "pnl": -5.22,
+        "per_trade": -1.0437
+      },
+      {
+        "a": "19",
+        "b": "\u0394<0",
+        "n": 5,
+        "W": 4,
+        "L": 1,
+        "WR": 80.0,
+        "pnl": 13.56,
+        "per_trade": 2.7122
+      },
+      {
+        "a": "19",
+        "b": "\u0394>0",
+        "n": 11,
+        "W": 4,
+        "L": 4,
+        "WR": 50.0,
+        "pnl": -1.29,
+        "per_trade": -0.1174
+      },
+      {
+        "a": "20",
+        "b": "\u0394=0",
+        "n": 5,
+        "W": 2,
+        "L": 2,
+        "WR": 50.0,
+        "pnl": -0.98,
+        "per_trade": -0.1954
+      },
+      {
+        "a": "20",
+        "b": "\u0394>0",
+        "n": 9,
+        "W": 1,
+        "L": 5,
+        "WR": 16.7,
+        "pnl": -20.57,
+        "per_trade": -2.2858
+      }
+    ],
+    "p_win_bucket_x_ev_bucket": [
+      {
+        "a": "\u22650.70",
+        "b": "[0.05,0.10)",
+        "n": 20,
+        "W": 12,
+        "L": 5,
+        "WR": 70.6,
+        "pnl": 0.27,
+        "per_trade": 0.0137
+      },
+      {
+        "a": "[0.50,0.55)",
+        "b": "[0.005,0.02)",
+        "n": 50,
+        "W": 24,
+        "L": 25,
+        "WR": 49.0,
+        "pnl": -10.72,
+        "per_trade": -0.2144
+      },
+      {
+        "a": "[0.50,0.55)",
+        "b": "<0.005",
+        "n": 123,
+        "W": 65,
+        "L": 54,
+        "WR": 54.6,
+        "pnl": -9.34,
+        "per_trade": -0.0759
+      },
+      {
+        "a": "[0.50,0.55)",
+        "b": "[0.10,0.20)",
+        "n": 17,
+        "W": 10,
+        "L": 6,
+        "WR": 62.5,
+        "pnl": 46.42,
+        "per_trade": 2.7306
+      },
+      {
+        "a": "[0.50,0.55)",
+        "b": "\u22650.20",
+        "n": 6,
+        "W": 3,
+        "L": 3,
+        "WR": 50.0,
+        "pnl": 44.59,
+        "per_trade": 7.4323
+      },
+      {
+        "a": "[0.50,0.55)",
+        "b": "[0.02,0.05)",
+        "n": 71,
+        "W": 23,
+        "L": 46,
+        "WR": 33.3,
+        "pnl": -109.33,
+        "per_trade": -1.5398
+      },
+      {
+        "a": "[0.50,0.55)",
+        "b": "[0.05,0.10)",
+        "n": 26,
+        "W": 16,
+        "L": 10,
+        "WR": 61.5,
+        "pnl": 48.92,
+        "per_trade": 1.8814
+      },
+      {
+        "a": "\u22650.70",
+        "b": "[0.005,0.02)",
+        "n": 5,
+        "W": 4,
+        "L": 1,
+        "WR": 80.0,
+        "pnl": 1.11,
+        "per_trade": 0.2212
+      },
+      {
+        "a": "[0.60,0.70)",
+        "b": "[0.10,0.20)",
+        "n": 8,
+        "W": 3,
+        "L": 4,
+        "WR": 42.9,
+        "pnl": -3.37,
+        "per_trade": -0.4214
+      },
+      {
+        "a": "\u22650.70",
+        "b": "[0.02,0.05)",
+        "n": 6,
+        "W": 4,
+        "L": 2,
+        "WR": 66.7,
+        "pnl": -3.2,
+        "per_trade": -0.5325
+      },
+      {
+        "a": "?",
+        "b": "?",
+        "n": 299,
+        "W": 74,
+        "L": 82,
+        "WR": 47.4,
+        "pnl": -42.51,
+        "per_trade": -0.1422
+      }
+    ]
+  },
+  "time_journey": {
+    "by_day": [
+      {
+        "day": "2026-05-08",
+        "n": 39,
+        "W": 10,
+        "L": 19,
+        "WR": 34.5,
+        "day_pnl": -25.24,
+        "cum_pnl": -25.24,
+        "dominant_strategy": "spot_aware:aggressive"
+      },
+      {
+        "day": "2026-05-09",
+        "n": 262,
+        "W": 137,
+        "L": 125,
+        "WR": 52.3,
+        "day_pnl": 49.51,
+        "cum_pnl": 24.27,
+        "dominant_strategy": "spot_aware:aggressive"
+      },
+      {
+        "day": "2026-05-10",
+        "n": 184,
+        "W": 54,
+        "L": 49,
+        "WR": 52.4,
+        "day_pnl": 46.34,
+        "cum_pnl": 70.61,
+        "dominant_strategy": "wide_fire:ensemble_base"
+      },
+      {
+        "day": "2026-05-11",
+        "n": 85,
+        "W": 18,
+        "L": 24,
+        "WR": 42.9,
+        "day_pnl": -38.69,
+        "cum_pnl": 31.92,
+        "dominant_strategy": "wide_fire:ensemble_base"
+      },
+      {
+        "day": "2026-05-12",
+        "n": 63,
+        "W": 21,
+        "L": 23,
+        "WR": 47.7,
+        "day_pnl": -50.88,
+        "cum_pnl": -18.96,
+        "dominant_strategy": "wide_fire:ensemble_base"
+      }
+    ]
+  },
+  "counterfactuals": {
+    "v2_only": {
+      "n": 39,
+      "W": 24,
+      "L": 14,
+      "pnl": 7.6,
+      "per_trade": 0.195
+    },
+    "top_quartile_tier_x_delta": {
+      "cells_kept": [
+        {
+          "tier": "30-50%",
+          "delta": "<5",
+          "n": 83,
+          "W": 39,
+          "L": 42,
+          "WR": 48.1,
+          "pnl": 54.17,
+          "per_trade": 0.6527
+        }
+      ],
+      "n": 83,
+      "W": 39,
+      "L": 42,
+      "pnl": 54.17,
+      "per_trade": 0.6527
+    }
+  },
+  "v_next": {
+    "add_gates": [
+      {
+        "dim": "tier",
+        "bucket": "70-85%",
+        "n": 35,
+        "WR": 70.6,
+        "pnl": -4.6,
+        "rule": "prefer/require tier == 70-85%"
+      }
+    ],
+    "drop_gates": [
+      {
+        "dim": "delta_sign",
+        "bucket": "\u0394=0",
+        "n": 187,
+        "WR": 44.6,
+        "pnl": -75.21,
+        "rule": "skip when delta_sign == \u0394=0"
+      },
+      {
+        "dim": "ev_bucket",
+        "bucket": "[0.02,0.05)",
+        "n": 77,
+        "WR": 36.0,
+        "pnl": -112.52,
+        "rule": "skip when ev_bucket == [0.02,0.05)"
+      },
+      {
+        "dim": "weekday",
+        "bucket": "0",
+        "n": 85,
+        "WR": 42.9,
+        "pnl": -38.69,
+        "rule": "skip when weekday == 0"
+      },
+      {
+        "dim": "day",
+        "bucket": "2026-05-11",
+        "n": 85,
+        "WR": 42.9,
+        "pnl": -38.69,
+        "rule": "skip when day == 2026-05-11"
+      }
+    ],
+    "keep_gates": [],
+    "notes": []
+  },
+  "monte_carlo": {
+    "7": {
+      "horizon_days": 7,
+      "n_traj": 10000,
+      "median": 1082.66,
+      "p10": 999.06,
+      "p25": 1038.85,
+      "p75": 1125.91,
+      "p90": 1164.75,
+      "p_2k": 0.0
+    },
+    "14": {
+      "horizon_days": 14,
+      "n_traj": 10000,
+      "median": 1158.19,
+      "p10": 1042.72,
+      "p25": 1096.91,
+      "p75": 1218.82,
+      "p90": 1273.85,
+      "p_2k": 0.0
+    },
+    "30": {
+      "horizon_days": 30,
+      "n_traj": 10000,
+      "median": 1331.17,
+      "p10": 1159.25,
+      "p25": 1238.61,
+      "p75": 1420.48,
+      "p90": 1501.25,
+      "p_2k": 0.0
+    },
+    "90": {
+      "horizon_days": 90,
+      "n_traj": 10000,
+      "median": 1979.94,
+      "p10": 1685.98,
+      "p25": 1822.21,
+      "p75": 2134.52,
+      "p90": 2277.35,
+      "p_2k": 0.4634
+    }
+  }
+}
