@@ -33,7 +33,7 @@ Usage:
     uv run --with matplotlib --with numpy python -u scripts/analyze_kelly_compounding.py
 """
 
-# ruff: noqa: RUF001, RUF002, RUF003, E741, S311
+# ruff: noqa: RUF001, RUF002, RUF003, S311
 
 from __future__ import annotations
 

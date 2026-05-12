@@ -87,17 +87,29 @@ inequality on the upper end (5¢ EV is fine) is intentional.
 
 **Change:** before invoking parent logic, compute the tier label of the
 candidate side's `best_ask`. If the tier ∈ `tier_relax_delta`
-(default `{'15-30%', '30-50%'}`), allow any `|Δ| > 0`. Otherwise enforce
-the inherited `_delta_min` (5 bps). The relaxation is achieved by
-inlining v2's body (sharing constants) — see spec §3.3.
+(default `{'15-30%', '30-50%'}`), the inherited `_delta_min` is
+temporarily set to 0 for the duration of the super() call.
 
 **Why (PG §6.2 winning-cell isolation):** tier 30-50% × |Δ|<5 cell
 has n=83, +$0.65/trade, +$54 cumulative — the largest positive cell
 in the whole audit, and v2 currently rejects it (`delta_min=5` cuts
-exactly this region). Tier 15-30% is included by symmetry (its same-cell
-sample is smaller but directionally identical and the payoff asymmetry
-favors low-price entries). Tier 70-85% explicitly retains the 5 bps
-floor — same-cell n=21, no positive signal.
+exactly this region). Tier 15-30% is included by symmetry. Tier 70-85%
+explicitly retains the 5 bps floor — same-cell n=21, no positive signal.
+
+> **Spec gap surfaced this session (honest pushback):** v2 also enforces
+> a *priors-table hit* (no fallback). The current priors table
+> (`data/spot_aware_priors.json` v1) starts its `delta_buckets_bps` at
+> 5 bps, so a `|Δ|=2` candidate misses the lookup and v2.1's
+> super() returns None even with the floor relaxed. **CH3's floor
+> relaxation is necessary-but-not-sufficient** to exploit the Phase G
+> winning cell in production — the priors table needs a low-Δ row
+> (e.g., `[1, 5]`) added with the empirical p_win from PG §6.2, OR a
+> low-Δ fallback parameter (e.g., `tier_relax_p_win_fallback: float`)
+> needs to be plumbed through. This session ships CH3 as spec-literal
+> and leaves the priors extension as a follow-up. Unit tests for CH3
+> use a stub priors that returns at any |Δ| so the floor-relax logic
+> is locked under regression; the production "winning cell" assertion
+> is unverified until the priors follow-up lands.
 
 ### CH4 — Kelly-bet-too-small abstain
 

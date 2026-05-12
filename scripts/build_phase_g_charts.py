@@ -13,7 +13,7 @@ Usage:
     uv run --with matplotlib --with numpy python -u scripts/build_phase_g_charts.py
 """
 
-# ruff: noqa: RUF001, RUF002, RUF003, E741, ARG001
+# ruff: noqa: RUF001, E741
 
 from __future__ import annotations
 

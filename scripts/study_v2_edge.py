@@ -27,8 +27,6 @@ Usage:
     uv run python -u scripts/study_v2_edge.py
 """
 
-# ruff: noqa: RUF001, RUF002, RUF003, E741, ARG001
-
 from __future__ import annotations
 
 import json

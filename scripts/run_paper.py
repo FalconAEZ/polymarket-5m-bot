@@ -67,8 +67,13 @@ HALT_POLL_INTERVAL_S = 1.0
 # detector gate (runbooks/gate-evidence/regime-classifier-validation.txt:
 # trending WR 70.59% vs chop 47.40%). Override via STRATEGY env var =
 # "deterministic" | "spot_aware" | "spot_aware_v2" | "spot_aware_v3" |
-# "ensemble". Ensemble + wide_fire stay in the dispatch as research
-# artifacts — re-enable via env flip only.
+# "spot_aware_v2_1" | "ensemble". Ensemble + wide_fire stay in the
+# dispatch as research artifacts — re-enable via env flip only.
+# spot_aware_v2_1: v2 + Kelly + multi-fire + cell-exploitation filters.
+# Spec: pdfs/PHASE_H_V2_1_FINAL_IMPLEMENTATION_SPEC.pdf; design lock at
+# design/spot_aware_v2_1.md. Requires KELLY_MULT, MULTI_FIRE_CAP,
+# PMB_STARTING_BANKROLL env vars; defaults match Phase H operator
+# sign-off (0.10x Kelly, cap=2, $1000 start).
 DEFAULT_STRATEGY_NAME = "spot_aware_v3"
 
 
@@ -370,6 +375,56 @@ def _build_strategy(name: str) -> Strategy:
             chop_th_v,
         )
         return SpotAwareStrategyV3(priors=load_priors(), regime_detector=regime, **v3_kwargs)
+    if name == "spot_aware_v2_1":
+        # Phase H — v2 + Kelly + multi-fire + cell-exploitation filters.
+        # Locked spec: design/spot_aware_v2_1.md +
+        # pdfs/PHASE_H_V2_1_FINAL_IMPLEMENTATION_SPEC.pdf. Reads three
+        # env vars (defaults match operator sign-off Q3=2, Q4=0.10x):
+        #   KELLY_MULT — fractional Kelly multiplier (default 0.10)
+        #   KELLY_MAX_BET_ABS — absolute bet cap in USD (default 500)
+        #   MULTI_FIRE_CAP — max fires per window (default 2)
+        # bankroll_getter is rebound in main() after PaperRunner builds
+        # its BankrollTracker. Placeholder lambda here keeps the
+        # construction-time signature satisfied.
+        from polymarket_bot.strategies.kelly_config import KellyConfig
+        from polymarket_bot.strategies.spot_aware_v2_1 import SpotAwareStrategyV2_1
+
+        v21_kwargs: dict[str, float] = {}
+        d_min = _env_float("SPOT_AWARE_DELTA_MIN_BPS", None)
+        if d_min is not None:
+            v21_kwargs["delta_min_bps"] = d_min
+        d_max = _env_float("SPOT_AWARE_DELTA_MAX_BPS", None)
+        if d_max is not None:
+            v21_kwargs["delta_max_bps"] = d_max
+        ev_min = _env_float("SPOT_AWARE_EV_MIN_DOLLARS", None)
+        if ev_min is not None:
+            v21_kwargs["ev_min_dollars_per_share"] = ev_min
+        limit_buf = _env_float("SPOT_AWARE_LIMIT_BUFFER_USD", None)
+        if limit_buf is not None:
+            v21_kwargs["limit_buffer_usd"] = limit_buf
+        oracle_gap = _env_float("ORACLE_GAP_MIN_BPS", None)
+        if oracle_gap is not None and oracle_gap > 0:
+            v21_kwargs["oracle_gap_min_bps"] = oracle_gap
+
+        kelly_mult = _env_float("KELLY_MULT", 0.10) or 0.10
+        kelly_max_bet_abs = _env_float("KELLY_MAX_BET_ABS", 500.0) or 500.0
+        kelly = KellyConfig(kelly_mult=kelly_mult, max_bet_abs=kelly_max_bet_abs)
+        multi_fire_cap_raw = _env_float("MULTI_FIRE_CAP", 2.0) or 2.0
+        multi_fire_cap = max(1, int(multi_fire_cap_raw))
+        LOG.warning(
+            "spot_aware_v2_1: kelly_mult=%.2f max_bet_abs=$%.0f multi_fire_cap=%d overrides=%s",
+            kelly_mult,
+            kelly_max_bet_abs,
+            multi_fire_cap,
+            v21_kwargs,
+        )
+        return SpotAwareStrategyV2_1(
+            priors=load_priors(),
+            bankroll_getter=lambda: 1000.0,  # placeholder; rebound in main()
+            kelly=kelly,
+            multi_fire_cap=multi_fire_cap,
+            **v21_kwargs,
+        )
     if name == "ensemble":
         # Phase 5: LLM ensemble wrapping a base strategy. Per
         # design/phase-5-llm-ensemble.md. Reuses the already-built agents
@@ -570,7 +625,8 @@ def _build_strategy(name: str) -> Strategy:
         return base
     raise ValueError(
         f"unknown STRATEGY env value {name!r}; "
-        "pick deterministic | spot_aware | spot_aware_v2 | spot_aware_v3 | ensemble"
+        "pick deterministic | spot_aware | spot_aware_v2 | spot_aware_v3 | "
+        "spot_aware_v2_1 | ensemble"
     )
 
 
@@ -686,6 +742,22 @@ async def main() -> int:
         _env_float("POST_HOC_GAMMA_RETRY_MAX_ATTEMPTS", float(_DEF_POSTHOC_ATTEMPTS))
         or _DEF_POSTHOC_ATTEMPTS
     )
+    # Phase H — v2.1 BankrollTracker wiring. Default $1000 (locked
+    # decision #10); operator overrides via PMB_STARTING_BANKROLL when
+    # redeploying onto a non-empty bankroll snapshot. Replay walks
+    # state/decisions/<UTC-date>.jsonl on startup so the compound clock
+    # survives a restart; default ON when STRATEGY=spot_aware_v2_1, off
+    # otherwise (non-compounding strategies don't need it). Operator
+    # kill-switch is BANKROLL_REPLAY_ENABLED=0. Runner multi-fire cap
+    # mirrors the strategy's cap for v2.1; stays at 1 (Phase-3 invariant)
+    # for v1/v2/v3/wide_fire/ensemble.
+    from polymarket_bot.strategies.spot_aware_v2_1 import SpotAwareStrategyV2_1 as _V2_1
+
+    starting_bankroll = _env_float("PMB_STARTING_BANKROLL", 1000.0) or 1000.0
+    is_v2_1 = isinstance(strategy, _V2_1)
+    bankroll_replay_enabled = _env_bool("BANKROLL_REPLAY_ENABLED", default=is_v2_1)
+    runner_multi_fire_cap = strategy.multi_fire_cap if is_v2_1 else 1
+
     needs_gamma_client = instant_settle_enabled or orphan_recovery_enabled or post_hoc_retry_enabled
     gamma_client_for_settle = _httpx.Client() if needs_gamma_client else None
     if instant_settle_enabled:
@@ -727,7 +799,29 @@ async def main() -> int:
         post_hoc_retry_max_attempts=post_hoc_retry_max_attempts,
         periodic_orphan_recovery_enabled=periodic_orphan_recovery_enabled,
         periodic_orphan_recovery_interval_s=periodic_orphan_recovery_interval_s,
+        bankroll_starting_usd=starting_bankroll,
+        bankroll_replay_on_start=bankroll_replay_enabled,
+        multi_fire_cap=runner_multi_fire_cap,
     )
+
+    # Phase H — rebind v2.1's bankroll_getter to the live runner tracker
+    # after construction. A closure on `runner.bankroll` re-resolves on
+    # each call so a replay-time tracker swap (in PaperRunner.run) still
+    # reads the right object. Spec §11.
+    if is_v2_1:
+
+        def _live_bankroll_getter() -> float:
+            return runner.bankroll.current()
+
+        # The cast is safe because we narrowed via isinstance(_V2_1) above.
+        assert isinstance(strategy, _V2_1)
+        strategy.set_bankroll_getter(_live_bankroll_getter)
+        LOG.info(
+            "spot_aware_v2_1: bankroll_getter wired (start=$%.2f, replay=%s, cap=%d)",
+            starting_bankroll,
+            bankroll_replay_enabled,
+            runner_multi_fire_cap,
+        )
 
     stop_event = asyncio.Event()
     loop = asyncio.get_running_loop()

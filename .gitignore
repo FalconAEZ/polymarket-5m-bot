@@ -77,3 +77,8 @@ htmlcov/
 
 # Build script byproducts (we keep MASTERPLAN.pdf etc. tracked)
 *.pyc
+
+# state/decisions/*.jsonl are runtime data, mutated live by VPS bot.
+# They got committed during Phase G analysis (scp'd down for backtest).
+# Untrack going forward to prevent VPS pull conflicts.
+state/decisions/*.jsonl
