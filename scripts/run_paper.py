@@ -59,11 +59,17 @@ WARMER_INTERVAL_S = 60.0
 HALT_SENTINEL_PATH = Path("state/halt.sentinel")
 HALT_POLL_INTERVAL_S = 1.0
 
-# Strategy selection (Phase 11.A: spot_aware deployed solo per
-# design/spot_aware_strategy.md §"Concurrency + state isolation"). Override
-# via STRATEGY env var = "deterministic" | "spot_aware". Default = spot_aware
-# now that phase-5-pass is in.
-DEFAULT_STRATEGY_NAME = "spot_aware"
+# Strategy selection. Default promoted spot_aware → spot_aware_v3 per
+# phase-prompts/phase-F-final-stage-architecture-audit-2026-05-13.txt:
+# the 5-day truth-corrected audit showed spot_aware family (May 9-10)
+# beat ensemble+wide_fire (May 11-12) on both WR (52% vs 38-44%) and
+# per-trade PnL (+$0.17/+$0.25 vs -$0.40/-$0.96). v3 = v2 + regime
+# detector gate (runbooks/gate-evidence/regime-classifier-validation.txt:
+# trending WR 70.59% vs chop 47.40%). Override via STRATEGY env var =
+# "deterministic" | "spot_aware" | "spot_aware_v2" | "spot_aware_v3" |
+# "ensemble". Ensemble + wide_fire stay in the dispatch as research
+# artifacts — re-enable via env flip only.
+DEFAULT_STRATEGY_NAME = "spot_aware_v3"
 
 
 def _configure_logging() -> None:
