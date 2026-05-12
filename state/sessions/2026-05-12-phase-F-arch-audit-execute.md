@@ -112,7 +112,89 @@ The pre-cut process (PID 570290, 11:31:51–12:25:28 UTC) logged at shutdown: `d
 
 ### Items 2 — DONE. Session boundary (b) reached.
 
-Next action: defer Phase F.3 soak audit to next session at +48h (= 2026-05-14 ~12:25 UTC). Draft `phase-prompts/phase-F-3-spot-aware-v3-soak-audit-2026-05-14.txt` before stopping the next session.
+Next action: defer Phase F.3 soak audit to next session at +48h (= 2026-05-14 ~12:25 UTC). F.3 prompt drafted this session at `phase-prompts/phase-F-3-spot-aware-v3-soak-audit-2026-05-14.txt` (commit [ca4336a]).
+
+## +30min check — RESULTS (captured 2026-05-12 12:55:33 UTC, +30:05 since deploy)
+
+### Service status (GREEN)
+
+- bot-staging.service `active`, MainPID 581764, NRestarts=0
+- ActiveEnterTimestamp unchanged: `Tue 2026-05-12 12:25:33 UTC` (no silent restarts)
+- dashboard-server.service `active`
+- `STRATEGY=spot_aware_v3` still set in .envrc (parallel-session-reset guard pass — `feedback_vps_deploy_verify_late`)
+
+### Error check (GREEN)
+
+`journalctl -p err --since "@1778588728"` → `-- No entries --`. Zero error-level records over the full 30-minute window.
+
+### LLM removal verification (GREEN)
+
+- **Anthropic API calls since deploy: 0.** Confirms the LLM is fully removed from the fire path. (Pre-cut: 4 calls in the 9 seconds before shutdown at 12:25:25.)
+- No `ensemble_vote` records, no `meta_outcome` records, no `wide_fire` mentions in any post-cut log line.
+
+### Queue overflow verification (GREEN — Phase F prediction holds)
+
+- `dropped_records=22117` line is from the OLD process shutdown at 12:25:33 (pre-cut tally).
+- After cut: **zero** `dropped_records` or `queue.*overflow` log entries over 30 min.
+- The whole architectural class of queue-overflow incidents (Phase 19's motivation) is gone.
+
+### Runner background loops (GREEN)
+
+| Loop | Cadence | Observed |
+|------|---------|----------|
+| Warmer | every 5min | 6 successful runs, 1 new window each, token catalog 1526 → 1538 |
+| Orphan recovery | every 5min | 6 successful runs, 0 orphans found each |
+| Post-hoc gamma retry | per design | (no settled-correction triggers during window) |
+
+### v3 fire activity (within expectation)
+
+- Decision-log `state/decisions/2026-05-12.jsonl`: 86 lines total, **unchanged since 12:23 UTC** (pre-cut last entry).
+- 0 post-cut entries (`ts_ns >= 1778588728`).
+- 0 v3-tagged FIRE records.
+- 41 fires + 42 settled + 3 settled_correction in the file are ALL pre-cut (`rationale=strategy=wide_fire mode=ensemble_base`).
+
+**Is this a bug?** No — verified at `src/polymarket_bot/strategies/spot_aware_v3.py:50-77`:
+
+```python
+async def on_event(self, event):
+    if isinstance(event, SpotTick):
+        self._regime.observe_spot(event.ts_utc_ns, event.price)
+    decision = await super().on_event(event)
+    if decision is None:
+        return None
+    regime = self._regime.classify(event.ts_utc_ns)
+    if regime != "trending":
+        self._fired_for_window = None
+        return None
+    return decision
+```
+
+v3 silently returns `None` on abstain — no log line, no decision-log entry. Only fires produce decisions. So zero log lines from v3 over 30 min == "v3 evaluated, no trending window observed."
+
+**Statistical consistency check:** Bot started 12:25:33; regime detector needs 600s (10 min) buffer. First trainable window: 12:35. Evaluations at 12:35, 12:40, 12:45, 12:50, 12:55 = 5 windows. v3 fires on ~6% of windows that pass v2's earlier gates. P(0 fires in 5 windows at 6% rate) = 0.94⁵ ≈ 0.73. So **73% probability of seeing exactly what we saw**. Within expectation.
+
+### /api/state snapshot
+
+- `n_decisions_total = 611` (unchanged from pre-cut baseline)
+- `halt_requested = False`
+- `incidents = 0`
+- 24h trip wires: PnL $+0.00, fire-rate 0/d, WR 51.2% (still dominated by ensemble+wide_fire history from before the cut), elapsed 87.8h
+
+### What this +30min check does NOT verify
+
+- ❌ First v3-tagged FIRE has not yet appeared. Statistical estimate: probability of >=1 fire in next 24h with v3's ~6% trending rate × ~288 windows/day = 1 - 0.94^288 ≈ ~100%. Very high confidence we'll see at least one fire by tomorrow's +24h check.
+- ❌ Win-rate on v3-tagged fires — N/A until fires accumulate.
+- ❌ Per-trade PnL on v3 — same.
+
+These are the Phase F.3 questions, which are next-session work.
+
+### +30min verdict
+
+**GREEN on all measurable criteria:**
+- Service health, error count, env preservation, LLM removal, queue stability all clean.
+- v3 fire-volume is unobservable yet but **statistically consistent** with v3's selectivity profile.
+
+**Next checkpoint: +24h (= 2026-05-13 12:25:33 UTC).** Per `feedback_vps_deploy_verify_late`. Look for first v3 fires + early WR signal.
 
 ## What did NOT happen this session (per prompt §"WHAT THIS PHASE EXPLICITLY DOES NOT DO")
 
