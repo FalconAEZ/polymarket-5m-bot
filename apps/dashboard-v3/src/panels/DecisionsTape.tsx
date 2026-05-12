@@ -52,6 +52,7 @@ export function DecisionsTape() {
               <th className="text-left font-bold py-1.5">Market</th>
               <th className="text-left font-bold py-1.5">Side</th>
               <th className="text-left font-bold py-1.5">Tier</th>
+              <th className="text-right font-bold py-1.5">Bet</th>
               <th className="text-right font-bold py-1.5">Limit</th>
               <th className="text-right font-bold py-1.5">Fill</th>
               <th className="text-right font-bold py-1.5">PnL · Status</th>
@@ -222,6 +223,13 @@ function DecisionRow({ d, nowS }: { d: DecisionTapeRow; nowS: number }) {
         )}
       </td>
       <td className="px-2 py-0.5 text-text-secondary">{d.tier}</td>
+      <td className="px-2 py-0.5 text-right text-text-primary font-mono tabular-nums">
+        {/* Kelly-sized bet per fire (v2.1). For legacy single-fire
+         * strategies this is the flat $5; for v2.1 it scales with
+         * bankroll x kelly_mult x f*. Surfaced so operator can see
+         * exposure per row at a glance. */}
+        {fmtUsd(d.size_usd, 2)}
+      </td>
       <td className="px-2 py-0.5 text-right text-text-secondary">
         {d.price_limit.toFixed(3)}
       </td>
