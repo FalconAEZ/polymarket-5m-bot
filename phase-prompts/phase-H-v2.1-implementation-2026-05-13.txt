@@ -1,0 +1,217 @@
+Subject: Phase H — Edge consolidation + v2.1 implementation
+         Deliverables (in order):
+           H.1 — pdfs/PHASE_H_v2_1_IMPLEMENTATION.pdf (this-session output)
+           H.2 — src/polymarket_bot/strategies/spot_aware_v2_1.py
+           H.3 — tests/strategies/test_spot_aware_v2_1.py
+           H.4 — STRATEGY=spot_aware_v2_1 registration + .envrc
+           H.5 — VPS deploy + +5/30/24h verifies
+           H.6 — 7-day soak gate → PROMOTE / EXTEND / ROLLBACK
+
+Operator framing (verbatim, 2026-05-12):
+  "pull all of the known edges we have already found throughout the bot's
+   history and eliminate all losing edges and implement it to the bot's
+   v2.1 iteration ... make a full implementation pdf of how we'll
+   implement these edges to our current setup"
+
+================================================================================
+EDGES INVENTORY — exhaustive across bot history
+================================================================================
+
+CONFIRMED WINNERS:
+  W1. Tier 30-50% × |Δ_bps|<5 cell           Phase G §5.1
+      n=83  WR 48.1%  +$0.65/trade  +$54.17 total
+  W2. Tier 70-85% (any |Δ|)                  Phase G §4.1 + edge-disc 5/9
+      n=35  WR 70.6%
+  W3. Regime = trending                       regime-validation 5/10
+      n=19  WR 70.59%  +$1.75/trade
+  W4. EV ∈ [0.05, 0.20)                      Phase G §4.4
+      [0.05,0.10) n=35 WR 70.4%
+      [0.10,0.20) n=19 WR 76.5%  +$1.61/trade
+  W5. Δ ≠ 0 (any sign)                       Phase G §4.3
+      Δ>0: n=297 WR 51.9%   Δ<0: n=149 WR 51.4%
+
+CONFIRMED LOSERS:
+  L1. Δ_bps = 0 (no skew)                    Phase G §4.3
+      n=187  WR 44.6%  −$0.40/trade  −$75.21 total
+  L2. EV ∈ [0.02, 0.05)                      Phase G §4.4
+      n=77   WR 36.0%  −$1.46/trade  −$112.52 total
+  L3. Tier 50-70%                             edge-disc 5/9 + Phase G
+      n=349  WR 50.4%  −$0.25/trade           ✓ ALREADY REJECTED in v2
+  L4. Tier 85-100% (slow-minute trap)        scout-final 5/8
+      Bonereaper: −$3,964/7d at 96.6% WR     ✓ ALREADY REJECTED in v2
+  L5. wide_fire + ensemble era               Phase F audit
+      126 fires, WR 42.2%, −$0.563/trade     ✓ ALREADY REMOVED (Phase F)
+  L6. SPOT_AWARE_AGGRESSIVE_MODE              May 8: −$20 / May 9: +$44
+      High-variance gamble, not edge         ✓ ALREADY OFF
+
+SUGGESTIVE (n<30 or marginal):
+  S1. Hour 0/17/21 UTC > Hour 5/14/23 UTC    Phase G §4.6 + §5.2
+      n ~25-50 per hour, statistically underpowered
+  S2. spot_dir UP_weak > DOWN_weak           Phase G §5
+      UP_weak: 51.3% WR (n=254)
+      DOWN_weak: 44.2% WR (n=201) — possible loser
+
+EDGES NOT YET EXPLOITED (architectural):
+  N1. Kelly sizing                            Phase G §10.1-10.2
+      f* = (p_win - price) / (1 - price)
+      Projection: $1k → $116k/90d (Conservative scenario)
+  N2. Multi-fire per window                   Phase G §10.3
+      2-3× current fires/day if signals independent
+  N3. Cumulative compounding                  Phase G §10.4
+      Bankroll-aware position sizing
+  N4. Tier-specific Δ floor                  Phase G §5.1
+      The W1 cell requires this — v2's hard ≥5 floor blocks it
+
+================================================================================
+v2.1 ARCHITECTURE — inherit SpotAwareStrategyV2
+================================================================================
+
+FILTER CHANGES — eliminate losers, exploit winners:
+  CH1. Reject Δ_bps = 0.0 exactly                 [eliminates L1]
+  CH2. EV gate strengthened:
+       reject if 0.02 <= ev < 0.05  [eliminates L2 cleanly]
+       keep allow if ev >= 0.05 OR ev < 0.02
+  CH3. Tier-specific delta floor:
+       tier ∈ {15-30%, 30-50%}:  min |Δ| = 0  [exploits W1]
+       tier == "70-85%":         min |Δ| = 5  [validated W2]
+       tier ∈ {50-70%, 85-100%}: REJECTED      [unchanged from v2]
+  CH4. Optional regime hint (Q2 decides — defer to flag)
+
+SIZING CHANGES — Kelly + compounding:
+  CH5. Per-trade size = clamp(
+         bankroll_live × kelly_mult × kelly_f,
+         min = $1.00,
+         max = $500.00 (Polymarket retail liquidity ceiling)
+       )
+       where kelly_f = max(0, (p_win - price) / (1 - price))
+       kelly_mult default = 0.10 (start conservative — see Q4)
+  CH6. Bankroll tracking:
+       Read live bankroll from PaperRunner snapshot
+       Update fire-by-fire (compounding mode)
+
+MULTI-FIRE CHANGES:
+  CH7. Lift `fired_for_window` invariant for v2.1
+       v2 keeps single-fire. v2.1 allows multi-fire.
+  CH8. Cap = 2 fires per window (Q3 decides — see open questions)
+
+================================================================================
+IMPLEMENTATION SUB-PHASES
+================================================================================
+
+H.1 (THIS SESSION) — Implementation PDF
+  Builder: pdfs/build_phase_h_implementation_pdf.py (~120 LOC reportlab)
+  Output: pdfs/PHASE_H_v2_1_IMPLEMENTATION.pdf
+  Copy: ~/Desktop/PHASE_H_v2_1_IMPLEMENTATION.pdf
+  ~15-20 pages, dark-terminal styling matching Phase G
+
+H.2 (NEXT SESSION) — Code: SpotAwareStrategyV2_1
+  Path: src/polymarket_bot/strategies/spot_aware_v2_1.py (~150 LOC)
+  Inherits V2. Overrides:
+    - _maybe_fire (filter changes)
+    - get_size (new — Kelly bet sizing from bankroll)
+  Adds:
+    - KellyConfig dataclass (kelly_mult, max_bet_abs, min_bet_abs)
+    - bankroll-getter callback in constructor
+  Type hints + module docstring + tests
+
+H.3 (NEXT SESSION) — Tests
+  Path: tests/strategies/test_spot_aware_v2_1.py (~15 tests)
+  Coverage:
+    - reject Δ=0
+    - reject ev ∈ [0.02, 0.05)
+    - allow tier 30-50% with |Δ|<5
+    - require |Δ|≥5 for tier 70-85%
+    - Kelly bet math (5 cases including edge clamps)
+    - Multi-fire reset (fire twice in same window)
+    - Cap at 2 fires per window
+    - Bankroll-getter integration
+
+H.4 (NEXT SESSION) — Strategy registration
+  scripts/run_paper.py: add `if name == "spot_aware_v2_1"` branch
+  Read KELLY_MULT, MULTI_FIRE_CAP env vars (defaults: 0.10, 2)
+
+H.5 (NEXT SESSION) — VPS deploy
+  cd /home/ops/polymarket-5m-bot
+  Backup .envrc
+  Edit STRATEGY=spot_aware_v2 → spot_aware_v2_1
+  systemctl restart bot-staging.service
+  Verify +5min: active, no errors, "active strategy: spot_aware_v2_1"
+  Verify +30min: 5-min check + first fire pattern visible
+  Verify +24h: WR, fires/day, daily PnL within projected envelope
+
+H.6 (+7 days after H.5) — 7-day soak gate
+  Run scripts/four_day_audit.py daily
+  PROMOTE if (over 7d):
+    WR ≥ 52% on n ≥ 100 settled
+    daily_pnl_min ≥ −$10
+    fires/day ≥ 30 (multi-fire 2× expectation)
+    queue_overflow_incidents == 0
+  ROLLBACK if:
+    WR < 45% over 48h
+    OR daily_pnl < −$30 any day
+    OR ruin event (bankroll ≤ $500)
+
+================================================================================
+OPEN QUESTIONS FOR OPERATOR (deciding the implementation knobs)
+================================================================================
+
+Q1. Hour-of-day gate (S1)?
+    YES = skip hour 5/14/23 UTC (more selective)
+    NO  = no time gate, simpler (recommended — small sample)
+
+Q2. Regime gate (W3) — defer to flag?
+    Option A: no regime gate (default, simplest)
+    Option B: prefer trending — fire at full Kelly on trending,
+              half-Kelly on chop/mixed
+    Option C: gate hard — fire only on trending (like v3)
+
+Q3. Multi-fire cap?
+    2 per window (conservative)
+    3 per window (aggressive, more variance)
+
+Q4. Kelly multiplier?
+    0.10 (start, smoother trajectory, slower compounding)
+    0.25 (Phase G Conservative used this, faster but riskier)
+
+Q5. Live-trading promotion threshold?
+    $2k = locked decision #12 (hardware wallet)
+    $5k = additional buffer
+    $10k = Aspirational scenario milestone
+
+================================================================================
+WHAT THIS PHASE EXPLICITLY DOES NOT DO
+================================================================================
+
+  • Does NOT deploy v2.1 — H.5 is the deploy step (next session, not now)
+  • Does NOT touch v2/v3/v1/wide_fire — v2.1 is additive
+  • Does NOT modify locked decisions
+    (#9 Kelly sizing — Phase H operationalizes it within Phase 16.B's framing)
+  • Does NOT re-engage ensemble (Phase F cut intact)
+  • Does NOT skip the 7-day soak gate
+
+================================================================================
+SESSION BOUNDARY
+================================================================================
+
+  (a) H.1 PDF complete → operator reviews, decides Q1-Q5, approves H.2+. ✓
+  (b) H.1 PDF complete + H.2 code + H.3 tests → defer H.4 deploy. ✓ partial
+  (c) Context ≥60% before H.1 PDF complete → commit prompt only. ⏸
+
+================================================================================
+PRE-SESSION CHECKLIST
+================================================================================
+
+[ ] Phase G PDF reviewed: pdfs/PHASE_G_EDGE_DISCOVERY.pdf
+[ ] Phase G Kelly analysis: state/research/phase-G-kelly-analysis.json
+[ ] v2 source read: src/polymarket_bot/strategies/spot_aware_v2.py
+[ ] v3 source read: src/polymarket_bot/strategies/spot_aware_v3.py
+[ ] edge-discovery-2026-05-09.md
+[ ] regime-classifier-validation.txt
+[ ] reportlab + matplotlib in venv
+
+POST-SESSION (H.1 done):
+[ ] pdfs/PHASE_H_v2_1_IMPLEMENTATION.pdf committed
+[ ] ~/Desktop/PHASE_H_v2_1_IMPLEMENTATION.pdf delivered
+[ ] git push origin claude/jovial-hermann-7e103f
+
+End of prompt.
