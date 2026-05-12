@@ -1,14 +1,16 @@
 ---
 title: Phase 19 — LLM async pre-compute
-status: design locked, awaiting operator sign-off; NOT implemented; NOT deployed
-tags: [phase, optimization, llm, async, latency, queue-overflow]
+status: SHELVED 2026-05-12 by Phase F cut (LLM removed from fire path; latency problem dissolves)
+tags: [phase, optimization, llm, async, latency, queue-overflow, shelved]
 ---
 
-# Phase 19 — LLM async pre-compute
+# Phase 19 — LLM async pre-compute (SHELVED)
+
+**Status: SHELVED 2026-05-12 per [[phase-F-architecture-audit]].** The 12s inline-await problem that motivated this phase no longer exists in production — the LLM ensemble is no longer in the fire path (`STRATEGY=spot_aware_v3` directly, no `EnsembleWrapper`). Design doc preserved as a research artifact for revival if/when the ensemble experiment is re-engaged via env flip and shown to add lift.
 
 Master plan reference: §4 row 19, ~4h estimate, kill-switch env `LLM_PRECOMPUTE_ENABLED`.
 
-Design doc: `design/phase-19-llm-async-precompute.md` (LOCKED, awaiting sign-off).
+Design doc: `design/phase-19-llm-async-precompute.md` (LOCKED but implementation shelved).
 
 ## Why this phase exists
 

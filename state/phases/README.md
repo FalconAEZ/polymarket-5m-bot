@@ -26,18 +26,19 @@ Chronological + status. Each phase has its own note when work begins; tags are p
 
 ## Live operation
 
-- **bot-staging.service** active since **2026-05-10 23:50:50 UTC** on VPS at HEAD `831c756` (Phase 15.5 deploy chain). MainPID stable; orphan-recovery primed at startup.
+- **bot-staging.service** active since **2026-05-12 12:25:33 UTC** (Phase F arch-audit cut deploy) on VPS at HEAD `d1510bd`. MainPID `581764`; orphan-recovery primed at startup.
 - **dashboard-server.service** (v3 FastAPI + React) active since **2026-05-11 06:25:15 UTC** on VPS at HEAD `f0ee20d`. Bound to `127.0.0.1:8505`; access via SSH local-port-forward. `/api/state.scenarios` returns 5-row bankroll projection. `decisions_truth_source=polymarket`.
-- Strategy: `ensemble` (`ENSEMBLE_MODE=gate`, `ENSEMBLE_BASE_STRATEGY=wide_fire`).
-- Edge (live, 2026-05-11): `agg.total_pnl_usd=$75.26` over 428 settled; aligned with the Phase 15.5 Item 1 reconciliation prediction. 70 post-restart `ensemble_vote` records with `meta_outcome` populated: 97.1% `ok`, 2.9% `invariant_violated`.
-- Phase 14 + 15 default behavior unchanged on production — both kill-switches dark (env unset / `=false`).
+- Strategy: **`spot_aware_v3`** (regime-detector gate, no LLM wrapper). Cut 2026-05-12 per [[phase-F-architecture-audit]].
+- Pre-cut 5-day audit (truth-corrected): ensemble+wide_fire era (May 11-12) at WR 38-44% / −$0.58/trade vs spot_aware family (May 9-10) at WR 52% / +$0.20/trade. The +4.1pp shadow uplift did not reproduce in gate mode.
+- Phase 14 + 15 kill-switches still dark (env unset / `=false`). Phase 18B `meta_outcome` telemetry will be empty post-cut since no ensemble fires.
 
 ## In progress / next
 
-- [[phase-16b-every-window-mode|**Phase 16.B**]] — every-window mode with signal-driven router. 🟢 **16.B.4 + 16.B.5 SHIPPED + LIVE 2026-05-11/12.** Wrapper wire deployed `2eb54fd`; `EVERY_WINDOW_SHADOW=true` flipped 18:02:05 UTC 2026-05-11; shadow soak underway. wide_fire phantom-zone fix shipped in two iterations (`3875d3c` per-side BUGGY → `7a5b19e` per-asset_id CORRECT) — see phase ledger §"2026-05-12" for the saga. Phantom-fill backfill applied (3 records). Remaining: 16.B.6 7-day soak gate → PROMOTE/ROLLBACK.
-- [[phase-19-llm-async-precompute|**Phase 19**]] — LLM async pre-compute. Design doc LOCKED 2026-05-12 (`design/phase-19-llm-async-precompute.md`). Awaiting operator sign-off + implementation. Targets 8.8% gate-timeout rate → ≤0.5%; eliminates 119K-record queue-overflow class. Default-OFF via `LLM_PRECOMPUTE_ENABLED`. Implementation (Phase 19.1) is ~3h next-session work.
-- ~~Phase 17 (sizing modes scaffolding)~~ — **SUBSUMED by Phase 16.B**.
-- ~~Phase 18 (Kelly sizing)~~ — **SUBSUMED by Phase 16.B** (`sizing.py` ships there).
+- [[phase-F-architecture-audit|**Phase F**]] — architecture audit + convergence. 🟢 **Items 1 + 2 SHIPPED 2026-05-12 12:25:33 UTC** at `d1510bd`. Strategy default cut `spot_aware → spot_aware_v3`; ensemble + wide_fire + every_window shadow disabled via .envrc; rollback = single env flip (backup at `.envrc.phase-F-backup-20260512-122500`). Soak active. **Item 3 (48-72h soak audit) gates Phase 6 readiness review** — next session at +48h.
+- [[phase-16b-every-window-mode|Phase 16.B]] — **PAUSED** (router depends on LLM signal; cut from production via Phase F). Code intact; `EVERY_WINDOW_SHADOW=true` env commented. If revived, redesign as no-LLM router (W_DET=0.30, W_REG=0.30, W_TIER=0.20, W_KELLY=0.20).
+- [[phase-19-llm-async-precompute|Phase 19]] — **SHELVED**. Design doc complete; implementation deferred indefinitely (the 12s inline-await latency problem dissolves when the LLM is removed from the fire path per Phase F cut).
+- ~~Phase 17 (sizing modes scaffolding)~~ — **SUBSUMED by Phase 16.B** (paused).
+- ~~Phase 18 (Kelly sizing)~~ — **SUBSUMED by Phase 16.B** (paused).
 
 ## Master-plan phases 16-25 (planned)
 

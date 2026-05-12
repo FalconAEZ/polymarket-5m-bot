@@ -1,8 +1,10 @@
 ---
 title: Phase 16.B — every-window mode with signal-driven router
-status: IN PROGRESS 2026-05-11. Design locked + router primitives + counterfactual SHIPPED. Wrapper wire + dark deploy + 24h shadow + 7-day soak gate REMAIN. Operator-authorized revisit of locked decisions #6 + #9 (partial — Kelly subsumed). Branch `claude/jovial-hermann-7e103f`. Latest commit `707786c`.
-tags: [phase, every-window, signal-router, decision-6-revisit, decision-9-revisit, kelly, phase-17-merged, phase-18-merged]
+status: PAUSED 2026-05-12 by Phase F cut. Router architecture relies on LLM signal (W_LLM=0.25) which Phase F removed from production. Code intact; `EVERY_WINDOW_SHADOW=true` env commented. Revival requires no-LLM router redesign.
+tags: [phase, every-window, signal-router, decision-6-revisit, decision-9-revisit, kelly, phase-17-merged, phase-18-merged, paused]
 ---
+
+> **PAUSED 2026-05-12 per [[phase-F-architecture-audit]].** Router design depends on `W_LLM=0.25` blended into composite scoring. With the LLM cut from production, the router's signal mix is unbalanced. Code + shadow soak infra preserved. If we ever return to it, redesign as no-LLM router: `W_DET=0.30, W_REG=0.30, W_TIER=0.20, W_KELLY=0.20`. That would be a different phase.
 
 # Phase 16.B — every-window mode with signal-driven router
 
