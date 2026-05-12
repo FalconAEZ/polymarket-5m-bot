@@ -37,20 +37,63 @@ def _fired(decision_id: str, ts_ns: int, *, strategy: str = "spot_aware_v3") -> 
 
 
 # ---------------------------------------------------------------------------
-# find_first_v3_fire
+# find_first_fire_after
 # ---------------------------------------------------------------------------
 
 
 def test_no_files_returns_none(tmp_path: Path) -> None:
-    assert wf.find_first_v3_fire(tmp_path, since_ts_ns=0) is None
+    assert wf.find_first_fire_after(tmp_path, since_ts_ns=0) is None
 
 
-def test_no_v3_fires_returns_none(tmp_path: Path) -> None:
+def test_returns_any_fire_kind_regardless_of_strategy_tag(tmp_path: Path) -> None:
+    """The watcher is rationale-agnostic by design — strategy attribution
+    is by deployment context. A wide_fire-tagged record post-since still
+    matches because if the bot is configured for v3, that "wide_fire"
+    rationale was actually produced by v3 (which inherits v2's rationale,
+    not wide_fire's, but the same root-cause class applies)."""
     _write_jsonl(
         tmp_path / "2026-05-12.jsonl",
         [_fired("a", 1_700_000_000_000_000_000, strategy="wide_fire")],
     )
-    assert wf.find_first_v3_fire(tmp_path, since_ts_ns=0) is None
+    rec = wf.find_first_fire_after(tmp_path, since_ts_ns=0)
+    assert rec is not None
+    assert rec["decision_id"] == "a"
+
+
+def test_no_fires_at_all_returns_none(tmp_path: Path) -> None:
+    """Only settled records (no fires) → None."""
+    _write_jsonl(
+        tmp_path / "2026-05-12.jsonl",
+        [
+            {
+                "kind": "settled",
+                "decision_id": "s",
+                "settled_ts_ns": 1_700_000_000_000_000_000,
+                "pnl_usd": 5.0,
+            },
+        ],
+    )
+    assert wf.find_first_fire_after(tmp_path, since_ts_ns=0) is None
+
+
+def test_v2_rationale_post_since_matches_because_v3_inherits(tmp_path: Path) -> None:
+    """The actual on-VPS situation: v3 fires with rationale tagged as
+    spot_aware_v2 (rationale inheritance). The watcher MUST match these."""
+    _write_jsonl(
+        tmp_path / "2026-05-12.jsonl",
+        [
+            {
+                "kind": "fired",
+                "decision_id": "real_v3_fire",
+                "decision_ts_ns": 3_000_000_000_000_000_000,
+                "rationale": "strategy=spot_aware_v2 mode=tier_restricted delta_bps=-9.75",
+                "fill": None,
+            },
+        ],
+    )
+    rec = wf.find_first_fire_after(tmp_path, since_ts_ns=2_000_000_000_000_000_000)
+    assert rec is not None
+    assert rec["decision_id"] == "real_v3_fire"
 
 
 def test_v3_fire_before_since_is_ignored(tmp_path: Path) -> None:
@@ -58,7 +101,7 @@ def test_v3_fire_before_since_is_ignored(tmp_path: Path) -> None:
         tmp_path / "2026-05-12.jsonl",
         [_fired("old", 1_000_000_000_000_000_000)],
     )
-    assert wf.find_first_v3_fire(tmp_path, since_ts_ns=2_000_000_000_000_000_000) is None
+    assert wf.find_first_fire_after(tmp_path, since_ts_ns=2_000_000_000_000_000_000) is None
 
 
 def test_v3_fire_at_or_after_since_returns_record(tmp_path: Path) -> None:
@@ -66,7 +109,7 @@ def test_v3_fire_at_or_after_since_returns_record(tmp_path: Path) -> None:
         tmp_path / "2026-05-12.jsonl",
         [_fired("new", 2_000_000_000_000_000_000)],
     )
-    rec = wf.find_first_v3_fire(tmp_path, since_ts_ns=2_000_000_000_000_000_000)
+    rec = wf.find_first_fire_after(tmp_path, since_ts_ns=2_000_000_000_000_000_000)
     assert rec is not None
     assert rec["decision_id"] == "new"
 
@@ -79,7 +122,7 @@ def test_skips_pre_since_returns_post_since(tmp_path: Path) -> None:
             _fired("post_v3", 3_000_000_000_000_000_000),
         ],
     )
-    rec = wf.find_first_v3_fire(tmp_path, since_ts_ns=2_000_000_000_000_000_000)
+    rec = wf.find_first_fire_after(tmp_path, since_ts_ns=2_000_000_000_000_000_000)
     assert rec is not None
     assert rec["decision_id"] == "post_v3"
 
@@ -97,7 +140,7 @@ def test_skips_settled_records(tmp_path: Path) -> None:
             _fired("f", 3_000_000_000_000_000_001),
         ],
     )
-    rec = wf.find_first_v3_fire(tmp_path, since_ts_ns=0)
+    rec = wf.find_first_fire_after(tmp_path, since_ts_ns=0)
     assert rec is not None
     assert rec["decision_id"] == "f"
 
@@ -107,7 +150,7 @@ def test_malformed_lines_skipped(tmp_path: Path) -> None:
     with path.open("w") as fh:
         fh.write("not json\n\n")
         fh.write(json.dumps(_fired("ok", 3_000_000_000_000_000_000)) + "\n")
-    rec = wf.find_first_v3_fire(tmp_path, since_ts_ns=0)
+    rec = wf.find_first_fire_after(tmp_path, since_ts_ns=0)
     assert rec is not None
     assert rec["decision_id"] == "ok"
 
@@ -121,7 +164,7 @@ def test_scans_files_in_order(tmp_path: Path) -> None:
         tmp_path / "2026-05-13.jsonl",
         [_fired("from_05_13", 5_000_000_000_000_000_000)],
     )
-    rec = wf.find_first_v3_fire(tmp_path, since_ts_ns=0)
+    rec = wf.find_first_fire_after(tmp_path, since_ts_ns=0)
     assert rec is not None
     assert rec["decision_id"] == "from_05_12"
 

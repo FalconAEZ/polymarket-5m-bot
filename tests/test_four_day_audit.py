@@ -290,3 +290,190 @@ def test_cli_happy_path(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> N
     out = capsys.readouterr().out
     assert "2026-05-09" in out
     assert "+5.00" in out
+
+
+# ---------------------------------------------------------------------------
+# StrategyOverride — pin attribution by deployment context
+# ---------------------------------------------------------------------------
+
+
+def test_override_attributes_post_boundary_records(tmp_path: Path) -> None:
+    """The v3-inheritance case: a fire whose rationale says spot_aware_v2
+    but is actually v3 (because v3 was deployed at boundary)."""
+    _write_jsonl(
+        tmp_path / "2026-05-12.jsonl",
+        [
+            {
+                "kind": "fired",
+                "decision_id": "v3_inherited",
+                "decision_ts_ns": fda._parse_iso_to_ns("2026-05-12T13:35:16+00:00"),
+                "rationale": "strategy=spot_aware_v2 mode=tier_restricted delta_bps=-9.75",
+                "fill": None,
+            },
+        ],
+    )
+    override_ts_ns = fda._parse_iso_to_ns("2026-05-12T12:25:33+00:00")
+    rows = fda.audit(
+        tmp_path,
+        overrides=[fda.StrategyOverride(ts_ns=override_ts_ns, strategy="spot_aware_v3")],
+    )
+    assert len(rows) == 1
+    assert rows[0].strategy_counts == {"spot_aware_v3": 1}
+
+
+def test_override_does_not_apply_pre_boundary(tmp_path: Path) -> None:
+    """A fire BEFORE the override timestamp keeps its rationale-derived tag."""
+    _write_jsonl(
+        tmp_path / "2026-05-12.jsonl",
+        [
+            {
+                "kind": "fired",
+                "decision_id": "pre_cut",
+                "decision_ts_ns": fda._parse_iso_to_ns("2026-05-12T10:00:00+00:00"),
+                "rationale": "strategy=wide_fire mode=ensemble_base",
+                "fill": None,
+            },
+        ],
+    )
+    override_ts_ns = fda._parse_iso_to_ns("2026-05-12T12:25:33+00:00")
+    rows = fda.audit(
+        tmp_path,
+        overrides=[fda.StrategyOverride(ts_ns=override_ts_ns, strategy="spot_aware_v3")],
+    )
+    assert rows[0].strategy_counts == {"wide_fire:ensemble_base": 1}
+
+
+def test_override_mixed_day_splits_by_boundary(tmp_path: Path) -> None:
+    """One day with pre- and post-cut fires: each tagged correctly."""
+    _write_jsonl(
+        tmp_path / "2026-05-12.jsonl",
+        [
+            {
+                "kind": "fired",
+                "decision_id": "pre1",
+                "decision_ts_ns": fda._parse_iso_to_ns("2026-05-12T10:00:00+00:00"),
+                "rationale": "strategy=wide_fire mode=ensemble_base",
+                "fill": None,
+            },
+            {
+                "kind": "fired",
+                "decision_id": "pre2",
+                "decision_ts_ns": fda._parse_iso_to_ns("2026-05-12T11:00:00+00:00"),
+                "rationale": "strategy=wide_fire mode=ensemble_base",
+                "fill": None,
+            },
+            {
+                "kind": "fired",
+                "decision_id": "post1",
+                "decision_ts_ns": fda._parse_iso_to_ns("2026-05-12T13:35:00+00:00"),
+                "rationale": "strategy=spot_aware_v2 mode=tier_restricted",
+                "fill": None,
+            },
+        ],
+    )
+    override_ts_ns = fda._parse_iso_to_ns("2026-05-12T12:25:33+00:00")
+    rows = fda.audit(
+        tmp_path,
+        overrides=[fda.StrategyOverride(ts_ns=override_ts_ns, strategy="spot_aware_v3")],
+    )
+    counts = rows[0].strategy_counts
+    assert counts["wide_fire:ensemble_base"] == 2
+    assert counts["spot_aware_v3"] == 1
+
+
+def test_multiple_overrides_latest_wins(tmp_path: Path) -> None:
+    """Two overrides: a fire after the LATER override gets the LATER strategy."""
+    _write_jsonl(
+        tmp_path / "2026-05-13.jsonl",
+        [
+            {
+                "kind": "fired",
+                "decision_id": "later",
+                "decision_ts_ns": fda._parse_iso_to_ns("2026-05-13T10:00:00+00:00"),
+                "rationale": "strategy=spot_aware_v2 mode=tier_restricted",
+                "fill": None,
+            },
+        ],
+    )
+    rows = fda.audit(
+        tmp_path,
+        overrides=[
+            fda.StrategyOverride(
+                ts_ns=fda._parse_iso_to_ns("2026-05-12T12:25:33+00:00"),
+                strategy="spot_aware_v3",
+            ),
+            fda.StrategyOverride(
+                ts_ns=fda._parse_iso_to_ns("2026-05-13T09:00:00+00:00"),
+                strategy="bonereaper_v1",
+            ),
+        ],
+    )
+    assert rows[0].strategy_counts == {"bonereaper_v1": 1}
+
+
+def test_override_empty_list_falls_back_to_rationale(tmp_path: Path) -> None:
+    """No overrides → behaves like the original rationale-only audit."""
+    _write_jsonl(
+        tmp_path / "2026-05-12.jsonl",
+        [_fired("a", "2026-05-12T10:00:00", fill=True, strategy="wide_fire")],
+    )
+    rows_no_overrides = fda.audit(tmp_path, overrides=None)
+    rows_empty_list = fda.audit(tmp_path, overrides=[])
+    assert rows_no_overrides[0].strategy_counts == rows_empty_list[0].strategy_counts
+    assert "wide_fire" in next(iter(rows_no_overrides[0].strategy_counts))
+
+
+def test_parse_iso_to_ns_assumes_utc_when_no_tzinfo() -> None:
+    """ISO strings without tzinfo are treated as UTC."""
+    naive = fda._parse_iso_to_ns("2026-05-12T12:25:33")
+    explicit = fda._parse_iso_to_ns("2026-05-12T12:25:33+00:00")
+    assert naive == explicit
+
+
+# ---------------------------------------------------------------------------
+# CLI: --strategy-override
+# ---------------------------------------------------------------------------
+
+
+def test_cli_strategy_override(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    _write_jsonl(
+        tmp_path / "2026-05-12.jsonl",
+        [
+            {
+                "kind": "fired",
+                "decision_id": "v3_fire",
+                "decision_ts_ns": fda._parse_iso_to_ns("2026-05-12T13:35:16+00:00"),
+                "rationale": "strategy=spot_aware_v2 mode=tier_restricted",
+                "fill": None,
+            },
+        ],
+    )
+    rc = fda.main(
+        [
+            "--decisions-dir",
+            str(tmp_path),
+            "--strategy-override",
+            "2026-05-12T12:25:33+00:00",
+            "spot_aware_v3",
+        ]
+    )
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "spot_aware_v3" in out
+    assert "spot_aware_v2" not in out  # the override replaces the rationale tag
+
+
+def test_cli_bad_override_timestamp_exits_2(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    rc = fda.main(
+        [
+            "--decisions-dir",
+            str(tmp_path),
+            "--strategy-override",
+            "not-a-timestamp",
+            "spot_aware_v3",
+        ]
+    )
+    assert rc == 2
+    assert "bad --strategy-override timestamp" in capsys.readouterr().err

@@ -1,10 +1,19 @@
-"""Watch decision-log for the first spot_aware_v3 FIRE post-Phase F deploy.
+"""Watch decision-log for the first FIRE produced by the currently-deployed
+strategy (typically spot_aware_v3 post-Phase F).
 
 Polls ``state/decisions/YYYY-MM-DD.jsonl`` every N seconds. On finding the
-first record with ``kind=fired`` and ``strategy=spot_aware_v3`` in
-rationale where ``decision_ts_ns >= --since-ts-ns``, sends a Telegram
-notification via the bot API and writes an idempotency sentinel at
-``state/phase-F-first-fire.json``.
+first ``kind=fired`` record with ``decision_ts_ns >= --since-ts-ns``, sends
+a Telegram notification via the bot API and writes an idempotency sentinel
+at ``state/phase-F-first-fire.json``.
+
+Note on strategy detection: this watcher does NOT inspect the rationale to
+classify the fire as a particular strategy. Reason: SpotAwareStrategyV3
+inherits from SpotAwareStrategyV2 and returns v2's Decision unchanged when
+regime == "trending"; v2 builds the rationale string, so a v3 fire's
+rationale reads ``strategy=spot_aware_v2 mode=tier_restricted ...``. The
+strategy in effect is determined by deployment context (what's configured
+in .envrc when the runner starts), not by the rationale tag. Pass the
+correct ``--since-ts-ns`` for the deploy you want to watch.
 
 Idempotent by design: if the sentinel exists, exit 0 without doing
 anything. Safe to re-run (e.g. on VPS reboot).
@@ -35,7 +44,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
 import sys
 import time
 from collections.abc import Callable
@@ -44,23 +52,31 @@ from urllib import error as urllib_error
 from urllib import parse as urllib_parse
 from urllib import request as urllib_request
 
-V3_RATIONALE_RE = re.compile(r"\bstrategy=spot_aware_v3\b")
-
 DEFAULT_POLL_INTERVAL_S = 30.0
 DEFAULT_TIMEOUT_S = 86400.0  # 24h
 DEFAULT_SENTINEL = Path("state/phase-F-first-fire.json")
 
+# Why we don't filter by `strategy=spot_aware_v3` in the rationale:
+# SpotAwareStrategyV3 inherits from SpotAwareStrategyV2 and returns v2's
+# Decision object unchanged when regime == "trending". v2 builds the
+# rationale string; v3 never rewrites it. So a v3 fire's rationale reads
+# `strategy=spot_aware_v2 mode=tier_restricted ...`. The strategy actually
+# in effect at fire time is determined by deployment context (what was
+# configured in .envrc when the runner started), not by the rationale tag.
+# --since-ts-ns therefore IS the strategy filter: pass the deploy timestamp
+# of the strategy you care about; any kind=fired record at-or-after that
+# ns is by definition produced by that strategy.
 
-def find_first_v3_fire(
+
+def find_first_fire_after(
     decisions_dir: Path,
     since_ts_ns: int,
 ) -> dict[str, object] | None:
-    """Scan all JSONL in *decisions_dir* for the first kind=fired record
-    with strategy=spot_aware_v3 in rationale and decision_ts_ns >=
-    *since_ts_ns*. Returns the record or None.
+    """Return the first ``kind=fired`` record with
+    ``decision_ts_ns >= since_ts_ns``.
 
-    Cross-file scan; sorted by file stem so older days are scanned first
-    (decision_ts_ns filtering takes care of pre-since records).
+    No rationale inspection — strategy attribution is by deployment
+    context, not by the rationale string (see module-level comment).
     """
 
     for path in sorted(decisions_dir.glob("*.jsonl")):
@@ -78,11 +94,7 @@ def find_first_v3_fire(
                 ts = rec.get("decision_ts_ns")
                 if not isinstance(ts, int) or ts < since_ts_ns:
                     continue
-                rationale = rec.get("rationale")
-                if not isinstance(rationale, str):
-                    continue
-                if V3_RATIONALE_RE.search(rationale):
-                    return rec
+                return rec
     return None
 
 
@@ -94,7 +106,7 @@ def format_message(rec: dict[str, object], elapsed_s: float) -> str:
     ts_iso = time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime(ts_ns / 1e9))
     elapsed = f"{int(elapsed_s // 3600):d}h{int((elapsed_s % 3600) // 60):02d}m"
     return (
-        "Phase F: first spot_aware_v3 FIRE landed\n"
+        "Phase F: first post-cut FIRE landed (deployed strategy = spot_aware_v3)\n"
         f"  ts:        {ts_iso}\n"
         f"  decision:  {rec.get('decision_id', '?')}\n"
         f"  window_ts: {rec.get('window_ts', '?')}\n"
@@ -154,7 +166,9 @@ def main(
     sleep_fn = sleep_fn or time.sleep
     now_fn = now_fn or time.time
 
-    parser = argparse.ArgumentParser(description="Watch for first spot_aware_v3 FIRE")
+    parser = argparse.ArgumentParser(
+        description="Watch for first kind=fired record after --since-ts-ns"
+    )
     parser.add_argument("--decisions-dir", type=Path, default=Path("state/decisions"))
     parser.add_argument("--sentinel", type=Path, default=DEFAULT_SENTINEL)
     parser.add_argument(
@@ -200,7 +214,7 @@ def main(
     start = now_fn()
     deadline = start + args.timeout
     while True:
-        rec = find_first_v3_fire(args.decisions_dir, args.since_ts_ns)
+        rec = find_first_fire_after(args.decisions_dir, args.since_ts_ns)
         if rec is not None:
             elapsed = now_fn() - start
             msg = format_message(rec, elapsed)
@@ -225,7 +239,7 @@ def main(
 
         if now_fn() >= deadline:
             timeout_msg = (
-                f"Phase F watcher: no v3 fire after "
+                f"Phase F watcher: no fire after "
                 f"{args.timeout / 3600:.1f}h "
                 f"(since_ts_ns={args.since_ts_ns}). Soak may be too selective."
             )

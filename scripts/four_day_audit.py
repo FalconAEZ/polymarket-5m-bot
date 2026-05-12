@@ -47,6 +47,51 @@ from pathlib import Path
 STRATEGY_RE = re.compile(r"strategy=(\w+)(?:\s+mode=([\w_]+))?")
 
 
+@dataclass(frozen=True)
+class StrategyOverride:
+    """Pin every fired record at or after ``ts_ns`` to ``strategy``.
+
+    Needed because SpotAwareStrategyV3 inherits its rationale from
+    SpotAwareStrategyV2 (v3 calls super().on_event and returns v2's
+    Decision unchanged when regime == "trending"); v2 builds the
+    rationale string. So a v3 fire's rationale reads
+    ``strategy=spot_aware_v2 mode=tier_restricted ...`` and parsing that
+    rationale to attribute the strategy would mis-classify all post-cut
+    v3 fires as v2. This override mechanism lets the operator anchor
+    strategy attribution by deployment context (what was configured in
+    .envrc at the deploy time) rather than by self-tag.
+    """
+
+    ts_ns: int
+    strategy: str
+
+
+def _effective_strategy(
+    rationale: str,
+    decision_ts_ns: int,
+    overrides: list[StrategyOverride],
+) -> str:
+    """Return the strategy tag effective for a fired record.
+
+    Latest override with ``ts_ns <= decision_ts_ns`` wins. If no override
+    applies, fall back to parsing the rationale.
+    """
+
+    applicable = [o for o in overrides if o.ts_ns <= decision_ts_ns]
+    if applicable:
+        return max(applicable, key=lambda o: o.ts_ns).strategy
+    return _parse_strategy(rationale)
+
+
+def _parse_iso_to_ns(s: str) -> int:
+    """Parse an ISO 8601 timestamp to nanoseconds since epoch (assume UTC
+    if no tzinfo)."""
+    dt = datetime.fromisoformat(s)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return int(dt.timestamp() * 1e9)
+
+
 @dataclass
 class DayRow:
     """One row of the per-day audit table."""
@@ -97,8 +142,16 @@ def audit(
     decisions_dir: Path,
     since: date | None = None,
     days: int | None = None,
+    overrides: list[StrategyOverride] | None = None,
 ) -> list[DayRow]:
-    """Read decision logs and return one DayRow per UTC day with data."""
+    """Read decision logs and return one DayRow per UTC day with data.
+
+    *overrides* pins strategy attribution by deployment context (latest
+    override with ts_ns <= decision_ts_ns wins). If None or empty, strategy
+    is parsed from the rationale string of each fired record.
+    """
+
+    overrides = overrides or []
 
     files = sorted(decisions_dir.glob("*.jsonl"))
     if since is not None:
@@ -144,9 +197,9 @@ def audit(
         row.fires += 1
         if fr.get("fill") is not None:
             row.filled += 1
-        rationale = fr.get("rationale")
-        if isinstance(rationale, str):
-            row.strategy_counts[_parse_strategy(rationale)] += 1
+        rationale_raw = fr.get("rationale")
+        rationale = rationale_raw if isinstance(rationale_raw, str) else ""
+        row.strategy_counts[_effective_strategy(rationale, ts_ns_raw, overrides)] += 1
 
     for sr in settled_records:
         ts_ns_raw = sr.get("settled_ts_ns")
@@ -240,13 +293,37 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="only include the last N files (after --since filter)",
     )
+    parser.add_argument(
+        "--strategy-override",
+        action="append",
+        nargs=2,
+        metavar=("TS", "STRATEGY"),
+        default=[],
+        help=(
+            "Pin strategy attribution by deployment context. TS is an ISO 8601 "
+            "timestamp (assume UTC if no tzinfo); STRATEGY is the name (e.g. "
+            "'spot_aware_v3'). Latest override with ts_ns <= decision_ts_ns "
+            "wins; falls back to rationale parsing if no override applies. "
+            "May be passed multiple times. Required for v3-era audits because "
+            "v3 inherits its rationale from v2 (see module docstring)."
+        ),
+    )
     args = parser.parse_args(argv)
 
     if not args.decisions_dir.is_dir():
         sys.stderr.write(f"ERROR: {args.decisions_dir} is not a directory\n")
         return 2
 
-    rows = audit(args.decisions_dir, since=args.since, days=args.days)
+    overrides: list[StrategyOverride] = []
+    for ts_str, strat in args.strategy_override:
+        try:
+            ts_ns = _parse_iso_to_ns(ts_str)
+        except ValueError as e:
+            sys.stderr.write(f"ERROR: bad --strategy-override timestamp {ts_str!r}: {e}\n")
+            return 2
+        overrides.append(StrategyOverride(ts_ns=ts_ns, strategy=strat))
+
+    rows = audit(args.decisions_dir, since=args.since, days=args.days, overrides=overrides)
     sys.stdout.write(format_table(rows))
     return 0
 
