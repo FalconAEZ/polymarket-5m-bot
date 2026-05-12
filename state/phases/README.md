@@ -34,11 +34,13 @@ Chronological + status. Each phase has its own note when work begins; tags are p
 
 ## In progress / next
 
-- [[phase-F-architecture-audit|**Phase F**]] — architecture audit + convergence. 🟢 **Items 1 + 2 SHIPPED 2026-05-12 12:25:33 UTC** at `d1510bd`. Strategy default cut `spot_aware → spot_aware_v3`; ensemble + wide_fire + every_window shadow disabled via .envrc; rollback = single env flip (backup at `.envrc.phase-F-backup-20260512-122500`). Soak active. **Item 3 (48-72h soak audit) gates Phase 6 readiness review** — next session at +48h.
-- [[phase-16b-every-window-mode|Phase 16.B]] — **PAUSED** (router depends on LLM signal; cut from production via Phase F). Code intact; `EVERY_WINDOW_SHADOW=true` env commented. If revived, redesign as no-LLM router (W_DET=0.30, W_REG=0.30, W_TIER=0.20, W_KELLY=0.20).
-- [[phase-19-llm-async-precompute|Phase 19]] — **SHELVED**. Design doc complete; implementation deferred indefinitely (the 12s inline-await latency problem dissolves when the LLM is removed from the fire path per Phase F cut).
-- ~~Phase 17 (sizing modes scaffolding)~~ — **SUBSUMED by Phase 16.B** (paused).
-- ~~Phase 18 (Kelly sizing)~~ — **SUBSUMED by Phase 16.B** (paused).
+- [[phase-F-architecture-audit|Phase F]] — architecture audit + convergence. ✅ **CLOSED 2026-05-12** after 4 restarts. Final state: `STRATEGY=spot_aware_v2` (PHASE-F-4 pivot from v3 after 0 fires in 36 min). Soak underway. Phase F.3 audit superseded by Phase G full study.
+- [[phase-G-edge-discovery|**Phase G**]] — full edge-discovery deep dive. ✅ **CLOSED 2026-05-13** analytical-only. 635 fires audited, 17 dimensions, Kelly + Monte Carlo. Headline: tier 30-50% × |Δ|<5 is the winning cell v2 rejects. 629K PDF on operator's Desktop. Feeds Phase H.
+- [[phase-H-v2_1|**Phase H — v2.1 implementation**]]. 🟡 **H.1 + H.FINAL planning shipped 2026-05-13**. v2.1 = v2 + CH1-CH4 filter changes + Kelly + multi-fire + BankrollTracker. 22 tests + 14 past-incident defenses specified. **H.2 code work next session** per `phase-prompts/phase-H-2-code-v2_1-2026-05-13.txt`. H.5 deploy + H.6 7-day soak gate follow.
+- [[phase-16b-every-window-mode|Phase 16.B]] — **PAUSED** (router depends on LLM signal; cut from production via Phase F).
+- [[phase-19-llm-async-precompute|Phase 19]] — **SHELVED** (the 12s inline-await latency problem dissolves when LLM exits the fire path per Phase F cut).
+- ~~Phase 17 (sizing modes scaffolding)~~ — **SUPERSEDED by Phase H** (Kelly + multi-fire + BankrollTracker ship as part of v2.1).
+- ~~Phase 18 (Kelly sizing)~~ — **SUPERSEDED by Phase H** (CH5-CH6 in v2.1 ship).
 
 ## Master-plan phases 16-25 (planned)
 
