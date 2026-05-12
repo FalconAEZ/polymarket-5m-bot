@@ -415,6 +415,74 @@ NOTE: the `--strategy-override` flag is still needed because the single pre-PHAS
 
 VPS HEAD: `7aaf337`. Bot: spot_aware_v3 at validated defaults with v3-tagging fix loaded. Watcher: armed for first v3 fire post-15:06:59 UTC. Dashboard: $1006.01 bankroll, no incidents, no halt.
 
+## PHASE-F-4 honest-pushback pivot: v3 → v2
+
+After 36 min on v3 (15:06:59 → 15:42:38 UTC) with 0 fires, operator surfaced frustration: "after 28 minutes which should have fired 4 trades... where it was and where we are now and give me a realistic reply!"
+
+Pulled the actual Obsidian history to ground the response:
+
+**The "May 9 wild fire" reframe** — that day was running `SpotAwareStrategy` with `aggressive_mode=1` per `runbooks/decisions/aggressive-mode-2026-05-09.md` which bypasses Δ_min, Δ_max, and EV gates. Aggressive mode on May 8 produced a LOSS of $20 on 39 fires (35.7% WR). Aggressive is +95% variance, not edge.
+
+**The proven good day** was **May 10 with spot_aware_v2** (NOT aggressive): 184 fires, 52.4% WR, +$46.34 PnL. v2 has the standard delta/EV/tier gates intact, no LLM, no regime gate.
+
+**Why v3 fired ~zero so far** — `runbooks/gate-evidence/regime-classifier-validation.txt` shows v3's regime gate only passes ~6% of windows (the trending bucket: 19 of 299 fires examined). Expected v3 rate: 9 fires/day = 1 fire per 160 minutes. 0 fires in 36 min is the statistical median.
+
+**Empirical honest pushback:**
+- v3's regime gate has 19-trade backing — small sample
+- v2 has 184-trade May 10 production data — solid sample
+- v2 matches operator's "fire roughly every window" mental model + keeps Phase F cut intact
+
+### Deploy (PHASE-F-4)
+
+- VPS `.envrc`: `STRATEGY=spot_aware_v3 → STRATEGY=spot_aware_v2` (PHASE-F-4 sed marker)
+- Backup at `.envrc.phase-F-4-pre-v2-backup-20260512-154207` (allows revert TO v3)
+- `DEPLOY_TS_UNIX_4 = 1778600528` (15:42:08 UTC pre-restart)
+- ActiveEnterTimestamp: `Tue 2026-05-12 15:42:38 UTC` (canonical v2 soak start, epoch 1778600558)
+- MainPID: `585607 → 593311`, NRestarts=0
+- Startup log: `active strategy: spot_aware_v2` (no regime detector line — v2 doesn't have one)
+- All defense layers operational (instant-settle, orphan-recovery, post-hoc gamma retry)
+- 0 Anthropic calls (LLM still off the fire path)
+
+### First v2 fire (45 seconds after deploy)
+
+```
+[15:43:23] kind=fired
+  decision_id: 943ff13242864338bf4de3b2f8aff3b7
+  window_ts:   1778600400 (15:40 UTC window)
+  side:        UP
+  size:        $5.00
+  limit:       0.23
+  rationale:   strategy=spot_aware_v2 mode=tier_restricted delta_bps=+5.03
+               p_win=0.400 ev=+0.1650 ttl=30s side=UP
+  fill:        TRUE (taker fill at limit)
+```
+
+PHASE-F-3 watcher (PID 585690) caught this fire, wrote sentinel, sent Telegram alert, exited (single-shot design). Sentinel archived as `state/phase-F-first-fire.json.phase-F-3-fired-at-1778600603`.
+
+### CANONICAL SOAK CLOCK (PHASE-F-4 deploy, replaces PHASE-F-3)
+
+- Start: **2026-05-12 15:42:38 UTC** (epoch 1778600558)
+- +24h: 2026-05-13 15:42:38 UTC
+- +48h F.3 verdict: 2026-05-14 15:42:38 UTC
+
+### Expected v2 profile (May 10 baseline)
+
+- ~184 fires/day = ~1 fire per 8 minutes
+- ~52.4% WR
+- ~+$46/day PnL (~+$0.25/trade)
+- Fill rate ~55% (the rest go Z = no fill = $0)
+
+### Rollback path
+
+`cp .envrc.phase-F-4-pre-v2-backup-20260512-154207 .envrc && sudo systemctl restart bot-staging.service` returns to v3 + regime gate.
+
+### Session totals after PHASE-F-4
+
+- **4 intentional restarts today** (cut 12:25, PHASE-F-2 14:27, PHASE-F-3 15:06, PHASE-F-4 15:42)
+- 15+ commits on `claude/jovial-hermann-7e103f`
+- Bot now firing v2 at expected rate
+- Soak clock at 0 (just restarted); F.3 verdict 48h out
+
 ## What did NOT happen this session (per prompt §"WHAT THIS PHASE EXPLICITLY DOES NOT DO")
 
 - No code deletions. Ensemble + wide_fire + router code intact; reachable via env flip.

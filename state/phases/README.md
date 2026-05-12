@@ -26,7 +26,7 @@ Chronological + status. Each phase has its own note when work begins; tags are p
 
 ## Live operation
 
-- **bot-staging.service** active since **2026-05-12 15:06:59 UTC** (PHASE-F-3 — v3 source rationale-rewrite deploy; canonical soak clock) on VPS at HEAD `7aaf337`. MainPID `585607`; orphan-recovery primed at startup. v3 fires now self-tag as `strategy=spot_aware_v3 mode=trending_only ... regime=trending`.
+- **bot-staging.service** active since **2026-05-12 15:42:38 UTC** (PHASE-F-4 — honest-pushback pivot to v2 after v3 fired 0 in 36 min; canonical soak clock reset) on VPS at HEAD `af53490`. MainPID `593311`; orphan-recovery primed at startup. **Strategy = `spot_aware_v2`** (no regime gate; matches May 10's proven +$46-day profile). First v2 fire at 15:43:23 UTC (45 sec after deploy). Expected ~184 fires/day, ~52% WR, ~$0.25/trade.
 - **dashboard-server.service** (v3 FastAPI + React) active since **2026-05-11 06:25:15 UTC** on VPS at HEAD `f0ee20d`. Bound to `127.0.0.1:8505`; access via SSH local-port-forward. `/api/state.scenarios` returns 5-row bankroll projection. `decisions_truth_source=polymarket`.
 - Strategy: **`spot_aware_v3`** (regime-detector gate, no LLM wrapper). Cut 2026-05-12 per [[phase-F-architecture-audit]].
 - Pre-cut 5-day audit (truth-corrected): ensemble+wide_fire era (May 11-12) at WR 38-44% / −$0.58/trade vs spot_aware family (May 9-10) at WR 52% / +$0.20/trade. The +4.1pp shadow uplift did not reproduce in gate mode.

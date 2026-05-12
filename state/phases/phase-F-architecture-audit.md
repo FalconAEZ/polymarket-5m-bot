@@ -32,9 +32,14 @@ Accept the prompt's audit (`phase-prompts/phase-F-final-stage-architecture-audit
 - **PHASE-F-3 final restart** — v3 source rationale-rewrite deploy 15:06:59 UTC (MainPID `585607`, third restart same day). ✅
   - VPS pulled `5fedb9d → 7aaf337` (3 commits): `74f7541` v3 self-tag fix + `f34cad1` stability sweep + `7aaf337` vault refresh
   - v3 fires now write `strategy=spot_aware_v3 mode=trending_only ... regime=trending` directly (no more rationale-inheritance bug)
-  - Watcher restarted as PID `585690` with `--since-ts-ns 1778598419000000000`
-  - **Canonical soak clock starts at 2026-05-12 15:06:59 UTC** (replaces all earlier baselines)
-  - +24h watcher TIMEOUT: 2026-05-13 15:06:59 UTC; +48h F.3 verdict: 2026-05-14 15:06:59 UTC
+- **PHASE-F-4 honest-pushback pivot v3→v2** — 15:42:38 UTC (MainPID `593311`, **fourth restart**). ⚠️
+  - After 36 min on v3 (0 fires), operator surfaced frustration; pulled Obsidian history; reframed: May 9's "wild fire" was aggressive-mode (high variance, May 8 LOST $20), May 10's v2 was the actually-proven good day (+$46 on 184 fires)
+  - `STRATEGY=spot_aware_v3 → STRATEGY=spot_aware_v2`; backup `.envrc.phase-F-4-pre-v2-backup-20260512-154207`
+  - **First v2 fire at 15:43:23 UTC** — 45 sec after deploy. UP side, $5, delta_bps=+5.03, ev=+0.165, filled
+  - PHASE-F-3 watcher fired Telegram + exited as designed
+  - **NEW canonical soak clock: 2026-05-12 15:42:38 UTC**
+  - +24h: 2026-05-13 15:42:38 UTC; +48h F.3 verdict: 2026-05-14 15:42:38 UTC
+  - Expected v2 profile (May 10 baseline): ~184 fires/day, ~52% WR, ~+$46/day
 
 ## Items pending
 
