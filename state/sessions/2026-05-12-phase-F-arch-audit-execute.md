@@ -333,10 +333,36 @@ Three intentional state changes this session, all reversible:
 2. **PHASE-F-2 EV_min tighten** (14:27:13 UTC, MainPID 584489) — `SPOT_AWARE_EV_MIN_DOLLARS=0.003` → v3 default 0.005. Backup: `.envrc.phase-F-2-backup-20260512-142703`.
 3. **Audit tool shipped** — `scripts/four_day_audit.py` + 16 tests + frozen baseline at `runbooks/gate-evidence/phase-F-baseline.txt`.
 
-10 commits on `claude/jovial-hermann-7e103f`:
-`d1510bd` → `1123602` → `ca4336a` → `5b1ab54` → `5801c41` → `1a6ddf8` → (PHASE-F-2 close-out commit forthcoming)
+11 commits on `claude/jovial-hermann-7e103f`:
+`d1510bd` → `1123602` → `ca4336a` → `5b1ab54` → `5801c41` → `1a6ddf8` → `c196e43` (PHASE-F-2 close-out) → `c30e5ce` (first-fire watcher).
 
-All gates green. Soak underway at validated v3 defaults.
+## First-fire watcher launched (commit `c30e5ce`)
+
+Defensive operational tool for the soak — `scripts/watch_first_v3_fire.py`. 17 tests, stdlib-only, idempotent via sentinel file, direct-to-Telegram (decoupled from the bot's Redis alerter so it keeps working if the bot stops).
+
+### Launched on VPS
+
+- PID 584876, running on VPS since 2026-05-12 ~14:34 UTC
+- Args: `--since-ts-ns 1778596033000000000 --timeout 86400 --poll-interval 30`
+- Polls `state/decisions/*.jsonl` every 30s for first `kind=fired` record with `strategy=spot_aware_v3` in rationale, where `decision_ts_ns >= PHASE-F-2 deploy time`
+- On first match: sends plain-text Telegram message (window, side, size, rationale, elapsed) + writes sentinel at `state/phase-F-first-fire.json` + exits 0
+- On 24h timeout: sends TIMEOUT Telegram + writes TIMEOUT sentinel + exits 1 (operator sees an early "v3 too selective" signal even if no fire lands)
+- Process started via `nohup bash -c 'set -a; source .envrc; set +a; exec python3 -u scripts/watch_first_v3_fire.py ...'`; survives SSH disconnect
+
+### Why this matters for the soak
+
+- F.3 audit fires at +48h regardless. The watcher gives operator **near-real-time signal** when v3 actually starts producing data (most likely 1-3 fires in the first 24h based on regime-selectivity profile).
+- If no fire in 24h, operator gets a Telegram TIMEOUT alert — actionable signal that the soak may need to extend, or that EV_min needs further tuning, or that something is wrong upstream of v3.
+- Idempotent: safe to re-run (e.g., after VPS reboot) — sentinel-presence check at startup is a no-op exit.
+
+### To kill the watcher (if needed)
+
+```
+ssh -i $HOME/Downloads/LightsailDefaultKey-eu-west-1.pem -p 2222 ops@108.132.51.116 \
+    'pkill -f "watch_first_v3_fire.py" && rm -f /home/ops/polymarket-5m-bot/state/phase-F-first-fire.json'
+```
+
+All gates green. Soak underway at validated v3 defaults. Watcher armed.
 
 ## What did NOT happen this session (per prompt §"WHAT THIS PHASE EXPLICITLY DOES NOT DO")
 
