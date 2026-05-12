@@ -26,7 +26,7 @@ Chronological + status. Each phase has its own note when work begins; tags are p
 
 ## Live operation
 
-- **bot-staging.service** active since **2026-05-12 12:25:33 UTC** (Phase F arch-audit cut deploy) on VPS at HEAD `d1510bd`. MainPID `581764`; orphan-recovery primed at startup.
+- **bot-staging.service** active since **2026-05-12 14:27:13 UTC** (Phase F arch-audit cut → PHASE-F-2 EV_min tighten) on VPS at HEAD `1a6ddf8`. MainPID `584489`; orphan-recovery primed at startup.
 - **dashboard-server.service** (v3 FastAPI + React) active since **2026-05-11 06:25:15 UTC** on VPS at HEAD `f0ee20d`. Bound to `127.0.0.1:8505`; access via SSH local-port-forward. `/api/state.scenarios` returns 5-row bankroll projection. `decisions_truth_source=polymarket`.
 - Strategy: **`spot_aware_v3`** (regime-detector gate, no LLM wrapper). Cut 2026-05-12 per [[phase-F-architecture-audit]].
 - Pre-cut 5-day audit (truth-corrected): ensemble+wide_fire era (May 11-12) at WR 38-44% / −$0.58/trade vs spot_aware family (May 9-10) at WR 52% / +$0.20/trade. The +4.1pp shadow uplift did not reproduce in gate mode.

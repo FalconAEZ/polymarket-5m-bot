@@ -25,7 +25,11 @@ Accept the prompt's audit (`phase-prompts/phase-F-final-stage-architecture-audit
   - `DEFAULT_STRATEGY_NAME` flipped to `spot_aware_v3` in `scripts/run_paper.py`
   - VPS `.envrc` updated (4 surgical edits, `# PHASE-F 2026-05-13` markers, rollback = one-line revert)
   - Backup at `.envrc.phase-F-backup-20260512-122500`
-  - +5min check: see session note
+  - +5min + +30min checks: GREEN (see session note)
+- **PHASE-F-2 follow-up** — EV_min tightening 14:27:13 UTC (MainPID `584489`, second restart same day). ✅
+  - `SPOT_AWARE_EV_MIN_DOLLARS=0.003` commented; v3 reverts to default 0.005 (matches regime-classifier validation evidence)
+  - Backup at `.envrc.phase-F-2-backup-20260512-142703`
+  - Canonical soak clock now starts at 14:27:13 UTC (not the original 12:25:33)
 
 ## Items pending
 

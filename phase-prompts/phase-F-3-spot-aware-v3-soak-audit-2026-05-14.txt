@@ -17,11 +17,19 @@ branch `claude/jovial-hermann-7e103f`. The cut:
                 EVERY_WINDOW_SHADOW=true     → commented
                 (backup at .envrc.phase-F-backup-20260512-122500)
 
+PHASE-F-2 follow-up restart 2026-05-12 14:27:13 UTC at MainPID 584489:
+  • SPOT_AWARE_EV_MIN_DOLLARS=0.003 → commented (v3 now at default 0.005)
+  • Resolves the "KNOWN DIVERGENCE" section below
+  • Backup at .envrc.phase-F-2-backup-20260512-142703
+
 VPS state at hand-off (verify before driving):
 
-  bot-staging.service active since 2026-05-12 12:25:33 UTC, MainPID 581764
+  bot-staging.service active since 2026-05-12 14:27:13 UTC (PHASE-F-2), MainPID 584489
   dashboard-server.service active since 2026-05-11 06:25:15 UTC
-  HEAD on VPS: should be `1123602` or later (close-out commits pushed)
+  HEAD on VPS: should be `1a6ddf8` or later (full session close-out pushed)
+  CANONICAL SOAK CLOCK START: 2026-05-12 14:27:13 UTC
+    → +24h check at 2026-05-13 14:27 UTC
+    → +48h verdict at 2026-05-14 14:27 UTC
 
 Pre-flight (run BEFORE driving):
 
@@ -59,36 +67,16 @@ EXTEND (decided by operator if data is between PROMOTE and ROLLBACK):
     (back to v3 default 0.005) — see "EV_min divergence" below
 
 ================================================================================
-KNOWN DIVERGENCE TO RESOLVE THIS SESSION
+EV_MIN DIVERGENCE — RESOLVED 2026-05-12 (PHASE-F-2)
 ================================================================================
 
-`SPOT_AWARE_EV_MIN_DOLLARS=0.003` is still set on the VPS .envrc. It was
-added 2026-05-10 for the wide_fire shadow ("# reverted 2026-05-10 for
-Phase 5 wide-fire shadow"). It overrides v3's default 0.5¢ floor → 0.3¢.
-Phase F prompt's `From → To` block did not name this var, so it was left
-set per verbatim execution. The bot's startup log explicitly warns:
-
-  spot_aware_v3 overrides: {'ev_min_dollars_per_share': 0.003}
-
-The regime-classifier validation evidence (runbooks/gate-evidence/regime-
-classifier-validation.txt: trending WR 70.59%) was collected on v3
-defaults. The soak is running a LOOSER-EV-than-tested v3.
-
-DECISION FRAMEWORK for this session:
-
-(a) If 24h-rolling WR >= 0.55 and fires_per_day in [50, 150]:
-    keep EV_min=0.003 (it's not breaking anything; volume is healthy).
-    Note in F.4 prompt.
-
-(b) If WR in [0.45, 0.55) and fires_per_day < 50:
-    v3 is too selective. EV_min=0.003 is the LOOSER setting; tightening
-    to 0.005 would worsen selectivity. Don't change EV_min; consider
-    extending soak instead.
-
-(c) If WR < 0.45 OR fires_per_day > 200:
-    v3 is over-firing (the looser EV gate is letting bad trades through).
-    Comment out SPOT_AWARE_EV_MIN_DOLLARS (revert to v3 default 0.005).
-    Re-soak 48h. Document as part of ROLLBACK or EXTEND.
+The `SPOT_AWARE_EV_MIN_DOLLARS=0.003` override was tightened back to v3's
+default 0.005 in the PHASE-F-2 restart at 14:27:13 UTC. Startup log on
+the PHASE-F-2 process no longer prints the override warning — v3 is at
+full validated defaults. The canonical soak data for the F.3 verdict
+starts from PHASE-F-2 deploy (14:27:13 UTC), not from the original cut
+(12:25:33 UTC). The 2-hour pre-tightening window saw zero v3 fires so
+the data loss is nil.
 
 ================================================================================
 DATA-GATHERING — script is committed; just run it

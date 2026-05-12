@@ -247,6 +247,97 @@ The two cancel to ~zero. The empirical case for the Phase F cut is the **8.8pp W
 
 8 commits total this session: `d1510bd` (default flip) → `1123602` (close-out docs) → `ca4336a` (F.3 prompt) → `5b1ab54` (+30min results) → `5801c41` (audit tool + baseline). All on `claude/jovial-hermann-7e103f`, all pushed to origin.
 
+## PHASE-F-2: EV_min tighten (second restart, operator-directed)
+
+Operator decision: tighten `SPOT_AWARE_EV_MIN_DOLLARS=0.003` to v3's default 0.005 to remove the divergence flagged in the +5min check. Tradeoff: a second intentional restart in the same day on the soak (per `feedback_defer_deploys_to_natural_restart` we usually bundle, but the EV-min divergence affected the soak's validity, so it warranted breaking the bundle rule).
+
+### Deploy (PHASE-F-2)
+
+- `DEPLOY_TS_UNIX_2 = 1778596023` (= 2026-05-12 14:27:03 UTC)
+- VPS `.envrc`: surgical sed comment on `SPOT_AWARE_EV_MIN_DOLLARS=0.003` line with `# PHASE-F-2 2026-05-12: tightened to v3 default (0.005) per audit flag` marker. Rollback = uncomment.
+- Backup at `.envrc.phase-F-2-backup-20260512-142703` (separate from the original `.envrc.phase-F-backup-20260512-122500` so both rollback paths stay reachable)
+- `sudo systemctl restart bot-staging.service`
+- MainPID `581764 → 584489`, NRestarts=0, ActiveEnterTimestamp `Tue 2026-05-12 14:27:13 UTC`
+- bot-staging + dashboard both `active`
+
+### Confirmation that the override is now off
+
+Startup log on the PHASE-F-2 process:
+```
+2026-05-12 14:27:13 INFO regime detector: 5m=300s / 10m=600s thresholds trending>1.2 chop<0.8
+2026-05-12 14:27:13 INFO active strategy: spot_aware_v3
+```
+
+Compare to the original (12:25:34) startup which had this line:
+```
+2026-05-12 12:25:34 WARNING spot_aware_v3 overrides: {'ev_min_dollars_per_share': 0.003}
+```
+
+The override warning is **gone** — v3 is now at full validated defaults (EV_min=0.005, $0.5¢ floor matching the regime-classifier validation evidence).
+
+### Soak clock effectively resets
+
+The 2 hours of v3 data we'd accumulated since the original cut (12:25:33 → 14:27:13) was at the looser EV setting. v3 fired zero windows in that period — statistically consistent at either EV setting since regime != "trending" was the dominant filter — but the canonical soak data for the F.3 verdict should start from PHASE-F-2 deploy at **2026-05-12 14:27:13 UTC**.
+
+Updated next checkpoint:
+- +5min: see below (background verify fires at 14:32 UTC)
+- +24h: **2026-05-13 14:27 UTC**
+- +48h: **2026-05-14 14:27 UTC** (Phase F.3 audit session)
+
+### Why tighten if v3 hadn't fired anyway?
+
+Two reasons:
+
+(1) **Validation fidelity.** The regime-classifier validation (runbooks/gate-evidence/regime-classifier-validation.txt) was collected on v3 defaults. Running the soak at EV_min=0.003 means we're testing v3-with-a-known-deviation, not v3-as-validated. A clean soak needs a clean baseline.
+
+(2) **Phase F.3 gate fairness.** The 50-fires/day PROMOTE threshold in the Phase F prompt was an operator estimate of v3's selectivity at default settings. Running at 0.003 (40% looser) would have biased fires upward, possibly meeting the volume gate for the wrong reason. Tightening aligns runtime with gate expectation.
+
+### PHASE-F-2 +5min check — RESULTS (captured 2026-05-12 14:32:13 UTC, +5:10 since deploy)
+
+**GREEN on every criterion:**
+
+| Check | Result |
+|-------|--------|
+| Service status | active / running, MainPID 584489, NRestarts=0 |
+| ActiveEnterTimestamp | unchanged: `Tue 2026-05-12 14:27:13 UTC` |
+| STRATEGY env | `spot_aware_v3` (parallel-session-reset guard pass) |
+| EV_min line | commented with PHASE-F-2 marker; no active override |
+| Errors since deploy | `-- No entries --` |
+| Anthropic API calls | 0 (LLM still off the fire path) |
+| Background loops | warmer + orphan-recovery on 5min cadence |
+| /api/state incidents | 0 |
+| /api/state halt | False |
+| /api/state n_decisions_total | 612 (+1 from +30min check — most likely a late pre-cut settle or a post-hoc gamma correction; fire-rate trip wire still 0/d so it isn't a v3 FIRE) |
+
+**Most important confirmation — the override warning is GONE.** Compare the two startup logs:
+
+Original cut (12:25:34):
+```
+WARNING polymarket_bot.scripts.run_paper: spot_aware_v3 overrides: {'ev_min_dollars_per_share': 0.003}
+INFO polymarket_bot.scripts.run_paper: active strategy: spot_aware_v3
+```
+
+PHASE-F-2 restart (14:27:13):
+```
+INFO polymarket_bot.scripts.run_paper: regime detector: 5m=300s / 10m=600s thresholds trending>1.2 chop<0.8
+INFO polymarket_bot.scripts.run_paper: active strategy: spot_aware_v3
+```
+
+No override line in the second. **v3 is now at full validated defaults (EV_min=0.005).** Canonical soak data for the F.3 verdict begins **2026-05-12 14:27:13 UTC**.
+
+### Session-final state (after PHASE-F-2)
+
+Three intentional state changes this session, all reversible:
+
+1. **Cut** (12:25:33 UTC, MainPID 581764) — ensemble + wide_fire → spot_aware_v3. Backup: `.envrc.phase-F-backup-20260512-122500`.
+2. **PHASE-F-2 EV_min tighten** (14:27:13 UTC, MainPID 584489) — `SPOT_AWARE_EV_MIN_DOLLARS=0.003` → v3 default 0.005. Backup: `.envrc.phase-F-2-backup-20260512-142703`.
+3. **Audit tool shipped** — `scripts/four_day_audit.py` + 16 tests + frozen baseline at `runbooks/gate-evidence/phase-F-baseline.txt`.
+
+10 commits on `claude/jovial-hermann-7e103f`:
+`d1510bd` → `1123602` → `ca4336a` → `5b1ab54` → `5801c41` → `1a6ddf8` → (PHASE-F-2 close-out commit forthcoming)
+
+All gates green. Soak underway at validated v3 defaults.
+
 ## What did NOT happen this session (per prompt §"WHAT THIS PHASE EXPLICITLY DOES NOT DO")
 
 - No code deletions. Ensemble + wide_fire + router code intact; reachable via env flip.
