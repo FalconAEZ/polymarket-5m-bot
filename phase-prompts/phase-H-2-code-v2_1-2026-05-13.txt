@@ -1,0 +1,322 @@
+Subject: Phase H.2 — Ship v2.1 code (strategy + Kelly + multi-fire + BankrollTracker)
+         Source of truth: pdfs/PHASE_H_V2_1_FINAL_IMPLEMENTATION_SPEC.pdf
+         Companion: pdfs/PHASE_H_v2_1_IMPLEMENTATION.pdf, pdfs/PHASE_G_EDGE_DISCOVERY.pdf
+         The 22-test surface in §9 of the spec is mandatory before deploy.
+
+================================================================================
+STATE AT HAND-OFF (verify before driving)
+================================================================================
+
+VPS:
+  bot-staging.service active since 2026-05-12 15:42:38 UTC (PHASE-F-4)
+  STRATEGY=spot_aware_v2 with EV_min default, no Kelly, single-fire/window
+  HEAD on VPS: ef31746 or later (Phase G + Phase H docs all pushed)
+
+Branch:  claude/jovial-hermann-7e103f
+HEAD:    ef31746 — feat(phase-H.FINAL): engineering spec PDF
+Recent commits (yesterday's session):
+  d1510bd → ... → ef31746 (15+ commits: Phase F cut chain + Phase G + Phase H plans)
+
+Pre-flight (run BEFORE driving):
+  ssh -i $HOME/Downloads/LightsailDefaultKey-eu-west-1.pem -p 2222 ops@108.132.51.116 \
+    'systemctl is-active bot-staging.service dashboard-server.service; \
+     cd /home/ops/polymarket-5m-bot && git rev-parse --short HEAD; \
+     grep ^export\ STRATEGY .envrc'
+
+  Expected: active / active / ef31746-or-later / spot_aware_v2
+
+================================================================================
+PRE-WORK — read the spec (5-10 min, REQUIRED)
+================================================================================
+
+Open the spec PDF first:
+  pdfs/PHASE_H_V2_1_FINAL_IMPLEMENTATION_SPEC.pdf   (39K, 18 sections)
+  ALSO at ~/Desktop/PHASE_H_V2_1_FINAL_IMPLEMENTATION_SPEC.pdf
+
+Critical sections for H.2 code work:
+  §3 — Class definition (exact constructor + _maybe_fire body)
+  §4 — KellyConfig dataclass (exact code)
+  §5 — BankrollTracker in PaperRunner (recovery from JSONL)
+  §6 — Multi-fire PaperRunner refactor (singular → list)
+  §7 — Rationale rewrite (self-tagging — avoid v3 inheritance bug)
+  §9 — 22-test surface (each test name + assertion)
+  §14 — Past-incident defense matrix
+  §17 — Honest pushback (engineering risks)
+
+Reference Phase G PDF for the WHY behind each filter change.
+
+================================================================================
+SESSION SOAK CHECK (before code work)
+================================================================================
+
+The bot has been running v2 (PHASE-F-4) for ~18+ hours by session start.
+First action: pull fresh JSONL + run the audit to see what v2 actually produced.
+
+  scp -i $HOME/Downloads/... -P 2222 ops@108.132.51.116:\
+    /home/ops/polymarket-5m-bot/state/decisions/2026-05-{12,13}.jsonl \
+    state/decisions/
+
+  uv run python -u scripts/four_day_audit.py
+  uv run python -u scripts/four_day_audit.py \
+    --strategy-override "2026-05-12T15:42:38+00:00" "spot_aware_v2"
+
+Read the v2 production WR:
+  - If WR ≥ 52% on n ≥ 30: v2 is performing as projected; v2.1 deployment continues
+  - If WR ∈ [45%, 52%): v2 is marginal; v2.1 should help via cell exploitation
+  - If WR < 45%: STOP — investigate before adding Kelly amplification
+
+  Also check: dropped_records (should be 0), Anthropic API calls (should be 0).
+
+================================================================================
+OPERATOR SIGN-OFF REQUIRED (Q1-Q5 from spec §16)
+================================================================================
+
+Before H.2 code starts, operator must confirm OR override:
+
+  Q1. Hour gate?           default: NO (sample too thin)
+  Q2. Regime gate?         default: A — no gate (start simple)
+  Q3. Multi-fire cap?      default: 2 per window
+  Q4. Kelly multiplier?    default: 0.10× (smoother trajectory)
+  Q5. Live promotion at?   default: $2k (locked decision #12)
+
+  All defaults → ship code as specified.
+  Override any → adjust env-var defaults only; code stays parameterized.
+
+OPERATOR SIGN-OFF GATE: prompt does NOT proceed to code until operator
+replies 'go with defaults' or 'go with overrides: Q3=3 Q4=0.25 ...'.
+
+================================================================================
+THE WORK — six items in strict order (estimated 2-3h)
+================================================================================
+
+------------------------------------------------------------------------
+ITEM H.2.0 — Design doc lock (~5 min, anti-vibe rule #1)
+------------------------------------------------------------------------
+  Write: design/spot_aware_v2_1.md (~3 pages)
+    - Inheritance: v2.1 extends v2 (not v3)
+    - Filter changes (CH1-CH4) with data citations
+    - Kelly sizing (CH5-CH6) with KellyConfig signature
+    - Multi-fire (CH7-CH8) with PaperRunner refactor note
+    - Test surface reference (spec §9)
+    - Rollback path (spec §15)
+  Commit as standalone "design lock" before any code lands.
+
+------------------------------------------------------------------------
+ITEM H.2.1 — KellyConfig + tests (~20 min)
+------------------------------------------------------------------------
+  File: src/polymarket_bot/strategies/kelly_config.py (~50 LOC, spec §4)
+  Tests: tests/strategies/test_kelly_config.py (5 tests, spec §9.1)
+  Run: uv run pytest tests/strategies/test_kelly_config.py -q
+  Expected: 5/5 green
+
+------------------------------------------------------------------------
+ITEM H.2.2 — BankrollTracker + tests (~30 min)
+------------------------------------------------------------------------
+  Edit: src/polymarket_bot/_paper/runner.py (add BankrollTracker dataclass
+        + replay-from-JSONL on startup, spec §5.2-5.3)
+  Tests: tests/paper/test_bankroll_tracker.py (4 tests, spec §9.5)
+  Run: uv run pytest tests/paper/test_bankroll_tracker.py -q
+  Expected: 4/4 green
+
+  KEY: BankrollTracker.apply_correction must handle Phase 15.5
+  settled_correction overlay records (Section 5.3, defense matrix L11).
+
+------------------------------------------------------------------------
+ITEM H.2.3 — _RunnerState multi-fire refactor + tests (~30 min)
+------------------------------------------------------------------------
+  Edit: src/polymarket_bot/_paper/runner.py (singular pending_decision
+        → pending_decisions: list, backward-compat property, spec §6)
+  Tests: tests/paper/test_runner_multi_fire.py (~5 regression tests)
+    - test_v2_still_caps_at_one_per_window (backward-compat)
+    - test_v2_1_two_pending_decisions_per_window
+    - test_v2_1_third_decision_dropped_with_log
+    - test_settle_loop_iterates_all_pending
+    - test_pending_decision_property_returns_first
+  Run: uv run pytest tests/paper/test_runner_multi_fire.py -q
+  Expected: 5/5 green
+  Run: uv run pytest tests/  (FULL regression — v2/v3/wide_fire suites stay green)
+  Expected: 553+ tests green (no regression)
+
+  KEY: refactor preserves the asset_id-keyed state pattern from
+  project_per_side_state_pollution_pattern memory.
+
+------------------------------------------------------------------------
+ITEM H.2.4 — SpotAwareStrategyV2_1 + tests (~45 min)
+------------------------------------------------------------------------
+  File: src/polymarket_bot/strategies/spot_aware_v2_1.py (~150 LOC, spec §3)
+  Tests: tests/strategies/test_spot_aware_v2_1.py (13 tests, spec §9.2-9.4)
+  Run: uv run pytest tests/strategies/test_spot_aware_v2_1.py -q
+  Expected: 13/13 green
+
+  KEY: rationale rewrite (spec §7.1) must self-tag as 'spot_aware_v2_1'
+  (avoid v3 inheritance bug — defense matrix L1).
+
+------------------------------------------------------------------------
+ITEM H.2.5 — Strategy dispatch in run_paper.py (~10 min)
+------------------------------------------------------------------------
+  Edit: scripts/run_paper.py (spec §11):
+    - Add `if name == 'spot_aware_v2_1':` branch in _build_strategy
+    - Read KELLY_MULT, MULTI_FIRE_CAP, KELLY_MAX_BET_ABS env vars
+    - Wire bankroll_getter to runner._bankroll.current in main()
+    - Add STRATEGY=spot_aware_v2_1 to the help text comment
+  Verify: `make verify` exits 0 (lint + mypy + tests)
+
+------------------------------------------------------------------------
+ITEM H.2.6 — Commit + push (~5 min)
+------------------------------------------------------------------------
+  Commit message structure:
+    feat(phase-H.2): ship v2.1 strategy + Kelly + multi-fire + BankrollTracker
+
+    Per pdfs/PHASE_H_V2_1_FINAL_IMPLEMENTATION_SPEC.pdf §3-9.
+
+    Files:
+      NEW src/polymarket_bot/strategies/spot_aware_v2_1.py (~150 LOC)
+      NEW src/polymarket_bot/strategies/kelly_config.py (~50 LOC)
+      EDIT src/polymarket_bot/_paper/runner.py (BankrollTracker + multi-fire)
+      EDIT scripts/run_paper.py (strategy dispatch)
+      NEW tests/* (22 tests across 4 files)
+      NEW design/spot_aware_v2_1.md (locked design doc)
+
+    All filter changes data-backed by Phase G analysis.
+    All past-incident defenses (matrix §14) preserved.
+
+    NOT YET DEPLOYED to VPS. That's Phase H.5 (separate session or
+    same session if context permits + operator approval).
+
+================================================================================
+DEPLOYMENT (PHASE H.5) — only if context + operator allow
+================================================================================
+
+Spec §12 has the exact SSH command sequence (modeled on PHASE-F-4 today).
+
+Order:
+  1. Backup .envrc (PHASE-H-pre-v2_1-backup-YYYYMMDD-HHMMSS)
+  2. sed STRATEGY=spot_aware_v2 → STRATEGY=spot_aware_v2_1
+  3. Append KELLY_MULT=0.10, MULTI_FIRE_CAP=2, PMB_STARTING_BANKROLL=$current
+  4. Capture DEPLOY_TS_5 via `date +%s` on VPS
+  5. systemctl restart bot-staging.service
+  6. +5min verify (active strategy log, fire with kelly_f= rationale, no errors)
+  7. +30min verify (queue overflow=0, anthropic=0, bankroll convergence)
+
+Per feedback_defer_deploys_to_natural_restart: bundle the v2.1 deploy
+with this restart. NO separate restart for observability.
+
+Per feedback_vps_timestamp_arithmetic: ALWAYS read $(date +%s) on VPS
+for DEPLOY_TS. Never compute from systemctl text.
+
+Per feedback_vps_deploy_verify_late: re-poll at +30min from local mac
+to confirm parallel-session didn't reset things.
+
+================================================================================
+WHAT THIS PHASE EXPLICITLY DOES NOT DO
+================================================================================
+
+  - Does NOT modify v2/v3/v1/wide_fire (v2.1 is additive)
+  - Does NOT touch any locked decision (#9 already authorizes Kelly)
+  - Does NOT skip the 22-test surface
+  - Does NOT skip operator sign-off on Q1-Q5
+  - Does NOT skip the 7-day H.6 soak gate before live-trading talk
+
+================================================================================
+ANTI-VIBE RULES — relevant this session
+================================================================================
+
+  1. Design doc before code (#1): H.2.0 design lock BEFORE any code lands
+  2. Failing test → fix → green (#2): tests precede deploy
+  3. 3-fix rule (#3): if a test fails 3x without resolution, write
+     runbooks/incidents/2026-05-13-v2_1-test-blocked-<slug>.md
+  4. No phase advances without gate (#4): 22/22 tests + make verify exit 0
+  5. Module docstring + type hints (#5/#6) on every NEW src file
+  6. External calls behind interfaces (#7): bankroll_getter is the
+     interface; no direct dashboard /api/state calls from strategy
+  7. No TODO/FIXME/hack (#8): clean code only
+  8. Pinned deps (#9): no new requirements added
+  9. Stochastic inputs injected (#10): bankroll_getter, kelly config
+     all injected — tests stay deterministic
+
+================================================================================
+HARD LIMITS
+================================================================================
+
+  - Bankroll: $1,000 paper (decision #10). UNTOUCHED until promote.
+  - bot.service stays DISABLED.
+  - Funder key NEVER on VPS.
+  - Anthropic spend: $0 expected (no LLM in fire path).
+  - 4 gates green at every commit.
+  - max 3 commits per work item (force discipline on iteration).
+
+================================================================================
+SESSION BOUNDARY — ENDS WHEN ONE OF
+================================================================================
+
+  (a) Items H.2.0-H.2.6 complete + H.5 deploy + +5min verify → ship full;
+      schedule H.6 soak gate audit at +7d. ✓ full
+  (b) Items H.2.0-H.2.6 complete (code shipped, no deploy) → defer H.5
+      to next session. ✓ partial (the spec's recommended outcome)
+  (c) Item H.2.0 + first 1-2 of H.2.1-H.2.5 done → ship partial,
+      commit, defer remainder. ⏸
+  (d) Context ≥60% before H.2.4 done → stop, commit, defer. ⏸
+  (e) Test surface fails 3x without resolution on any item → 3-fix rule
+      trips; postmortem + stop. 🛑
+
+================================================================================
+QUICK PRE-SESSION CHECKLIST
+================================================================================
+
+[ ] Reviewed pdfs/PHASE_H_V2_1_FINAL_IMPLEMENTATION_SPEC.pdf (especially §3-9)
+[ ] Reviewed pdfs/PHASE_G_EDGE_DISCOVERY.pdf §10-11 (Kelly + projections)
+[ ] Operator sign-off on Q1-Q5 (or accept defaults)
+[ ] VPS state verified: active, ef31746-or-later, STRATEGY=spot_aware_v2
+[ ] Dashboard reachable via SSH tunnel (test before driving)
+[ ] uv + reportlab + matplotlib still available
+[ ] Confirmed soak data on v2 (fires/day, WR, daily PnL) before adding Kelly
+
+================================================================================
+POST-SESSION CHECKLIST
+================================================================================
+
+[ ] state/sessions/2026-05-13-phase-H-2-code-v2_1.md (session note)
+[ ] state/phases/phase-H-v2_1.md (phase ledger entry)
+[ ] memory/checkpoint_phase_H.md (NEW — durable hand-off)
+[ ] memory/MEMORY.md index updated
+[ ] state/phases/README.md updated
+[ ] git push origin claude/jovial-hermann-7e103f
+[ ] If deployed: VPS pull + verify + dashboard screenshot
+
+================================================================================
+WHAT THIS PHASE UNLOCKS
+================================================================================
+
+If H.2 ships + H.5 deploys + H.6 soak PROMOTES:
+  → Phase I = live-trading readiness review (deferred Phase 24)
+  → Phase 1B (funder→signer USDC bridge + first gasless order)
+  → Phase 6 (live trading)
+
+If H.6 ROLLBACKS:
+  → Phase F+G backtest cell was sample bias
+  → operator decides: tighten further (v2.2) OR change market
+
+If H.6 EXTENDS:
+  → re-soak with refined filter
+  → re-audit with phase-G's four_day_audit.py
+
+================================================================================
+HONEST PUSHBACK FOR THIS SESSION
+================================================================================
+
+  - 22 tests + 4 file refactors + .envrc + design doc is ~3h of focused
+    work. If context budget is tight, stop at H.2.4 (strategy file) and
+    defer dispatch + deploy. The strategy file alone is enough to commit.
+
+  - The multi-fire PaperRunner refactor is the biggest risk. The
+    backward-compat property MUST work for v2/v3 tests to pass. Run the
+    full regression suite after H.2.3.
+
+  - If v2 production data overnight shows WR < 45%, DO NOT layer Kelly
+    on top. Bring the soak finding to operator before code work.
+    Compounding amplifies losses just as fast.
+
+  - Kelly 0.10× × multi-fire 2× = ~6.4% bankroll deployed per window.
+    Sane but not zero risk. The H.6 ROLLBACK gate is the safety net.
+
+End of prompt.
