@@ -207,6 +207,19 @@ function DecisionRow({ d, nowS }: { d: DecisionTapeRow; nowS: number }) {
         <span className={cn("font-bold", sideUp ? "text-good" : "text-bad")}>
           {sideUp ? "▲" : "▼"} {d.side}
         </span>
+        {d.fire_total !== null && d.fire_total > 1 && d.fire_n !== null && (
+          // v2.1 multi-fire marker (H.2.7). Each fire in a multi-fire
+          // window is an INDEPENDENT decision with its own pnl; the
+          // badge surfaces "1/2" vs "2/2" so the operator can tell the
+          // two rows apart at a glance. Single-fire strategies (cap=1)
+          // omit the marker entirely.
+          <span
+            className="ml-1.5 rounded-sm border border-text-muted/40 px-1 py-px text-[8.5px] font-bold tracking-[0.05em] text-text-muted tabular-nums"
+            title={`multi-fire ${d.fire_n} of ${d.fire_total} in this window`}
+          >
+            {d.fire_n}/{d.fire_total}
+          </span>
+        )}
       </td>
       <td className="px-2 py-0.5 text-text-secondary">{d.tier}</td>
       <td className="px-2 py-0.5 text-right text-text-secondary">

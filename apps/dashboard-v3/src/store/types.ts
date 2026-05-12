@@ -147,6 +147,11 @@ export interface DecisionTapeRow {
   pnl_usd: number | null
   won: boolean | null
   tier: string
+  // H.2.7 multi-fire markers (v2.1+). null for legacy single-fire
+  // strategies; the tape's badge is hidden when both are null OR
+  // fire_total <= 1.
+  fire_n: number | null
+  fire_total: number | null
 }
 
 export interface Candle {

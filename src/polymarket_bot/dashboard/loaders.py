@@ -93,6 +93,12 @@ class DecisionRow:
     fee_usd: float | None
     resolution: Side | None
     pnl_usd: float | None
+    # H.2.7 multi-fire telemetry — populated when the strategy's rationale
+    # carries the `fire_n=N/M` marker (v2.1+). For single-fire strategies
+    # (v1, v2, v3, wide_fire), both fields are None and the dashboard
+    # tape omits the fire-index badge.
+    fire_n: int | None
+    fire_total: int | None
 
 
 def load_process_status(state_dir: Path | str) -> tuple[ProcessStatus, ProcessStatus]:
@@ -391,6 +397,9 @@ def _row_from_pair(fired: dict[str, Any], settled: dict[str, Any] | None) -> Dec
     delta_bps = _float_marker(rationale, "delta_bps=")
     p_win = _float_marker(rationale, "p_win=")
     ev_dollars = _float_marker(rationale, "ev=")
+    fire_n_pair = _fire_n_from_rationale(rationale)
+    fire_n = fire_n_pair[0] if fire_n_pair is not None else None
+    fire_total = fire_n_pair[1] if fire_n_pair is not None else None
     resolution: Side | None = None
     pnl_usd: float | None = None
     if settled is not None:
@@ -419,6 +428,8 @@ def _row_from_pair(fired: dict[str, Any], settled: dict[str, Any] | None) -> Dec
         fee_usd=fee_usd,
         resolution=resolution,
         pnl_usd=pnl_usd,
+        fire_n=fire_n,
+        fire_total=fire_total,
     )
 
 
@@ -448,6 +459,22 @@ def _mode_from_rationale(rationale: str) -> str | None:
     if "mode=spot_aware" in rationale:
         return "spot_aware"
     return None
+
+
+def _fire_n_from_rationale(rationale: str) -> tuple[int, int] | None:
+    """Parse `fire_n=N/M` from a v2.1+ rationale. Returns (1, 2) for the
+    first fire in a 2-cap window, (2, 2) for the second. None for legacy
+    single-fire strategies (which omit the marker entirely).
+
+    Word-boundary regex prevents accidental matches inside larger tokens.
+    """
+    m = re.search(r"\bfire_n=(\d+)/(\d+)\b", rationale)
+    if m is None:
+        return None
+    try:
+        return (int(m.group(1)), int(m.group(2)))
+    except ValueError:
+        return None
 
 
 def _float_marker(rationale: str, marker: str) -> float | None:

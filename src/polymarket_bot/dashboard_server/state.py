@@ -113,6 +113,8 @@ def _decision_to_tape_row(r: DecisionRow) -> dict[str, Any]:
         "pnl_usd": r.pnl_usd,
         "won": won,
         "tier": _tier_for_price(r.price_limit),
+        "fire_n": r.fire_n,
+        "fire_total": r.fire_total,
     }
 
 
