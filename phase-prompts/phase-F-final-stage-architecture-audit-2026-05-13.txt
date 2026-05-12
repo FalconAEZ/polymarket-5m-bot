@@ -1,0 +1,633 @@
+Subject: Phase F — Final-stage architecture audit + convergence (KEEP / REMOVE / SIMPLIFY)
+       This is NOT another optimization phase. This is the curation pass that converges the
+       4-day experiment surface into the simplest profitable bot that satisfies the
+       Phase 6 (live-deployment) prerequisites.
+
+> Operator framing (2026-05-12 EOS, verbatim):
+>
+>   "we have actually over complicated the bot's current architecture - like look at the
+>    data and pnl of the 9th of may! it's stunning in just a bunch of hours! if we can
+>    revert back to that state and fixing the downfall it had that would be amazing!
+>    ... we are currently having really bad results, really high llm delay and delay
+>    overal!"
+
+================================================================================
+HONEST PUSHBACK ON THE FRAMING (read first — anti-vibe rule + feedback_honest_pushback)
+================================================================================
+
+The "May 9 was stunning" instinct conflates two different things. Truth-corrected
+per-day audit (`scripts/four_day_audit.py`, run on VPS 2026-05-12 ~13:30 UTC):
+
+```
+date         fires  filled  fillR  settled    W    L    Z     WR   naive_pnl   true_pnl   strategy
+2026-05-08      39      23    59%       35   10   18    7  35.7%      -20.24     -20.24   spot_aware aggressive
+2026-05-09     262     262   100%      266  137  126    3  52.1%      +44.51     +44.51   spot_aware aggressive
+2026-05-10     184     102    55%      183   54   49   80  52.4%   +2538.06     +46.34   spot_aware_v2 tier-restricted
+2026-05-11      85      42    49%       85   18   23   44  43.9%     -14.51     -33.69   wide_fire + ensemble gate
+2026-05-12      39      21    54%       39    8   13   18  38.1%    +102.02     -37.57   wide_fire + ensemble gate
+                                                                  ─────────   ─────────
+                                                                  +2649.85     -0.65    TOTAL (5 days)
+```
+
+Two corrections to the operator's framing:
+
+1. **"May 9 was +$2,556" is FALSE.** That number is the naive-sum dashboard before
+   the Phase 15.5 truth-pass. The actual May 9 PnL was **+$44.51** (factual,
+   no corrections needed for May 9). The dramatic-looking $2,556 came largely
+   from May 10's phantom fills (+$2,538 naive → +$46 truth, 53 settled_correction
+   records ate the rest). Per `memory/checkpoint_phase_15.5_pnl_truth_bundle.md`.
+
+2. **BUT — the OPERATOR IS RIGHT THAT MAY 9 WAS THE BEST REAL DAY.** Even with the
+   correct number (+$44.51 over 262 fires = ~$0.17/trade), May 9 outperformed:
+     - The post-ensemble era (May 11-12 net -$71)
+     - The May 10 day (+$46 over 184 fires = ~$0.25/trade — slightly better per-trade
+       but with way less volume because tier-restricted)
+
+The correct framing: **the data EMPIRICALLY shows that adding the LLM ensemble has
+HURT both WR and PnL.** The +4.1pp uplift seen in shadow data (Phase 5) did not
+reproduce in gate mode. WR dropped 52% → 44% → 38% as we added complexity.
+
+This is the prompt's central thesis: **the bot's architecture grew faster than its
+edge.** Simplify back toward what worked (spot_aware family), strip the
+unconverted experiments, and lock the basics before adding more layers.
+
+================================================================================
+READ FIRST (vault context, in order — DO NOT SKIP)
+================================================================================
+
+1. /Users/hamad/Desktop/PolyMarket-5m/CLAUDE.md
+   — anti-vibe + locked decisions + project preferences. The 20 locked
+   decisions stand unless explicitly revisited here.
+
+2. /Users/hamad/Desktop/PolyMarket-5m/MASTERPLAN.md (and pdfs/MASTERPLAN.pdf)
+   — original thesis (§0). 5 edge sources: oracle latency, last-10s
+   dynamics, window-delta, maker rebates, latency-arb. The bot was
+   designed AGAINST these edges, not against LLM gating.
+
+3. ~/.claude/projects/.../memory/MEMORY.md
+   — entire index. Top items: checkpoint_phase_16b_router (latest),
+   checkpoint_phase_15.5_pnl_truth_bundle (the truth-pass that reset
+   PnL to reality), project_phantom_defense_equals_fill_rate_problem.
+
+4. state/sessions/2026-05-12-phase-19-design-and-arch-audit-prep.md
+   — yesterday's session note covering today's work, the wide_fire fix
+   saga, and the operator's architectural concern that triggered this
+   prompt.
+
+5. state/sessions/2026-05-12-deep-dive-audit.md
+   — the diagnostic that found 8.8% gate-timeout / 22.1% meta=None /
+   119,722 dropped records. This is the empirical case for Phase 19,
+   IF the ensemble survives this audit.
+
+6. state/phases/README.md
+   — current phase status.
+
+7. pdfs/SPOT_AWARE_STRATEGY.pdf + design/spot_aware_strategy.md
+   — the strategy that produced May 9's +$44.51. Re-read with fresh
+   eyes; the strategy may have been right and the additions wrong.
+
+8. pdfs/REQUIREMENTS.pdf + pdfs/BUILD_SPEC.pdf
+   — the bootstrap + build spec. Cross-reference: did we build what
+   these specify? What did we add that wasn't in the original scope?
+
+================================================================================
+STATE AT HAND-OFF (verify before driving)
+================================================================================
+
+Branch:  claude/jovial-hermann-7e103f
+HEAD:    be35c76 docs(phase-19): LOCK design doc + vault close-out for 2026-05-12 session
+
+VPS:
+  bot-staging.service active since 2026-05-12 11:31:51 UTC, MainPID 570290, NRestarts=0
+  HEAD on VPS: `7a5b19e` (one commit behind worktree — `be35c76` is docs-only, not deployed)
+  STRATEGY=ensemble  ENSEMBLE_MODE=gate  ENSEMBLE_BASE_STRATEGY=wide_fire
+  EVERY_WINDOW_MODE=false  EVERY_WINDOW_SHADOW=true (Phase 16.B.5 soak underway)
+  TIER_GATE_ENABLED=false  REGIME_GATE_ENABLED=false
+  ANTHROPIC_DAILY_BUDGET_USD=10
+
+Dashboard:
+  dashboard-server.service active since 2026-05-11 06:25:15 UTC
+  Truth-corrected bankroll (as of 2026-05-12 13:30 UTC): **$1,010.62 (+$10.62)**
+  Truth-pass overlays: 53 settled_correction records across May 10-12
+
+Pre-flight (run BEFORE driving):
+  ssh -i $HOME/Downloads/LightsailDefaultKey-eu-west-1.pem -p 2222 ops@108.132.51.116 \
+      'systemctl is-active bot-staging.service dashboard-server.service; \
+       cd /home/ops/polymarket-5m-bot && git rev-parse --short HEAD'
+
+  Expected: active / active / 7a5b19e
+
+================================================================================
+THE FOUR-DAY AUDIT — what the data is telling us
+================================================================================
+
+### Volume + WR + PnL by day (TRUTH-CORRECTED)
+
+| Day  | Strategy           | Fires | Fill% | WR    | PnL truth | Per-trade |
+|------|--------------------|-------|-------|-------|-----------|-----------|
+| 5/08 | spot_aware aggr    | 39    | 59%   | 35.7% | -$20.24   | -$0.52    |
+| 5/09 | spot_aware aggr    | **262** | 100% | **52.1%** | **+$44.51** | **+$0.17** |
+| 5/10 | spot_aware_v2 tier | 184   | 55%   | 52.4% | +$46.34   | +$0.25    |
+| 5/11 | wide_fire ensemble | 85    | 49%   | 43.9% | -$33.69   | -$0.40    |
+| 5/12 | wide_fire ensemble | 39    | 54%   | 38.1% | -$37.57   | -$0.96    |
+|      |                    |       |       |       | **-$0.65**| 5-day TOTAL|
+
+### Phase 18B meta_outcome distribution (telemetry shipped 2026-05-11)
+
+| Day  | n   | ok    | invariant_violated | timeout |
+|------|-----|-------|--------------------|---------|
+| 5/10 | 239 | 2     | (none tagged)      | (none)  |
+| 5/11 | 290 | 285   | 5                  | 0       |
+| 5/12 | 147 | 142   | 3                  | 2       |
+
+→ 5/10's bizarre `ok=2 / n=239` is because the Phase 18B tagging shipped
+that evening; pre-shipping the meta_outcome wasn't recorded. From 5/11
+onward the LLM is voting ~98% successfully, with 1-2% genuine
+invariant violations.
+
+### Inferences from the data
+
+a. **Fire volume collapsed when wide_fire+ensemble shipped.** May 9 fired
+   on essentially every window (262 fires); May 11-12 the ensemble's
+   gate dropped fire rate ~70%. The volume drop is real, not driven by
+   regime — it's the LLM saying ABSTAIN.
+
+b. **WR dropped from 52% (May 9-10 spot_aware family) to 38-44% (May 11-12
+   wide_fire+ensemble).** The LLM gate's net effect is NEGATIVE selection.
+   It's filtering OUT the wrong trades.
+
+c. **Per-trade PnL flipped from +$0.17/+$0.25 (spot_aware family) to
+   -$0.40/-$0.96 (ensemble gate).** The fewer trades the ensemble does
+   approve are systematically worse than a no-LLM baseline would have
+   placed.
+
+d. **The +4.1pp uplift Phase 5 saw in shadow data DID NOT REPRODUCE in
+   gate mode.** Either the shadow-mode evaluation was flawed (different
+   timing, different LLM prompts, smaller sample) or the LLM's "FIRE"
+   votes systematically overlap with windows that lose. Either way the
+   empirical justification for `ENSEMBLE_MODE=gate` is GONE.
+
+e. **The Phase 18B telemetry shows the LLM is voting fine** (98% ok). The
+   problem is not LLM reliability. The problem is that the LLM's
+   verdict, applied as a hard gate, is not predictive.
+
+f. **Phase 11.A phantom-fill defense IS pulling weight.** 53 corrections
+   in 5 days = ~10/day phantoms the simulator would have over-counted.
+   Keep this. Without it the dashboard would show 100× inflated PnL.
+
+================================================================================
+PER-COMPONENT AUDIT — KEEP / REMOVE / SIMPLIFY
+================================================================================
+
+### KEEP (these earned their complexity)
+
+- **`SpotAwareStrategy` + `SpotAwareStrategyV2` + priors lookup**
+  — The strategy family that PRODUCED the May 9 / May 10 positive days.
+  v2 added tier restriction; both work without LLM in the loop.
+
+- **`SpotAwareStrategyV3` + `RegimeDetector`**
+  — Regime classification is cheap (~1ms classify on 600-tick buffer),
+  empirically separates trending (70% WR) from chop (47% WR) per
+  `runbooks/gate-evidence/regime-classifier-validation.txt`. Already
+  built, untested in production at the strategy level (only used as
+  Phase 15 regime-gate which is dark).
+
+- **`FillSimulator._refuse_for_no_depth`** (Phase 11.A defense)
+  — Saved real money. 53 phantom corrections in 5 days.
+
+- **Phase 14 `TIER_GATE_ENABLED` env**
+  — Infrastructure-only, dark by default. Cost-free to keep.
+
+- **Phase 15.5 truth-pass + dashboard `apply_settled_corrections`**
+  — Critical for honest bookkeeping. Without it, every reported PnL
+  number is a lie.
+
+- **Phase 18B `meta_outcome` telemetry**
+  — Cheap, illuminating; how we learned the ensemble isn't pulling
+  weight. Keep regardless of what happens to the ensemble.
+
+- **`PaperRunner` defense-in-depth** (background-settle, instant-settle,
+  periodic-orphan-recovery, post-hoc gamma retry, dropped-record
+  counter)
+  — All shipped after specific incidents. Don't touch.
+
+- **wide_fire's per-asset_id `_book_by_token` pattern (2026-05-12)**
+  — The general lesson (per-token, not per-side) should be applied
+  to any new strategy or refactor.
+
+### REMOVE (data says these aren't pulling weight)
+
+- **`EnsembleWrapper` in `ENSEMBLE_MODE=gate` for production fires.**
+  Empirical: -8pp WR vs spot_aware base, -$0.40/trade vs +$0.17. The
+  +4.1pp shadow uplift Phase 5 saw did not reproduce. The 12s inline
+  await is also the architectural source of 119K dropped records.
+
+  Concrete proposal: revert production strategy to spot_aware_v3
+  (with the regime detector). KEEP the ensemble code intact behind
+  `ENSEMBLE_MODE=off` so the operator can re-run shadow experiments
+  later.
+
+  This kills the need for Phase 19 entirely IF the ensemble stays off.
+
+- **`WideFireStrategy` (as a production base)**
+  — Designed for "max volume + LLM as the only gate." With the LLM gate
+  removed, wide_fire is "fire every window with no edge filter" which is
+  literally a guaranteed-loss strategy (per its own docstring).
+
+  Concrete proposal: deprecate `STRATEGY=wide_fire` + `ENSEMBLE_BASE_STRATEGY=wide_fire`
+  in scripts/run_paper.py. Keep the file as a reference; remove from
+  the strategy dispatch.
+
+- **`SpotAwareStrategy` aggressive mode** (`SPOT_AWARE_AGGRESSIVE_MODE=1`)
+  — Same shape: bypasses delta_min/EV gates. Useful for the May 8-9
+  experiment but not a production setting. The May 9 day succeeded
+  partly because of the higher volume (262 fires) but also because
+  of underlying market regime. Aggressive mode without filters can
+  trivially overshoot the daily-PnL kill-switch.
+
+  Concrete proposal: leave the env knob but document NEVER use in
+  production. Default to off.
+
+### SIMPLIFY (good ideas, over-built)
+
+- **Phase 16.B every-window router**
+  — The signal-driven router is a genuinely interesting architecture
+  (5 inputs, hybrid-Kelly sizing). But its dependence on the LLM
+  signal (W_LLM=0.25) is moot if we remove the LLM from production.
+
+  Concrete proposal: PAUSE Phase 16.B promotion. Keep router code +
+  shadow soak intact for research. Do NOT flip MODE=true.
+
+  If we ever return to it, redesign as a no-LLM router (W_DET=0.30,
+  W_REG=0.30, W_TIER=0.20, W_KELLY=0.20, total 1.00). That's a
+  different phase.
+
+- **Phase 19 LLM async pre-compute**
+  — Designed THIS session to fix the gate-mode 12s latency issue.
+  But if we remove ENSEMBLE_MODE=gate (per above), Phase 19's problem
+  doesn't exist. The design doc is solid and stays as research
+  artifact; implementation deferred indefinitely.
+
+  Concrete proposal: mark Phase 19 design as "design-only; implementation
+  shelved pending ensemble revival." Don't delete; rename to
+  `design/phase-19-llm-async-precompute.SHELVED.md` if that pattern
+  exists in the repo (else just note in phase ledger).
+
+- **Phase 14 + Phase 15 kill-switches**
+  — Dark-shipped infrastructure for tier + regime abstention. Cheap to
+  keep, never tripped to date. Lower priority for cleanup.
+
+  Concrete proposal: keep as-is. They're zero-cost when env-disabled.
+
+================================================================================
+THE FINAL-STAGE ARCHITECTURE (proposed converged shape)
+================================================================================
+
+```
+                    SpotAwareStrategyV3 (regime-aware base)
+                                │
+                                │  Decision per window when:
+                                │   • |Δ_bps| ≥ delta_min
+                                │   • regime == "trending"  (NEW production filter)
+                                │   • priors hit + EV ≥ ev_min
+                                │   • tier ∉ {<15%, 85-100%} (existing v2 filter)
+                                │
+                                ▼
+                            PaperRunner
+                                │
+                                │  • Phase 11.A phantom defense (KEEP)
+                                │  • instant-settle (KEEP)
+                                │  • orphan-recovery (KEEP)
+                                │  • post-hoc gamma retry (KEEP)
+                                │  • settled_correction overlay (KEEP)
+                                │
+                                ▼
+                          DecisionLog (state/decisions/)
+                                │
+                                ▼
+                          dashboard-server v3
+                          (apply_settled_corrections overlay)
+```
+
+Notable REMOVALS from current production:
+- No EnsembleWrapper (`STRATEGY=spot_aware_v3` direct, no wrapper)
+- No wide_fire base
+- No router shadow (research artifact only — code in repo, not in production path)
+
+Notable KEEPS:
+- Regime detector promoted to production filter (trending-only)
+- All defense layers intact
+- All observability intact (Phase 18B + truth-pass + dashboard)
+- Decisions remain unchanged: $5 flat / fractional Kelly trigger at trade #100
+
+This shape mirrors what May 9 was doing, PLUS the May 10-11 era's incremental
+improvements (regime detector, phantom defense, truth pass, dashboard v3) MINUS
+the experiments that haven't earned their complexity (ensemble gate, wide_fire).
+
+================================================================================
+THE WORK — four items in strict order
+================================================================================
+
+------------------------------------------------------------------------
+ITEM 1 — Re-audit (operator review + sign-off on this prompt; NO CODE) ~30 min
+------------------------------------------------------------------------
+
+Operator reads this prompt + the linked vault notes + the per-day audit.
+Decides:
+
+a. Accept the audit's KEEP/REMOVE/SIMPLIFY recommendation as-is?
+b. Override specific calls (e.g., "keep wide_fire" / "keep ensemble gate")?
+c. Want a longer audit window (7 days, 14 days) before committing?
+d. Want a parallel A/B (e.g., run spot_aware_v3 alongside ensemble for 24h)
+   instead of cutting cold?
+
+For each component disposition, the operator commits.
+
+OPERATOR SIGN-OFF GATE: this prompt's recommendations are NOT executed until
+the operator types "go" or amends + re-types.
+
+------------------------------------------------------------------------
+ITEM 2 — Strategy change-over (if Item 1 approves the cut) ~45 min
+------------------------------------------------------------------------
+
+Files to modify (env-flag-driven; can be reverted in <1 minute):
+
+  - `scripts/run_paper.py`
+    Change DEFAULT_STRATEGY_NAME from "spot_aware" to "spot_aware_v3" (the
+    regime-aware variant). Document in module docstring.
+
+  - VPS `.envrc`:
+    From:
+      export STRATEGY=ensemble
+      export ENSEMBLE_MODE=gate
+      export ENSEMBLE_BASE_STRATEGY=wide_fire
+      export EVERY_WINDOW_SHADOW=true
+    To:
+      export STRATEGY=spot_aware_v3
+      # ensemble + wide_fire + every_window all default to off via code defaults
+      # Keep TIER_GATE and REGIME_GATE flags as-is (dark)
+
+  - `state/sessions/<date>.md` — record the cut + rationale verbatim from
+    this prompt's audit table.
+
+NO TESTS REQUIRED at the strategy level (spot_aware_v3 has its existing
+test suite — it's not being modified). The change is a deployment
+configuration revert.
+
+Deploy: `git pull --ff-only` + `systemctl restart bot-staging.service`.
+
+Per `feedback_vps_deploy_verify_late`: +5min / +30min / +24h checks.
++5min: service active, no errors, first spot_aware_v3 fired record shows
+`strategy=spot_aware_v3 mode=...`.
+
+OPERATOR SIGN-OFF GATE: post the +5min check. Wait for "go" before
+Item 3.
+
+------------------------------------------------------------------------
+ITEM 3 — Verification window: 48-72h spot_aware_v3 soak ~PASSIVE
+------------------------------------------------------------------------
+
+Run the production bot on `spot_aware_v3` for 48-72h without changes.
+
+Daily check via the same audit script (`scripts/four_day_audit.py`):
+
+  - Fires/day target: 80-150 (spot_aware_v3 filters more than aggressive)
+  - WR target: ≥ 50% on filled trades
+  - Daily PnL target: ≥ break-even (zero is acceptable; -10% or below
+    triggers a sub-audit)
+  - meta_outcome should be EMPTY (no ensemble) — verifies the cut took
+
+The bot's strategy is now "trending-regime only fires" which is the most
+selective profile in our quiver. Volume drops; per-trade variance drops;
+expected per-trade PnL rises.
+
+Concrete promote criteria (Phase F.3 → Phase F.4):
+
+```
+PROMOTE if (over 48-72h soak window):
+  rolling_wr_at_72h >= 0.52
+  AND daily_pnl_min >= -10.0
+  AND fires_per_day >= 50  (else the strategy is too selective)
+  AND queue_overflow_incidents == 0  (predicted true; gate is removed)
+```
+
+ROLLBACK criteria:
+```
+  WR < 0.45 over 48h
+  OR daily_pnl < -30 on any day
+  OR fires_per_day < 20  (strategy gated too tight)
+→ revert env to ensemble + wide_fire; postmortem at runbooks/postmortems/
+```
+
+------------------------------------------------------------------------
+ITEM 4 — Phase F.4 — Phase 6 readiness review (if Item 3 PROMOTES) ~3h
+------------------------------------------------------------------------
+
+This is the deferred Phase 24 from the master plan (live-deployment
+readiness review). With the audit + cut complete and 72h of clean
+spot_aware_v3 data, evaluate readiness for Phase 6 (live trading):
+
+  - Bankroll: locked decision #10 says $1k starting. Currently +$10
+    truth-corrected. Within range.
+
+  - Funding flow: Phase 1B (funder → signer USDC bridge + first gasless
+    order) has never been executed. This is the live-trading prereq.
+
+  - Hardware wallet: locked decision #12 — required at $2k bankroll. We
+    are not there. Phase 6 starts with Funder/Signer software wallets.
+
+  - Statistical significance: 72h sample is too small for a t-test.
+    Consider extending to 7-14d soak before any live capital.
+
+  - Operator readiness: alerter (Telegram), /halt sentinel,
+    litestream backup drill — all live and tested. Re-test cadence?
+
+OPERATOR DECIDES whether Phase 6 launches after this review, or whether
+to extend the paper soak for more sample.
+
+================================================================================
+WHAT THIS PHASE EXPLICITLY DOES NOT DO
+================================================================================
+
+- ❌ DELETE any code. We're toggling env flags + changing the default
+  strategy. The ensemble + router + wide_fire stay in the codebase as
+  research artifacts. They can be re-engaged via env flip.
+
+- ❌ TOUCH any locked decision without flagging it. Decisions #4 (Anthropic
+  only), #5 (3 specialists), #6 (composite ≥0.6 — already revisited under
+  16.B), #9 ($5 flat → fractional Kelly), #10 ($1k bankroll) all stay.
+
+- ❌ DELETE the phantom-fill correction overlay (Phase 15.5).
+- ❌ DELETE the meta_outcome telemetry (Phase 18B).
+- ❌ DELETE the regime detector (it's now PROMOTED to production filter).
+- ❌ DELETE the dashboard v3 work.
+
+- ❌ FLIP `EVERY_WINDOW_MODE=true`. The router shadow soak continues but
+  the every-window MODE stays off — the router's design depends on the
+  LLM signal which we're removing from production.
+
+- ❌ IMPLEMENT Phase 19. The latency problem disappears when the inline
+  await disappears.
+
+- ❌ TOUCH the litestream backup, the alerter, the halt sentinel, the
+  systemd units. All operational infrastructure stays.
+
+================================================================================
+ANTI-VIBE RULES — relevant this session
+================================================================================
+
+- Design doc before code (#1): no design doc needed — this is a strategy
+  reversion + env-flag flip. Both the destination state (spot_aware_v3)
+  and the rollback path (re-enable ensemble) are existing code paths.
+
+- Bug → failing test → fix → green (#2): no bug being fixed; tests for
+  spot_aware_v3 are existing and pass.
+
+- 3-fix rule (#3): if the +5min check after Item 2 deploy is unclean,
+  STOP and write `runbooks/incidents/<date>-arch-audit-revert.md`.
+  Do NOT iterate without operator sign-off.
+
+- Pinned deps + lockfile (#9): no dep changes.
+
+- Test under load (`feedback_test_under_load`): no async I/O changes;
+  spot_aware_v3 is synchronous + already tested.
+
+- Honest pushback (`feedback_honest_pushback`): the central thesis of
+  this prompt IS honest pushback. The "+May 9 was stunning" framing
+  needed correction; the empirical case for removing the ensemble is
+  the data, not a hunch. If the operator wants to keep the ensemble,
+  the prompt's response should be "show me the WR data that supports
+  it" — not capitulation.
+
+- VPS deploy verify late (`feedback_vps_deploy_verify_late`):
+  +5min/+30min/+24h checks per usual.
+
+- Defer-deploys (`feedback_defer_deploys_to_natural_restart`): this is
+  a major behavior change. ONE restart, taken intentionally. NOT to be
+  bundled with other small changes.
+
+================================================================================
+HARD LIMITS
+================================================================================
+
+- Bankroll: $1,000 paper (locked decision #10). UNTOUCHED.
+- bot.service stays DISABLED.
+- Funder key NEVER on VPS.
+- Anthropic spend: drops to ~$0/day after the cut (no production LLM
+  calls). Re-engages only when an experiment is re-enabled via env.
+- 4 gates remain green at every commit (we expect them to be green by
+  default since no code changes are required, but verify anyway).
+
+================================================================================
+SESSION BOUNDARY — ENDS WHEN ONE OF
+================================================================================
+
+(a) Items 1-3 complete + Phase F.3 promote criteria met or trending green
+    over 48h → write phase-F.4-phase-6-readiness-2026-05-NN.txt for the
+    next session. ✅ full
+(b) Items 1-2 complete (cut deployed); soak underway → defer Phase F.3
+    audit to next session at +48h. ✅ partial.
+(c) Item 1 rejected by operator (operator wants to keep ensemble / dispute
+    the audit). Then this prompt becomes a documented investigation; no
+    code change; operator drafts the alternative path. 🛑
+(d) Context ≥60% before Item 2 done → close out plan + commit ITEM 1
+    decisions only; defer the cut to next session. ⏸
+
+================================================================================
+WHAT THIS PHASE UNLOCKS
+================================================================================
+
+If the cut succeeds (Item 3 PROMOTE):
+
+- **Phase 6 (live trading)** becomes the next concrete phase. The
+  current paper bot will be running a simple, profitable, auditable
+  strategy that satisfies the locked-decision-#10 $1k bankroll
+  scenario AND the Phase 23 stat-sig gate (extended soak gives more
+  sample).
+
+- **Phases 19, 20, 21, 22, 25** ALL become deferrable. The bot's edge
+  has been demonstrated without them.
+
+- **The phase ledger gets DRAMATICALLY simplified.** "In progress"
+  goes from 2-3 active phases + 5 deferred to 1 active phase (Phase 6).
+
+If the cut FAILS (Item 3 ROLLBACK):
+
+- We learn that the ensemble + wide_fire genuinely contribute lift
+  that the per-day audit missed (e.g., regime-conditional uplift not
+  visible in 5-day aggregate). Postmortem documents WHAT the rollback
+  revealed; ensemble re-engages; design adjusts based on the empirical
+  signal.
+
+================================================================================
+DASHBOARD ACCESS (operator-side; same as before)
+================================================================================
+
+SSH tunnel:
+  ssh -i $HOME/Downloads/LightsailDefaultKey-eu-west-1.pem -p 2222 \
+      -L 8505:127.0.0.1:8505 -N -o ServerAliveInterval=15 \
+      -o ServerAliveCountMax=3 -o ExitOnForwardFailure=yes \
+      -f ops@108.132.51.116
+
+Then open http://127.0.0.1:8505 in browser.
+
+The dashboard's bankroll panel now reads truth-corrected values
+(post-Phase 15.5 + the 3 corrections written 2026-05-12). The cut
+above will update the strategy name shown in the rationale field of
+new fires; existing settled records keep their original strategy
+tags.
+
+================================================================================
+QUICK PRE-SESSION CHECKLIST
+================================================================================
+
+Before driving:
+[ ] Bot still active on VPS (`systemctl is-active bot-staging.service`)
+[ ] Dashboard still active (`is-active dashboard-server.service`)
+[ ] Current PnL via /api/state — note for baseline comparison
+[ ] No incidents in /api/state.incidents
+[ ] HEAD on VPS confirmed (FF from previous session)
+[ ] Reviewed:
+    [ ] this prompt
+    [ ] the four-day audit data table above
+    [ ] memory checkpoint_phase_15.5_pnl_truth_bundle
+    [ ] memory checkpoint_phase_16b_router (latest)
+    [ ] state/sessions/2026-05-12-deep-dive-audit.md
+    [ ] MASTERPLAN.md §0 (original thesis)
+[ ] Decided which components to KEEP/REMOVE/SIMPLIFY in disagreement
+    with the prompt's recommendation (if any)
+
+After session:
+[ ] Update state/sessions/<date>.md with outcomes
+[ ] Update state/phases/README.md — Phase F status, all touched phases
+[ ] Update memory/checkpoint_phase_F.md (NEW) with cut state +
+    revert path
+[ ] Update memory/MEMORY.md index
+[ ] git push origin claude/jovial-hermann-7e103f
+[ ] git status across Mac main + worktree + VPS all in sync
+
+================================================================================
+FINAL OPERATOR NOTE
+================================================================================
+
+This is the prompt the operator asked for. It is structured to surface
+honest pushback on a framing that was numerically wrong (the +$2,556
+figure) while AGREEING with the operator's directional instinct
+(May 9 WAS the best real day; the architecture HAS grown faster than
+the edge).
+
+The recommended action is reversible by a single env flip + one
+service restart. If the data over 48-72h shows it was the wrong call,
+the rollback is the same single env flip.
+
+The bot has been running for ~10 days. It has +$10.62 of real PnL.
+It has 537 passing tests. It has comprehensive observability. The
+infrastructure is sound. The only question this prompt asks is:
+**which subset of the strategy code is the bot ACTUALLY using to
+earn that $10, and what can we shed?**
+
+The data's answer: spot_aware family + regime detector + defense
+layers. Everything else is either research or scaffolding that
+hasn't earned its weight yet.
+
+End of prompt.
