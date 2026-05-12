@@ -34,8 +34,8 @@ Chronological + status. Each phase has its own note when work begins; tags are p
 
 ## In progress / next
 
-- [[phase-16b-every-window-mode|**Phase 16.B**]] — every-window mode with signal-driven router. 🟡 **DESIGN + PRIMITIVES SHIPPED 2026-05-11.** Operator-authorized revisit of decision #6 + partial #9. **Phase 17 (sizing modes) + Phase 18 (Kelly) MERGED INTO THIS PHASE** — sizing.py + size_for ship here. Sub-phases 16.B.0-3 done (research → counterfactual → design lock → router primitives + 49 tests, all gates green, commit `707786c`). Remaining: 16.B.4 wrapper wire + 16.B.5 VPS dark deploy + 24h shadow + 16.B.6 7-day soak gate. Next-session prompt: `phase-prompts/phase-16b-4-wrapper-wire-2026-05-12.txt`.
-- **Phase 19** — LLM async pre-compute. Now unblocked by Phase 18B `meta_outcome` data (206 votes flowed during the 2026-05-11 soak — 98.1% `ok`, 1.9% `invariant_violated`). Phase 19 design should wait for ≥24h of router-shadow data first.
+- [[phase-16b-every-window-mode|**Phase 16.B**]] — every-window mode with signal-driven router. 🟢 **16.B.4 + 16.B.5 SHIPPED + LIVE 2026-05-11/12.** Wrapper wire deployed `2eb54fd`; `EVERY_WINDOW_SHADOW=true` flipped 18:02:05 UTC 2026-05-11; shadow soak underway. wide_fire phantom-zone fix shipped in two iterations (`3875d3c` per-side BUGGY → `7a5b19e` per-asset_id CORRECT) — see phase ledger §"2026-05-12" for the saga. Phantom-fill backfill applied (3 records). Remaining: 16.B.6 7-day soak gate → PROMOTE/ROLLBACK.
+- [[phase-19-llm-async-precompute|**Phase 19**]] — LLM async pre-compute. Design doc LOCKED 2026-05-12 (`design/phase-19-llm-async-precompute.md`). Awaiting operator sign-off + implementation. Targets 8.8% gate-timeout rate → ≤0.5%; eliminates 119K-record queue-overflow class. Default-OFF via `LLM_PRECOMPUTE_ENABLED`. Implementation (Phase 19.1) is ~3h next-session work.
 - ~~Phase 17 (sizing modes scaffolding)~~ — **SUBSUMED by Phase 16.B**.
 - ~~Phase 18 (Kelly sizing)~~ — **SUBSUMED by Phase 16.B** (`sizing.py` ships there).
 

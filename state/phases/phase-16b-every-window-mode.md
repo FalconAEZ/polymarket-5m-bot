@@ -164,6 +164,21 @@ Shipped `3875d3c` — adds `if ask_size_top is None AND ask <= $0.05: return Non
 
 Updated `taker_fallback` prescription for Phase 16.B: still valid *in principle* but unobserved in today's data; would only matter if `<15%` tier books develop depth signals during the shadow soak. For the dominant failure mode today (phantom-zone), `wide_fire` abstention is the cleaner fix.
 
+## 2026-05-12 — phantom-zone fix v2 (per-asset_id) + backfill
+
+Post-deploy of `3875d3c` (v1, per-side cache), a fire on window 1778583000 still emitted with the phantom-zone pattern. Root cause: the warmer keeps ~12 forward windows' tokens subscribed; BookUpdates for FUTURE-window UP-side tokens polluted `_ask_size_for_side["UP"]` via last-write-wins, even though the strategy's chosen asset_id (current-window UP token) had `ask_size_top=None`.
+
+Fix v2 (`7a5b19e`): replace per-side caches with `_book_by_token: dict[asset_id, ...]`. `best_ask` is sticky (depth-only updates don't clobber); `ask_size_top` always written. Fire-time lookup by asset_id isolates pollution. Two new tests including a reproduction of the v1 bypass.
+
+Phantom-fill backfill applied to live decision log (3 corrections written as `settled_correction` records):
+- Window 1778480100 — -$5.00 → $0.00
+- Window 1778487900 — -$5.00 → $0.00
+- Window 1778551200 — **+$119.999 → $0.00** (the headline phantom)
+
+Dashboard bankroll moved $1,120.62 → **$1,010.62 (+$10.62)** — truth-corrected.
+
+Residual: `_token_for_side` is still per-side. In an extreme ordering the strategy could fire for a future-window's token; the new per-asset_id book lookup makes this MOSTLY harmless. A proper window-scoped token tracker is a follow-up.
+
 ## Related
 
 - [[../runbooks/README|Runbooks]]
