@@ -1,7 +1,7 @@
 ---
 title: Phase H — v2.1 implementation (Kelly + multi-fire + filter changes)
 tags: [phase, strategy, v2-1, kelly, multi-fire, compounding]
-status: H.1 + H.FINAL planning shipped 2026-05-13; H.2 code work next session
+status: H.2 code SHIPPED 2026-05-13 (810f841); H.5 deploy deferred to next session
 ---
 
 # Phase H — v2.1 implementation
@@ -14,15 +14,30 @@ The pivot. Phase G discovered the winning cell + the Kelly + multi-fire + compou
 |-----|------|--------|
 | H.1 | Strategic plan PDF (10 sections) | ✅ shipped 2026-05-12 (commit `0bab305`) |
 | H.FINAL | Engineering spec PDF (18 sections, 22 tests, 14 defenses) | ✅ shipped 2026-05-13 (commit `ef31746`) |
-| H.2.0 | `design/spot_aware_v2_1.md` design doc lock | ⏳ next session |
-| H.2.1 | KellyConfig + 5 tests | ⏳ next session |
-| H.2.2 | BankrollTracker + 4 tests | ⏳ next session |
-| H.2.3 | _RunnerState multi-fire refactor + 5 regression tests | ⏳ next session |
-| H.2.4 | SpotAwareStrategyV2_1 + 13 tests | ⏳ next session |
-| H.2.5 | `run_paper.py` dispatch + bankroll-getter wire | ⏳ next session |
-| H.2.6 | Commit + push | ⏳ next session |
-| H.5 | VPS deploy + +5/30/24h verify | ⏳ separate session |
-| H.6 | +7d soak gate → PROMOTE / EXTEND / ROLLBACK | ⏳ future |
+| H.2.0 | `design/spot_aware_v2_1.md` design doc lock | ✅ shipped 2026-05-13 (commit `4f218b1`) |
+| H.2.1 | KellyConfig + 8 tests | ✅ shipped 2026-05-13 (in `810f841`) |
+| H.2.2 | BankrollTracker + 6 tests | ✅ shipped 2026-05-13 (in `810f841`) |
+| H.2.3 | _RunnerState multi-fire refactor + 6 regression tests | ✅ shipped 2026-05-13 (in `810f841`) |
+| H.2.4 | SpotAwareStrategyV2_1 + 17 tests | ✅ shipped 2026-05-13 (in `810f841`) |
+| H.2.5 | `run_paper.py` dispatch + bankroll-getter wire | ✅ shipped 2026-05-13 (in `810f841`) |
+| H.2.6 | Commit + push | ✅ pushed to origin 2026-05-13 |
+| H.5 | VPS deploy + +5/30/24h verify | ⏳ **deferred — operator chose ship-only this session** |
+| H.6 | +7d soak gate → PROMOTE / EXTEND / ROLLBACK | ⏳ future (after H.5) |
+
+## H.2 ship summary
+
+- Branch `claude/jovial-hermann-7e103f` advanced `73dcc73 → 4f218b1 → 810f841`
+- `make verify` exit 0: ruff clean (src/+tests/), mypy --strict clean (83 files), **618 tests pass** (baseline 581 + 37 new)
+- 16 files touched (5 NEW src/test, 2 EDIT src/script, 9 ride-along ruff fixes + .gitignore housekeeping)
+- 37 new tests across 4 files (8 KellyConfig + 17 v2.1 strategy + 6 BankrollTracker + 6 multi-fire regression)
+
+## CH3 honest pushback (deferred follow-up)
+
+v2 enforces a priors-table hit (no fallback). Current priors table starts at `|Δ|=5`, so CH3's tier-specific floor relaxation alone won't fire on the Phase G winning cell in production. **Necessary-but-not-sufficient.** Operator decision needed before H.5 deploy expects exploitation:
+- (a) Extend `data/spot_aware_priors.json` v1 with a `[1, 5]` bucket using empirical p_win from PG §6.2, OR
+- (b) Plumb `tier_relax_p_win_fallback` parameter through `SpotAwareStrategyV2_1`.
+
+Unit tests use a stub priors so the floor-relax logic is locked under regression; the production-cell-exploitation assertion is unverified until the priors follow-up lands.
 
 ## v2.1 changes (CH1-CH8)
 

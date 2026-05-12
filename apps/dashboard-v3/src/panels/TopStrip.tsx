@@ -68,7 +68,7 @@ export function TopStrip() {
           {s.mode.label}
         </motion.div>
         <span className="text-[10px] uppercase tracking-[0.06em] text-text-muted">
-          phase 11.A.2
+          phase H v2.1
         </span>
       </div>
 

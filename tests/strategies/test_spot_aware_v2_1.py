@@ -180,6 +180,72 @@ async def test_v2_1_inherits_tier_50_70_reject() -> None:
     assert decision is None
 
 
+# ---------- CH3 priors-fallback (real priors) ----------
+
+
+async def test_v2_1_real_priors_fallback_fires_winning_cell() -> None:
+    """CH3 priors-fallback — with the SHIPPED priors table (which starts
+    at |Δ|=5) and the default fallback p_win=0.48, tier 30-50% x |Δ|=2
+    must fire on production-grade inputs. This closes the design doc
+    honest-pushback: v2.1 can now exploit Phase G's winning cell out of
+    the box (Conservative scenario)."""
+    strat = SpotAwareStrategyV2_1(
+        priors=_real_priors(),
+        bankroll_getter=_bankroll(1000.0),
+    )
+    # 2 bps move on $80,000 → end_spot=80_016. ask=0.40 in tier 30-50%.
+    decision = await _drive_simple_window(strat, open_spot=80_000.0, end_spot=80_016.0, ask_up=0.40)
+    assert decision is not None, (
+        "real priors + fallback p_win=0.48 must fire tier 30-50% x |Δ|=2 " "(Phase G winning cell)"
+    )
+    assert (
+        "p_win=0.480" in decision.rationale
+    ), f"fallback p_win=0.48 must surface in rationale; got {decision.rationale!r}"
+
+
+async def test_v2_1_real_priors_fallback_disabled_does_not_fire() -> None:
+    """When fallback is disabled (None), real priors miss at |Δ|=2 →
+    v2.1 abstains — preserves spec-literal CH3 semantics for operators
+    who want the priors-data path."""
+    strat = SpotAwareStrategyV2_1(
+        priors=_real_priors(),
+        bankroll_getter=_bankroll(1000.0),
+        tier_relax_p_win_fallback=None,
+    )
+    decision = await _drive_simple_window(strat, open_spot=80_000.0, end_spot=80_016.0, ask_up=0.40)
+    assert decision is None
+
+
+async def test_v2_1_fallback_only_applies_to_tier_relax_tiers() -> None:
+    """Fallback is surgical: tier 70-85% x |Δ|=2 still misses + abstains
+    even with fallback enabled (because tier 70-85% is NOT in tier_relax).
+    Preserves v2's no-fallback semantics outside the CH3 cell."""
+    strat = SpotAwareStrategyV2_1(
+        priors=_real_priors(),
+        bankroll_getter=_bankroll(1000.0),
+        tier_relax_p_win_fallback=0.80,  # would fire if applied
+    )
+    decision = await _drive_simple_window(strat, open_spot=80_000.0, end_spot=80_016.0, ask_up=0.75)
+    assert decision is None
+
+
+async def test_v2_1_fallback_does_not_override_real_hits() -> None:
+    """When real priors HIT (|Δ|≥5), the fallback never replaces them.
+    Sanity that the wrapper is transparent for in-table queries."""
+    strat = SpotAwareStrategyV2_1(
+        priors=_real_priors(),
+        bankroll_getter=_bankroll(1000.0),
+        tier_relax_p_win_fallback=0.99,  # would dominate Kelly if applied
+    )
+    # |Δ|=10 hits the real priors table; fallback must NOT replace it.
+    decision = await _drive_simple_window(strat, open_spot=80_000.0, end_spot=80_080.0, ask_up=0.40)
+    assert decision is not None
+    # The rationale p_win comes from REAL priors, not the 0.99 fallback.
+    assert (
+        "p_win=0.99" not in decision.rationale
+    ), f"fallback p_win must not override real priors hit; got {decision.rationale!r}"
+
+
 # ---------- §9.3 Kelly + rationale ----------
 
 
@@ -394,4 +460,20 @@ def test_v2_1_rejects_invalid_ev_bucket() -> None:
             priors=_real_priors(),
             bankroll_getter=_bankroll(),
             ev_bad_bucket=(0.05, 0.02),
+        )
+
+
+def test_v2_1_rejects_invalid_p_win_fallback() -> None:
+    """Fallback must be in (0, 1) or None — outside that range raises."""
+    with pytest.raises(ValueError, match="tier_relax_p_win_fallback"):
+        SpotAwareStrategyV2_1(
+            priors=_real_priors(),
+            bankroll_getter=_bankroll(),
+            tier_relax_p_win_fallback=1.5,
+        )
+    with pytest.raises(ValueError, match="tier_relax_p_win_fallback"):
+        SpotAwareStrategyV2_1(
+            priors=_real_priors(),
+            bankroll_getter=_bankroll(),
+            tier_relax_p_win_fallback=0.0,
         )

@@ -83,12 +83,22 @@ later qualifying tick in the same window can still re-evaluate.
 priors-table edge is too thin to clear fees + slippage. Strict
 inequality on the upper end (5¢ EV is fine) is intentional.
 
-### CH3 — Tier-specific Δ floor
+### CH3 — Tier-specific Δ floor + priors fallback for the winning cell
 
-**Change:** before invoking parent logic, compute the tier label of the
-candidate side's `best_ask`. If the tier ∈ `tier_relax_delta`
-(default `{'15-30%', '30-50%'}`), the inherited `_delta_min` is
-temporarily set to 0 for the duration of the super() call.
+**Change has two clauses:**
+
+1. **Δ floor relaxation.** Before invoking parent logic, compute the tier
+   label of the candidate side's `best_ask`. If the tier ∈
+   `tier_relax_delta` (default `{'15-30%', '30-50%'}`), the inherited
+   `_delta_min` is temporarily set to 0 for the duration of the super()
+   call. Other tiers (e.g., 70-85%) keep v2's 5 bps floor.
+2. **Priors-fallback for the relaxed zone.** When the inherited
+   priors table misses at low |Δ| AND tier ∈ tier_relax AND |Δ| is
+   below the inherited 5 bps floor, a `_PriorsFallback` wrapper
+   synthesises a p_win value. The fallback constant is operator-tunable
+   (`tier_relax_p_win_fallback`, default `0.48`); a value outside
+   `(0, 1)` disables the fallback (spec-literal CH3, won't fire on
+   the cell until priors data is extended).
 
 **Why (PG §6.2 winning-cell isolation):** tier 30-50% × |Δ|<5 cell
 has n=83, +$0.65/trade, +$54 cumulative — the largest positive cell
@@ -96,20 +106,39 @@ in the whole audit, and v2 currently rejects it (`delta_min=5` cuts
 exactly this region). Tier 15-30% is included by symmetry. Tier 70-85%
 explicitly retains the 5 bps floor — same-cell n=21, no positive signal.
 
-> **Spec gap surfaced this session (honest pushback):** v2 also enforces
-> a *priors-table hit* (no fallback). The current priors table
-> (`data/spot_aware_priors.json` v1) starts its `delta_buckets_bps` at
-> 5 bps, so a `|Δ|=2` candidate misses the lookup and v2.1's
-> super() returns None even with the floor relaxed. **CH3's floor
-> relaxation is necessary-but-not-sufficient** to exploit the Phase G
-> winning cell in production — the priors table needs a low-Δ row
-> (e.g., `[1, 5]`) added with the empirical p_win from PG §6.2, OR a
-> low-Δ fallback parameter (e.g., `tier_relax_p_win_fallback: float`)
-> needs to be plumbed through. This session ships CH3 as spec-literal
-> and leaves the priors extension as a follow-up. Unit tests for CH3
-> use a stub priors that returns at any |Δ| so the floor-relax logic
-> is locked under regression; the production "winning cell" assertion
-> is unverified until the priors follow-up lands.
+**Why the fallback default `0.48`:** Phase G §5.1 historical empirical
+WR for the cell was 48.1% (n=83). 0.48 is one tick conservative below
+the empirical and well below the 0.582 backtest projection (H.1 §1
+Conservative scenario). Kelly sizing at p_win=0.48 stays disciplined:
+at price 0.40, `f* = (0.48 - 0.40) / (1 - 0.40) = 0.133`; with default
+0.10× multiplier and $1000 bankroll, bet size ≈ $13.33 — well within
+the $500 absolute cap.
+
+**Surgical scope of the fallback (`_PriorsFallback` wrapper):**
+
+The fallback is only applied when ALL three conditions hold: (1) the
+real priors lookup returned None, (2) the price's tier ∈
+`tier_relax`, (3) the |Δ| is below the inherited 5 bps floor. For
+anything else (real priors hit, non-relax tier, large |Δ| outside the
+table), the wrapper returns whatever the real priors return. v2's
+strict no-fallback semantics are preserved everywhere except the CH3
+cell.
+
+The wrapper is constructed per-fire as a temp-swap of `self._priors`
+inside `_maybe_fire`, mirroring the `self._delta_min` temp-swap used
+for clause 1. Both restore on every exit path via try/finally.
+
+> **Spec gap (now closed):** v2's no-fallback priors enforcement was
+> at odds with CH3's "exploit the winning cell" intent — the shipped
+> `data/spot_aware_priors.json` v1 starts at `|Δ|=5`, so the cell
+> couldn't fire without either extending the priors data or adding a
+> fallback. Earlier in this session I shipped CH3 as spec-literal and
+> flagged the gap as a deferred follow-up. After operator review the
+> fallback parameter was added — `0.48` default matches the Phase G
+> empirical and the v2.1 strategy now fires on the winning cell out
+> of the box. Operator can disable via env (set
+> `SPOT_AWARE_TIER_RELAX_P_WIN_FALLBACK` outside `(0, 1)`) or tune
+> the fallback p_win for further conservatism / aggression.
 
 ### CH4 — Kelly-bet-too-small abstain
 

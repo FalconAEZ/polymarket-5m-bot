@@ -411,11 +411,24 @@ def _build_strategy(name: str) -> Strategy:
         kelly = KellyConfig(kelly_mult=kelly_mult, max_bet_abs=kelly_max_bet_abs)
         multi_fire_cap_raw = _env_float("MULTI_FIRE_CAP", 2.0) or 2.0
         multi_fire_cap = max(1, int(multi_fire_cap_raw))
+        # CH3 priors-fallback (PG §5.1: 48.1% historical for 30-50% x
+        # |Δ|<5). Default 0.48 = conservative below the 58.2% backtest
+        # projection (H.1 §1). A value outside (0, 1) disables the
+        # fallback entirely (v2.1 then behaves spec-literal: won't fire
+        # on the cell until the priors data ships a [1, 5] bucket).
+        fallback_raw = _env_float("SPOT_AWARE_TIER_RELAX_P_WIN_FALLBACK", 0.48)
+        fallback_val: float | None
+        if fallback_raw is None or fallback_raw <= 0.0 or fallback_raw >= 1.0:
+            fallback_val = None
+        else:
+            fallback_val = fallback_raw
         LOG.warning(
-            "spot_aware_v2_1: kelly_mult=%.2f max_bet_abs=$%.0f multi_fire_cap=%d overrides=%s",
+            "spot_aware_v2_1: kelly_mult=%.2f max_bet_abs=$%.0f "
+            "multi_fire_cap=%d tier_relax_p_win_fallback=%s overrides=%s",
             kelly_mult,
             kelly_max_bet_abs,
             multi_fire_cap,
+            fallback_val,
             v21_kwargs,
         )
         return SpotAwareStrategyV2_1(
@@ -423,6 +436,7 @@ def _build_strategy(name: str) -> Strategy:
             bankroll_getter=lambda: 1000.0,  # placeholder; rebound in main()
             kelly=kelly,
             multi_fire_cap=multi_fire_cap,
+            tier_relax_p_win_fallback=fallback_val,
             **v21_kwargs,
         )
     if name == "ensemble":

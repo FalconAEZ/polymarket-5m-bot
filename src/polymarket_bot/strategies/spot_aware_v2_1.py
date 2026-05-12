@@ -14,10 +14,15 @@ Four filter changes (cite Phase G PDF sections):
     Enforced before super() so the multi-fire counter doesn't tick.
   * CH2 — reject EV ∈ [0.02, 0.05) (PG §5.1: 71 fires, -$0.43/trade,
     marginal-positive-EV trap).
-  * CH3 — tier-specific Δ floor (PG §6.2: tier 30-50% x |Δ|<5 is the
-    audit's largest positive cell at +$0.65/trade). Relaxed to 0 for
-    tiers in `tier_relax_delta` (default {'15-30%', '30-50%'}); other
-    tiers keep v2's inherited 5 bps floor.
+  * CH3 — tier-specific Δ floor + priors fallback (PG §6.2: tier
+    30-50% x |Δ|<5 is the audit's largest positive cell at +$0.65/
+    trade). Δ floor relaxed to 0 for tiers in `tier_relax_delta`
+    (default {'15-30%', '30-50%'}); other tiers keep v2's inherited
+    5 bps floor. When the inherited priors table misses at low |Δ|
+    AND tier is in tier_relax, a `tier_relax_p_win_fallback` synthesises
+    a p_win value so the winning cell fires (default 0.48 = PG §5.1
+    empirical historical WR; below the 0.582 backtest projection per
+    H.1 §1 honest-pushback Conservative scenario).
   * CH4 — abstain when Kelly bet < min_bet_abs. Treats "no edge" as
     a real abstain so the window can re-evaluate on a later tick.
 
@@ -57,6 +62,69 @@ DEFAULT_EV_BAD_BUCKET_V2_1: tuple[float, float] = (0.02, 0.05)
 
 # Default per-window cap. Operator Q3 default = 2.
 DEFAULT_MULTI_FIRE_CAP_V2_1: int = 2
+
+# Default fallback p_win for the CH3 winning cell when the shipped
+# priors table misses. Phase G §5.1 historical empirical WR for the
+# 30-50% x |Δ|<5 cell was 48.1% (n=83); 0.48 is one tick conservative,
+# below the 58.2% backtest projection (H.1 §1) so Kelly sizing stays
+# disciplined relative to the data. Set to None to disable the fallback
+# entirely; then v2.1 behaves exactly like spec-literal CH3 (cell won't
+# fire until the priors data ships a [1, 5] bucket). Operator override
+# via SPOT_AWARE_TIER_RELAX_P_WIN_FALLBACK env var.
+DEFAULT_TIER_RELAX_P_WIN_FALLBACK: float | None = 0.48
+
+
+class _PriorsFallback:
+    """Wraps the real ``SpotAwarePriors`` and synthesises a p_win for
+    the CH3 winning cell when the inherited table misses.
+
+    Trigger conditions (ALL must hold):
+      1. The real priors lookup returns None (table miss).
+      2. The price's tier is in ``tier_relax`` (default {'15-30%',
+         '30-50%'}).
+      3. The |Δ| is below ``delta_floor`` (v2's inherited 5 bps),
+         i.e., the relaxed-floor zone CH3 opened up.
+
+    All three together mean: "this is the Phase G winning cell that
+    v2.1's CH3 explicitly intends to fire on, but the priors data
+    doesn't cover it yet". The fallback returns ``p_win_fallback``
+    (operator-tuned; default 0.48 per PG §5.1 historical empirical).
+
+    For any other miss (e.g., tier 70-85% at |Δ|=3, or tier 50-70%
+    rejected, or large |Δ| outside the table), this fallback returns
+    None — preserving v2's strict no-fallback semantics for everything
+    outside CH3's intended scope.
+
+    Duck-typed: matches ``SpotAwarePriors``'s public surface
+    (``lookup`` + ``fee_estimate_pct``). Constructed per-fire as a
+    temp-swap in ``SpotAwareStrategyV2_1._maybe_fire`` so v2's super()
+    body sees the fallback transparently.
+    """
+
+    def __init__(
+        self,
+        *,
+        real: SpotAwarePriors,
+        p_win_fallback: float,
+        tier_relax: frozenset[str],
+        delta_floor: float,
+    ) -> None:
+        self._real = real
+        self._p_win_fallback = p_win_fallback
+        self._tier_relax = tier_relax
+        self._delta_floor = delta_floor
+        # Mirror the real priors' fee so v2's super() body reads it identically.
+        self.fee_estimate_pct = real.fee_estimate_pct
+
+    def lookup(self, *, price: float, abs_delta_bps: float) -> float | None:
+        hit = self._real.lookup(price=price, abs_delta_bps=abs_delta_bps)
+        if hit is not None:
+            return hit
+        # Real priors missed. Apply the fallback ONLY for the CH3 cell.
+        tier = tier_label_for_price(price)
+        if tier in self._tier_relax and abs_delta_bps < self._delta_floor:
+            return self._p_win_fallback
+        return None
 
 
 # Rationale-parsing + self-tagging regex. Word boundaries prevent
@@ -128,6 +196,7 @@ class SpotAwareStrategyV2_1(SpotAwareStrategyV2):
         multi_fire_cap: int = DEFAULT_MULTI_FIRE_CAP_V2_1,
         tier_relax_delta: tuple[str, ...] = DEFAULT_TIER_RELAX_V2_1,
         ev_bad_bucket: tuple[float, float] = DEFAULT_EV_BAD_BUCKET_V2_1,
+        tier_relax_p_win_fallback: float | None = DEFAULT_TIER_RELAX_P_WIN_FALLBACK,
         **v2_kwargs: object,
     ) -> None:
         super().__init__(priors=priors, **v2_kwargs)  # type: ignore[arg-type]
@@ -136,11 +205,17 @@ class SpotAwareStrategyV2_1(SpotAwareStrategyV2):
         lo, hi = ev_bad_bucket
         if not (0.0 <= lo < hi):
             raise ValueError(f"ev_bad_bucket must satisfy 0 <= lo < hi; got ({lo}, {hi})")
+        if tier_relax_p_win_fallback is not None and not 0.0 < tier_relax_p_win_fallback < 1.0:
+            raise ValueError(
+                f"tier_relax_p_win_fallback must be in (0, 1) or None; "
+                f"got {tier_relax_p_win_fallback}"
+            )
         self._bankroll_getter = bankroll_getter
         self._kelly = kelly if kelly is not None else KellyConfig()
         self._multi_fire_cap = multi_fire_cap
         self._tier_relax = frozenset(tier_relax_delta)
         self._ev_bad_lo, self._ev_bad_hi = ev_bad_bucket
+        self._tier_relax_p_win_fallback = tier_relax_p_win_fallback
         self._fires_this_window: int = 0
 
     @property
@@ -204,16 +279,28 @@ class SpotAwareStrategyV2_1(SpotAwareStrategyV2):
             return None
         tier = tier_label_for_price(ask_guess)
 
-        # v2's `_maybe_fire` reads `self._delta_min` directly. We swap
-        # it for this fire only (single-threaded event loop → safe).
-        # Restore on every exit path via try/finally.
+        # v2's `_maybe_fire` reads `self._delta_min` and `self._priors`
+        # directly. We swap both for this fire only (single-threaded
+        # event loop → safe). The priors swap installs a `_PriorsFallback`
+        # for tier_relax tiers so the CH3 winning cell can fire even
+        # when the shipped priors table misses at low |Δ|. Restore on
+        # every exit path via try/finally.
         saved_delta_min = self._delta_min
+        saved_priors = self._priors
         if tier in self._tier_relax:
             self._delta_min = 0.0
+            if self._tier_relax_p_win_fallback is not None:
+                self._priors = _PriorsFallback(  # type: ignore[assignment]
+                    real=saved_priors,
+                    p_win_fallback=self._tier_relax_p_win_fallback,
+                    tier_relax=self._tier_relax,
+                    delta_floor=saved_delta_min,
+                )
         try:
             base_decision = super()._maybe_fire(now_ts_utc_ns)
         finally:
             self._delta_min = saved_delta_min
+            self._priors = saved_priors
 
         if base_decision is None:
             return None
