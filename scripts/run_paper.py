@@ -431,14 +431,22 @@ def _build_strategy(name: str) -> Strategy:
         # '85-100%'). Unknown labels pass through but never match (no-op).
         block_up = _env_csv("SPOT_AWARE_BLOCK_UP_IN_TIERS")
         block_down = _env_csv("SPOT_AWARE_BLOCK_DOWN_IN_TIERS")
+        # Phase J.1 — CH3 price floor in tier_relax cells. H.3 audit
+        # 2026-05-13 measured n=111 fires: BELOW 0.42 lose -$5.70/tr
+        # (n=51), ABOVE 0.42 win +$1.77/tr (n=60). Set to 0.0 to disable.
+        # Default 0.42 = data-optimal; 0.40 conservative; 0.43 aggressive.
+        price_floor_raw = _env_float("SPOT_AWARE_TIER_RELAX_PRICE_FLOOR", 0.42)
+        price_floor_val = price_floor_raw if price_floor_raw is not None else 0.42
         LOG.warning(
             "spot_aware_v2_1: kelly_mult=%.2f max_bet_abs=$%.0f "
             "multi_fire_cap=%d tier_relax_p_win_fallback=%s "
+            "tier_relax_price_floor=%.3f "
             "block_up_in_tiers=%s block_down_in_tiers=%s overrides=%s",
             kelly_mult,
             kelly_max_bet_abs,
             multi_fire_cap,
             fallback_val,
+            price_floor_val,
             block_up,
             block_down,
             v21_kwargs,
@@ -451,6 +459,7 @@ def _build_strategy(name: str) -> Strategy:
             tier_relax_p_win_fallback=fallback_val,
             block_up_in_tiers=block_up,
             block_down_in_tiers=block_down,
+            tier_relax_price_floor=price_floor_val,
             **v21_kwargs,
         )
     if name == "ensemble":

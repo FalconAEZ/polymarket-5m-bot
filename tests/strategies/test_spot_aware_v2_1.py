@@ -552,3 +552,79 @@ def test_v2_1_rejects_invalid_p_win_fallback() -> None:
             bankroll_getter=_bankroll(),
             tier_relax_p_win_fallback=0.0,
         )
+
+
+# ---------- Phase J.1: CH3 price floor in tier_relax ----------
+
+
+async def test_v2_1_blocks_below_price_floor_in_tier_relax() -> None:
+    """J.1 — A CH3 cell fire with price_limit < floor MUST abstain.
+    Construction: stub priors p_win=0.55 + ask=0.25 (tier 15-30%);
+    v2's default limit_buffer=0.02 → price_limit=0.27. With floor=0.30,
+    27 < 30 → block. Reset _fired_for_window per spec."""
+    strat = SpotAwareStrategyV2_1(
+        priors=_StubPriors(p_win=0.55),
+        bankroll_getter=_bankroll(1000.0),
+        tier_relax_price_floor=0.30,
+    )
+    decision = await _drive_simple_window(strat, open_spot=80_000.0, end_spot=80_080.0, ask_up=0.25)
+    assert decision is None, "CH3 fire with price_limit<floor must abstain"
+
+
+async def test_v2_1_does_not_block_at_or_above_price_floor() -> None:
+    """J.1 — A CH3 cell fire with price_limit ≥ floor MUST fire through.
+    Construction: stub priors p_win=0.55 + ask=0.43 (tier 30-50%);
+    v2's default limit_buffer=0.02 → price_limit=0.45 ≥ 0.42 floor."""
+    strat = SpotAwareStrategyV2_1(
+        priors=_StubPriors(p_win=0.55),
+        bankroll_getter=_bankroll(1000.0),
+        tier_relax_price_floor=0.42,
+    )
+    decision = await _drive_simple_window(strat, open_spot=80_000.0, end_spot=80_080.0, ask_up=0.43)
+    assert decision is not None, "CH3 fire with price_limit≥floor must fire"
+    assert "side=UP" in decision.rationale
+
+
+async def test_v2_1_price_floor_does_not_apply_outside_tier_relax() -> None:
+    """J.1 — The floor is SURGICAL to tier_relax cells. Tier 70-85% (NOT
+    in tier_relax) ignores the floor and fires on its own gates.
+    Construction: stub p_win=0.85 + ask=0.72 (tier 70-85%); v2's
+    limit_buffer=0.02 → price_limit=0.74. Floor=0.90 would block IF
+    applied, but tier 70-85% is outside scope — fire proceeds."""
+    strat = SpotAwareStrategyV2_1(
+        priors=_StubPriors(p_win=0.85),
+        bankroll_getter=_bankroll(1000.0),
+        tier_relax_price_floor=0.90,  # would block if applied
+    )
+    decision = await _drive_simple_window(strat, open_spot=80_000.0, end_spot=80_080.0, ask_up=0.72)
+    assert decision is not None, "tier 70-85% must ignore the tier_relax floor"
+
+
+async def test_v2_1_price_floor_zero_is_disabled() -> None:
+    """J.1 — Setting floor=0.0 is the explicit kill-switch: every CH3
+    cell fire passes the floor check regardless of price_limit. Mirrors
+    the SPOT_AWARE_TIER_RELAX_PRICE_FLOOR=0 operator override path."""
+    strat = SpotAwareStrategyV2_1(
+        priors=_StubPriors(p_win=0.55),
+        bankroll_getter=_bankroll(1000.0),
+        tier_relax_price_floor=0.0,  # kill-switch
+    )
+    # ask=0.18 → price_limit=0.20; floor=0 means no block.
+    decision = await _drive_simple_window(strat, open_spot=80_000.0, end_spot=80_080.0, ask_up=0.18)
+    assert decision is not None, "floor=0.0 must disable the J.1 check entirely"
+
+
+def test_v2_1_rejects_invalid_price_floor() -> None:
+    """J.1 — Floor must be in [0.0, 1.0). Out-of-range raises."""
+    with pytest.raises(ValueError, match="tier_relax_price_floor"):
+        SpotAwareStrategyV2_1(
+            priors=_real_priors(),
+            bankroll_getter=_bankroll(),
+            tier_relax_price_floor=1.0,
+        )
+    with pytest.raises(ValueError, match="tier_relax_price_floor"):
+        SpotAwareStrategyV2_1(
+            priors=_real_priors(),
+            bankroll_getter=_bankroll(),
+            tier_relax_price_floor=-0.1,
+        )

@@ -81,6 +81,18 @@ DEFAULT_MULTI_FIRE_CAP_V2_1: int = 2
 # via SPOT_AWARE_TIER_RELAX_P_WIN_FALLBACK env var.
 DEFAULT_TIER_RELAX_P_WIN_FALLBACK: float | None = 0.48
 
+# Default price floor for tier_relax (CH3) fires. Phase J.1 — H.3 audit
+# 2026-05-13 measured n=111 CH3 cell fires; price distribution
+# min=0.180 / median=0.420 / max=0.460. Fires BELOW 0.42 lose at
+# 25.5% WR / -$5.70/trade (n=51); fires AT-OR-ABOVE 0.42 win at 56.7%
+# WR / +$1.77/trade (n=60). The floor (NOT a ceiling) blocks the
+# losing subset and keeps the winners. Direction is inverted from the
+# H.3 spec's original "price_cap" framing based on live data; the
+# spec hypothesis (cap above 0.45) would have removed the winners.
+# Set to 0.0 to disable (kill-switch); 0.40 conservative; 0.43
+# aggressive. Operator override via SPOT_AWARE_TIER_RELAX_PRICE_FLOOR.
+DEFAULT_TIER_RELAX_PRICE_FLOOR: float = 0.42
+
 
 class _PriorsFallback:
     """Wraps the real ``SpotAwarePriors`` and synthesises a p_win for
@@ -215,6 +227,7 @@ class SpotAwareStrategyV2_1(SpotAwareStrategyV2):
         # surfaces the same pattern on the low end).
         block_up_in_tiers: tuple[str, ...] = (),
         block_down_in_tiers: tuple[str, ...] = (),
+        tier_relax_price_floor: float = DEFAULT_TIER_RELAX_PRICE_FLOOR,
         **v2_kwargs: object,
     ) -> None:
         super().__init__(priors=priors, **v2_kwargs)  # type: ignore[arg-type]
@@ -228,6 +241,10 @@ class SpotAwareStrategyV2_1(SpotAwareStrategyV2):
                 f"tier_relax_p_win_fallback must be in (0, 1) or None; "
                 f"got {tier_relax_p_win_fallback}"
             )
+        if not 0.0 <= tier_relax_price_floor < 1.0:
+            raise ValueError(
+                f"tier_relax_price_floor must be in [0.0, 1.0); " f"got {tier_relax_price_floor}"
+            )
         self._bankroll_getter = bankroll_getter
         self._kelly = kelly if kelly is not None else KellyConfig()
         self._multi_fire_cap = multi_fire_cap
@@ -236,6 +253,7 @@ class SpotAwareStrategyV2_1(SpotAwareStrategyV2):
         self._tier_relax_p_win_fallback = tier_relax_p_win_fallback
         self._block_up_in_tiers = frozenset(block_up_in_tiers)
         self._block_down_in_tiers = frozenset(block_down_in_tiers)
+        self._tier_relax_price_floor = tier_relax_price_floor
         self._fires_this_window: int = 0
 
     @property
@@ -333,6 +351,23 @@ class SpotAwareStrategyV2_1(SpotAwareStrategyV2):
             self._priors = saved_priors
 
         if base_decision is None:
+            return None
+
+        # J.1 — CH3 price floor in tier_relax cells. H.3 audit 2026-05-13
+        # on n=111 live CH3 fires showed BELOW 0.42 lose at 25.5% WR /
+        # -$5.70/trade (n=51) and ABOVE 0.42 win at 56.7% WR / +$1.77/
+        # trade (n=60). Direction is FLOOR (block below) — inverted from
+        # the H.3 spec's original ceiling framing per measured data.
+        # Surgical: applies ONLY in tier_relax cells (CH3 scope). Other
+        # tiers are unaffected. Reset _fired_for_window so a later
+        # qualifying tick in the same window can re-evaluate (mirrors
+        # CH2 + CH4 abstain semantics). Set price_floor=0.0 to disable.
+        if (
+            self._tier_relax_price_floor > 0.0
+            and tier in self._tier_relax
+            and base_decision.price_limit < self._tier_relax_price_floor
+        ):
+            self._fired_for_window = None
             return None
 
         # CH2 — reject EV ∈ [ev_bad_lo, ev_bad_hi). Parse from the v2
