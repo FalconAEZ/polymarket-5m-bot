@@ -150,6 +150,32 @@ L1-L14 all preserved and operationalized this session:
 - bankroll ≤ $500 (50% drawdown)
 - 3 consecutive losing days
 
+## Update at +3.8h since H.5 deploy (01:20Z 2026-05-13)
+
+### CH3 cell convergence to Phase G EXACT (validation moment)
+
+At n=52 in the cell: **WR = 48.1%** — exactly matches Phase G's historical projection (48.1% on n=83). Strong validation that the cell-exploitation thesis is real.
+
+But **$/trade = −$0.387** vs Phase G's predicted +$0.65. Diagnosis: bot is firing at cell-average price ≈ 0.50 (top of the 30-50% tier where asymmetric-payoff edge is thinnest); Phase G's historical sample had cell-average ≈ 0.40. The under-performance is a price-distribution issue within the cell, not a WR problem. Possible follow-up: tighten upper price boundary or accept marginal $/trade and rely on volume.
+
+### First fires after H.2.12 path A
+
+All `fire=1/1` (cap=1 working), all DOWN-side (path A invariant holding for 70-85% UP). Kelly bet sizes vary $3-$23 with bankroll-and-edge scaling.
+
+### Expected behaviour going forward
+
+- Fire rate ~240-280/day (cap=1 halved from ~520/day cap=2 baseline)
+- WR will likely stay 40-50% (path A removes high-WR-but-negative-$/trade UP fires; WR could drop slightly while PnL improves — counter-intuitive but intended)
+- Daily PnL central tendency: **−$10 to +$30** depending on whether CH3 cell stays at current −$0.39 or drifts toward Phase G's +$0.65
+- Bankroll: oscillation in $750-$900 range likely; recovery to $1,000 baseline 6-15 days if positive bias holds
+- **Phase G $116k/90d off the table** — realistic 90d: $1.5k-$3k median; $2k hardware-wallet trigger ~20-45 days
+
+### +24h gate prediction
+
+**Most likely verdict: EXTEND** (re-soak 7d).
+- PROMOTE unlikely (need WR ≥ 52% on n ≥ 100; currently 41-48% n=52)
+- ROLLBACK unlikely (drawdown floor $500 is $300+ away)
+
 ## Live state snapshot (session boundary 2026-05-13T00:56:31Z)
 
 ```
