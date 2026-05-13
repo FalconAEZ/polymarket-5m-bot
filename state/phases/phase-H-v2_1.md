@@ -28,6 +28,7 @@ Phase G discovered the winning cell + Kelly + multi-fire + compounding architect
 | H.2.10 | gamma timeout 300s → 30s (env-only) | ✅ 2026-05-12T22:04:48Z |
 | H.2.11 | multi-fire cap 2 → 1 (env-only; operator throttle) | ✅ 2026-05-13T00:21:12Z |
 | H.2.12 | path A: block_up_in_tiers=("70-85%",) + tests | ✅ `c746db3` 2026-05-13T00:56:31Z |
+| H.2.13 | multi-fire cap 1 → 2 reactivation (env-only; operator-directed) | ✅ 2026-05-13T01:49:47Z |
 | **H.6** | +24h gate + 7d soak gate | ⏳ in progress; +24h gate at 2026-05-13T21:32:47Z |
 
 ## H.2 ship summary
