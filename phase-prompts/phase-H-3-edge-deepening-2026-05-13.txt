@@ -1,514 +1,593 @@
-Subject: Phase H.3 — full bot audit + real-edge diagnosis + multi-fire 2-6x redesign
+Subject: Phase H.3 — +24h gate audit + REAL edge generation (adaptive priors first, NOT regime detector)
          Source of truth: pdfs/PHASE_H_V2_1_FINAL_IMPLEMENTATION_SPEC.pdf
                           pdfs/PHASE_H_v2_1_IMPLEMENTATION.pdf
                           pdfs/PHASE_G_EDGE_DISCOVERY.pdf
-         Prior session: 2026-05-13 H.5 deploy + H.2.7-H.2.12 in-session refinements
-         Bot live since: 2026-05-13T00:56:31Z (H.2.12 path A restart)
-         This prompt expected fire time: 2026-05-13 13:00 UAE = 09:00 UTC
-         By session start the bot will have run ~8h on H.2.12 config, ~12h since H.5
+         Prior session: 2026-05-13 H.5 deploy + H.2.7-H.2.13 in-session refinements
+         Bot live since: 2026-05-13T01:49:47Z (H.2.13 cap=2 reactivation restart)
+         This prompt expected fire time: 2026-05-14 01:00-02:00 UAE = 21:00-22:00 UTC 2026-05-13
+         +24h gate target: 2026-05-13T21:32:47Z (≈30min before / at session start)
 
 ================================================================================
-SESSION GOAL
+SESSION GOAL — REVISED PRIORITY ORDER
 ================================================================================
 
-  Three deliverables, in order:
+  Five deliverables, in strict priority order:
 
-  (1) FULL AUDIT of current bot state and Phase H.5 + H.2.7-H.2.12 outcomes.
-      Numbers, not narrative. WR / PnL / per-tier / per-cell / per-side
-      / per-strategy-era / per-hour. The +24h gate is at 2026-05-13T21:32:47Z
-      so this session will land just after the gate window opens; the audit
-      drives the PROMOTE / EXTEND / ROLLBACK call.
+  (1) +24h GATE AUDIT — full bot state at the gate moment.
+      Verdict: PROMOTE / EXTEND / ROLLBACK per spec §13/§15.
+      All audit numbers, no narrative.
 
-  (2) REAL-EDGE DIAGNOSIS aligned with Phase G PDF §1-§10 + Phase H §3-§9.
-      The bot's current observed WR is ~42-48% on different slices. Phase G's
-      historical projection was 48.1% on tier 30-50% × |Δ|<5; backtest was
-      58.2%. The CH3 cell is firing at 48.1% live (perfect Phase G match) but
-      $/trade is NEGATIVE (-$0.39 vs PG's +$0.65) because cell-avg price is
-      ~0.51 not ~0.40. Diagnose this rigorously — it's the central question
-      for whether v2.1 has an exploitable edge or whether the Phase G result
-      was a sample-bias artifact.
+  (2) H.2.13 EXPERIMENT VERDICT — cap=2 + path A combination.
+      The bot was on cap=1+path A for 53min then cap=2+path A for the rest
+      of the soak. The DIAGNOSTIC question: did the bleed rate stay at
+      ~$0.55/trade (path A neutralized cap=2 variance) OR did it double
+      to ~$1.10/trade (CH3 cell-avg-price problem amplified by cap=2)?
 
-  (3) MULTI-FIRE 2-6x REDESIGN for proven edges. Current multi-fire (cap was
-      2, throttled to 1 at H.2.11) was PURE capital-variance amplifier — both
-      fires of a multi-fire window settled to the SAME outcome because they
-      came from the SAME signal at the SAME instant in the same window. To
-      actually scale 2-6x we need INDEPENDENT bets per window — different
-      signals, different sides, different timings, OR different sub-markets.
-      Spec this carefully with operator sign-off. DO NOT just turn the cap
-      back up — that re-creates the variance disaster the operator just
-      throttled out of.
+  (3) FIX THE CH3 CELL-AVG-PRICE PROBLEM (path R1 from prior prompt).
+      Last session discovered the cell fires at avg-price 0.51 vs PG's 0.40.
+      Same WR (48.1%), opposite-signed $/trade (-$0.39 vs +$0.65). The fix
+      is an env-only price-ceiling: SPOT_AWARE_TIER_RELAX_PRICE_CAP=0.45.
+      THIS IS THE HIGHEST-LEVERAGE FIX AVAILABLE.
+
+  (4) HOUR-OF-DAY BLOCKLIST (data-backed from prior session's tier 70-85%
+      forensic). Tier 70-85% bleeds 22Z-00Z UTC (NY close volatility).
+      Block these hours from firing in tier 70-85%. Retrospective save:
+      ~$233 over the bot's lifetime.
+
+  (5) ADAPTIVE PRIORS DESIGN SPEC (not code yet; design only this session).
+      THIS is the real edge work. Phase G's priors are STATIC; market
+      microstructure has shifted (cell-avg-price drift is the proof).
+      Adaptive priors = rolling-window empirical p_win per (tier, delta,
+      side) updated continuously. Self-corrects across regime changes.
+      MORE POWERFUL than any external regime detector because the bot's
+      OWN trades become its training signal.
+
+  Sections F-H below cover deferred items: regime overlays (simple
+  vol-ratio first; Akash's HMM/LSTM as last resort), Fear & Greed,
+  order-flow microstructure, cross-exchange lead-lag — all DEFERRED
+  to phase H.4+ until the higher-leverage items above land.
+
+================================================================================
+WHY THIS PRIORITY ORDER (the meta-reasoning)
+================================================================================
+
+  Regime-detection (whether Akash's HMM/LSTM or simpler vol-ratio) is a
+  2nd-order MODULATOR — it tells the bot "should I fire in current
+  conditions" but doesn't generate new signal.
+
+  ADAPTIVE PRIORS is a 1st-order EDGE GENERATOR — it makes the bot's
+  static-data assumptions become continuously-updated empirical truth.
+  Self-corrects across regime drift without needing to classify regimes.
+
+  Order of operations matters: fix known signal degradation BEFORE adding
+  filters. A regime filter on a leaky signal still produces leaky output.
+
+  Concrete: our CH3 cell is firing at WR=48.1% (exactly Phase G historic)
+  but $/trade=-$0.39 because cell-avg-price is 0.51 not 0.40. A regime
+  detector could explain the drift; an adaptive priors layer would FIX it
+  by re-weighting recent fires. Different tools, different roles. Fix
+  first, modulate later.
 
 ================================================================================
 STATE AT HAND-OFF (verify before driving)
 ================================================================================
 
-  Bot is LIVE on VPS:
+  Bot config at session start:
     branch:    claude/jovial-hermann-7e103f
-    HEAD:      cbde7f6 (or later if any vault updates land)
-    config:    STRATEGY=spot_aware_v2_1, kelly_mult=0.10, multi_fire_cap=1,
-               fallback=0.48, block_up_in_tiers=("70-85%",), gamma_timeout=30s
-    service:   bot-staging.service active since 2026-05-13T00:56:31Z
-    bankroll:  ~$807-$860 range at hand-off (drift expected; check live)
+    HEAD:      eb55cf1 (or later if any vault updates land mid-soak)
+    config:    STRATEGY=spot_aware_v2_1
+               kelly_mult=0.10            (operator-locked)
+               multi_fire_cap=2           (H.2.13 reactivation)
+               fallback_p_win=0.48
+               block_up_in_tiers=("70-85%",)  (H.2.12 path A)
+               gamma_timeout=30s          (H.2.10)
+    bankroll:  $774-$900 range at H.2.13 restart; current value lives;
+               check live at session start
+    soak clock: H.5 deploy 2026-05-12T21:32:47Z; +24h gate
+                2026-05-13T21:32:47Z = ~30min before session start
 
-  Three locations should be on cbde7f6 (or later):
+  Three locations should be on eb55cf1+ (or whatever the latest is):
     - VPS:           /home/ops/polymarket-5m-bot
     - GitHub origin: claude/jovial-hermann-7e103f
     - Local jovial:  .claude/worktrees/jovial-hermann-7e103f
-    - Local main:    UNCHANGED at f92a4af (H.2 work isolated by design)
+    - Local main:    UNCHANGED at f92a4af (intentional — H.2 isolation)
 
   Pre-flight (run BEFORE driving):
     ssh -i $HOME/Downloads/LightsailDefaultKey-eu-west-1.pem -p 2222 \
         ops@108.132.51.116 \
       'systemctl is-active bot-staging.service dashboard-server.service tg-alerter.service; \
        cd /home/ops/polymarket-5m-bot && git rev-parse --short HEAD; \
-       grep "^export STRATEGY\|^export KELLY_MULT\|^export MULTI_FIRE_CAP\|^export SPOT_AWARE_BLOCK_UP" .envrc; \
+       grep "^export STRATEGY\|^export KELLY_MULT\|^export MULTI_FIRE_CAP\|^export SPOT_AWARE_BLOCK_UP\|^export INSTANT_SETTLE_GAMMA_TIMEOUT_S" .envrc; \
        date -u +%FT%TZ; date +%s'
 
-    Expected: 3x active / cbde7f6+ / spot_aware_v2_1 + cap=1 + block_up=70-85% / 2026-05-13T~09:00Z
+    Expected: 3x active / eb55cf1+ / spot_aware_v2_1 + cap=2 + block_up=70-85% + gamma=30s / ≈21:30Z
 
 ================================================================================
 PRE-WORK — REQUIRED (5-10 min)
 ================================================================================
 
-  Three PDFs on operator Desktop:
-    ~/Desktop/PHASE_G_EDGE_DISCOVERY.pdf           (630K — 18 dimensions audited)
-    ~/Desktop/PHASE_H_v2_1_IMPLEMENTATION.pdf      ( 18K — strategic plan)
-    ~/Desktop/PHASE_H_V2_1_FINAL_IMPLEMENTATION_SPEC.pdf (39K — engineering spec)
+  Three PDFs on operator Desktop (re-skim if rusty):
+    ~/Desktop/PHASE_G_EDGE_DISCOVERY.pdf
+    ~/Desktop/PHASE_H_v2_1_IMPLEMENTATION.pdf
+    ~/Desktop/PHASE_H_V2_1_FINAL_IMPLEMENTATION_SPEC.pdf
 
-  Critical sections to re-read (especially since context is fresh):
+  Critical sections to re-read:
 
     Phase G PDF:
-      §1-§3   why v2 = zero edge (50% WR, -$18.96 net on 635 fires)
-      §4.1    Slow-Minute trap (tier 85-100%, REJECTED)
-      §4.3    Δ=0 loser cluster (38 fires, -$0.62/trade)
-      §5.1    EV bucket [0.02, 0.05) trap (71 fires, -$0.43/trade)
-      §6.2    THE WINNING CELL — tier 30-50% × |Δ|<5 (n=83, +$0.65/trade, 48.1% WR)
-      §10.1-§10.4  Kelly + multi-fire + compounding theory
+      §6.2    THE WINNING CELL — n=83, +$0.65/trade, 48.1% WR
+              (verify the cell-avg-price was 0.40 in PG's data sample)
       §17     honest pushback — 97% catastrophic drawdown at 50% WR regression
 
-    Phase H FINAL spec:
-      §3      class definition (current bot matches this)
-      §7      rationale schema (incl. fire_n token)
-      §14     past-incident defense matrix L1-L14 (all preserved this session)
-      §15     ROLLBACK criteria (must check at +24h gate)
-
-    Phase H IMPLEMENTATION plan:
-      §2-§3   edge inventory + decision matrix (W1-W5, L1-L6, S1-S2, N1-N4)
-      §4.3    multi-fire ORIGINAL design intent (read this carefully)
-      §10     honest pushback — variance amplification
-
   Memory check (~/.claude/projects/-Users-hamad-Desktop-PolyMarket-5m/memory/):
-    MEMORY.md                                        — index
-    checkpoint_phase_H.md                            — current live state
-    project_v2_1_multi_fire_pure_variance.md         — KEY: multi-fire = pure variance amplifier finding
-    project_ch3_cell_price_distribution_matters.md   — KEY: CH3 WR matches PG but $/trade doesn't (cell-avg price)
-    project_phantom_defense_equals_fill_rate_problem.md — context for tier 85-100% fill-rate puzzle
-    feedback_no_vibe_coding.md                       — methodical work directive
-    feedback_honest_pushback.md                      — operator wants direct correction
+    MEMORY.md                                       — index
+    checkpoint_phase_H.md                           — current live state
+    project_ch3_cell_price_distribution_matters.md  — THE central diagnostic finding
+    project_v2_1_multi_fire_pure_variance.md        — multi-fire variance amplifier
+                                                      + H.2.13 reactivation context
+    project_phantom_defense_equals_fill_rate_problem.md — context for tier 85-100% q
+    feedback_no_vibe_coding.md
+    feedback_honest_pushback.md
+
+  Audit scripts already on VPS:
+    /tmp/full_analytics.py
+    /tmp/cap1_counterfactual.py
+    /tmp/tier_70_85_deep_dive.py
+    /tmp/tier_85_100_deep_dive.py
 
 ================================================================================
-SECTION A — FULL BOT AUDIT
+SECTION A — +24h GATE AUDIT
 ================================================================================
 
-  Goal: produce numbers for the +24h gate decision.
+  Session lands at or just-after the +24h gate at 2026-05-13T21:32:47Z.
+  Audit the FULL 24h sample (most fires of the bot's life as v2.1).
 
   A.1  SSH state + service health
        VPS uptime, NRestarts, memory, CPU, disk, Anthropic spend (=$0),
-       queue overflow (=0), dropped records (=0).
-       Confirm 5 systemd units running (bot-staging, dashboard-server,
-       tg-alerter, litestream, rtt-collector). Note dashboard tunnel up.
+       queue overflow (=0), dropped records (=0). 5 services active.
 
-  A.2  Run the canned audit script (already on VPS at /tmp/full_analytics.py):
-       ssh ... 'python3 /tmp/full_analytics.py'
+  A.2  Run /tmp/full_analytics.py — gives:
+       - CH1-CH8 invariant checks (especially CH1 strict-equality false alarm)
+       - per-tier breakdown (15-30%, 30-50%, 70-85%, etc.)
+       - resolution-source split (polymarket vs chainlink-fallback vs
+         polymarket-post-hoc)
+       - settle latency
+       - Kelly bet trajectory
+       - bankroll trajectory + peak/trough
+       - chainlink/gamma disagreement rate
+       - ROLLBACK gate state
 
-       Captures:
-         - fires + settled + corrections + pending since DEPLOY_TS_5=1778621567
-         - CH1-CH8 invariant checks
-         - per-tier breakdown (15-30%, 30-50%, 70-85%, etc.)
-         - resolution source + settle latency
-         - Kelly bet trajectory
-         - CH3 cell exploitation breakdown
-         - chainlink/gamma disagreement rate
-         - bankroll math vs Phase G Conservative pace
-         - ROLLBACK gate state
+  A.3  Run /tmp/cap1_counterfactual.py — what would PnL look like if cap=1
+       had been live the whole 24h? Compare to actual cap=2-mostly result.
+       THIS IS THE EXPERIMENT VERDICT FOR H.2.13.
 
-  A.3  Run the cap=2 vs cap=1 counterfactual (already on VPS at
-       /tmp/cap1_counterfactual.py) for understanding multi-fire impact.
+  A.4  Per-hour-of-day breakdown for the 24h sample. Tier 70-85% bleed
+       should concentrate 22Z-00Z if the historical pattern held.
 
-  A.4  Per-hour-of-day breakdown for the H.5+ era — was tier 70-85% bleed
-       hour-correlated like the full-history analysis suggested (22Z-00Z
-       catastrophic)?
+  A.5  CH3 cell stats:
+         - WR (target: ~48.1% per Phase G historic)
+         - $/trade (target: drift toward +$0.65; failure: stays ~$0)
+         - cell-avg-price (THE diagnostic — should be 0.45-0.50 range)
+         - count of fires using fallback p_win=0.48 (probably 100%)
 
-  A.5  Tier 85-100% deep-dive (already on VPS at /tmp/tier_85_100_deep_dive.py)
-       — operator surfaced 51 fires / 3 filled / 100% WR on filled subset.
-       Confirm whether the live H.5+ era added any new tier 85-100% data
-       (should be 0 since v2.1 rejects this tier).
+  A.6  Tier 70-85% DOWN-only live performance since H.2.12 path A:
+         - WR (target: ~74% per historic; if drops below 70% with n>40,
+           consider Path D — reject DOWN too)
+         - $/trade (target: +$0.13; if -$ — consider Path D)
+         - Hour distribution
 
-  A.6  Tier 70-85% live forensic — Path A only blocks UP. Track DOWN-side
-       performance since H.2.12 deploy. Was the +$0.13/trade historical
-       (n=31) holding live?
-
-  A.7  ROLLBACK GATE CHECK (spec §15):
-         - WR < 45% over 48h continuous           → if YES, ROLLBACK
-         - daily PnL < -$30 any single UTC day    → check 2026-05-12 + 2026-05-13
-         - bankroll ≤ $500 (50% drawdown)         → soft alarm $700, hard $500
-         - 3 consecutive losing days              → n/a (only day 1-2 so far)
+  A.7  ROLLBACK GATE CHECK (spec §15) — DECISION MATRIX:
+         - WR < 45% over 48h continuous            → if YES, ROLLBACK
+         - daily PnL < -$30 any single UTC day     → check 2026-05-13
+         - bankroll ≤ $500 (50% drawdown)          → check; soft alarm $700
+         - 3 consecutive losing days               → only have 1-2 days yet
 
   A.8  PROMOTE GATE CHECK (spec §15):
-         - WR ≥ 52% on n ≥ 100 settled            → likely too thin sample
-         - daily_pnl_min ≥ -$10 over 7d           → check
-         - fires/day ≥ 30 (target adjusted for cap=1: ≥15)  → check
-         - queue_overflow = 0                     → should pass
-         - bankroll ≥ $1500                       → unlikely to hit
+         - WR ≥ 52% on n ≥ 100                     → check sample size
+         - daily_pnl_min ≥ -$10 over 7d            → only 1-2 days; defer
+         - fires/day ≥ 30 (adjusted to ≥15)        → easily passes
+         - queue_overflow = 0                      → should pass
+         - bankroll ≥ $1,500                       → unlikely
 
-  A.9  EXTEND criteria — if neither PROMOTE nor ROLLBACK trips, the verdict
-       is EXTEND another 7d. Spec defaults toward EXTEND when ambiguous.
-       Document the decision with the audit numbers as evidence.
+  A.9  VERDICT: PROMOTE / EXTEND / ROLLBACK / KEEP-SOAK-LONGER
 
 ================================================================================
-SECTION B — REAL-EDGE DIAGNOSIS (the central question)
+SECTION B — H.2.13 EXPERIMENT VERDICT (cap=2 + path A)
 ================================================================================
 
-  The most important finding of the last session: **CH3 cell WR = 48.1%
-  EXACTLY matches Phase G historical** (n=52 in our sample) but
-  $/trade is -$0.39 NOT +$0.65 as PG predicted.
+  The diagnostic question: was H.2.13 reactivation a good call?
 
-  Why this matters: Phase G's entire +$0.65/trade thesis depends on
-  cell-AVERAGE price ≈ 0.40. We're firing at cell-avg ≈ 0.51 (right at the
-  boundary), where asymmetric-payoff math gives near-zero edge:
-    - 48.1% × (1-0.51) − 51.9% × 0.51 = 0.236 − 0.265 = -$0.029/share
-    - At $15 bet (~30 shares) = -$0.87/trade — matches our observation
+  Baseline data (path A active, cap=1, 53 min): bankroll dropped $807.28
+  → $774.50 = -$32.78 = -$0.55/trade.
 
-  Three hypotheses for the price-distribution gap:
+  Three possible verdicts based on the +24h sample's cap=2+path A
+  performance:
 
-    H1  REGIME CHANGE: BTC microstructure has shifted since PG's data window
-        (2026-05-08 → 2026-05-12). The tier 30-50% × |Δ|<5 cell now fires
-        mostly at the high end. Test: bucket bot fires by cell-avg price
-        per day. If recent days show drift toward 0.51, regime shift confirmed.
+    VERDICT A — "BLEED RATE STAYED ~$0.55/trade per fire"
+      → Path A WAS sufficient. cap=2 just got us 2× sample. KEEP cap=2.
+      → Implies the CH3 cell-avg-price problem is the ONLY remaining issue.
+      → Action: ship Section C below (CH3 price ceiling fix).
 
-    H2  v2/v2.1 GATE INTERACTION: The bot's `limit_buffer_usd=0.02` ADD 2¢ to
-        every ask before computing price_limit and EV. So an ask=0.48 becomes
-        price_limit=0.50; an ask=0.45 becomes 0.47. The bot's actual fires
-        are price-shifted UP by the buffer. Test: histogram of raw `ask`
-        (not `price_limit`) for the CH3 cell. If raw ask avg is 0.43-0.45,
-        the buffer is the culprit.
+    VERDICT B — "BLEED RATE DOUBLED TO ~$1.10/trade per fire"
+      → cap=2 amplified the existing -$0.39 CH3 bleed. Path A wasn't sufficient.
+      → Action: revert to cap=1 (env-only flip). Document. Don't touch cap
+        again until adaptive priors lands.
 
-    H3  PRIORS FALLBACK ANCHORING: The CH3 fallback p_win=0.48 means break-even
-        is at price 0.48 (Kelly says don't bet above). But our limit_buffer
-        pushes price_limit ABOVE 0.48 for many fires — Kelly should be
-        rejecting these. Test: compute kelly_f for each CH3 fire. If many
-        are very small (0.01-0.05), the bot is correctly recognizing thin
-        edge but bet_usd is still being computed because bet > min_bet_abs.
+    VERDICT C — "BLEED FLIPPED POSITIVE"
+      → Edge is REAL and we just needed scale.
+      → Action: keep cap=2; ship Section C anyway; consider cap=3 trial
+        in a future session.
 
-  REMEDIATION CANDIDATES (do NOT ship without operator sign-off):
-
-    R1  Tighten CH3 cell upper boundary — only fire in tier_relax when price
-        < 0.45 (or 0.42). Cuts sample size by some factor; improves $/trade.
-        Concrete env idea: `SPOT_AWARE_TIER_RELAX_PRICE_CAP="0.45"`.
-
-    R2  Lower limit_buffer for tier_relax — fire at ask price not ask+0.02.
-        Risk: less price-improvement protection if ask jumps mid-window.
-
-    R3  Raise CH3 fallback p_win above 0.50 — keeps Kelly from sizing fires
-        above the asymmetric-payoff break-even point. Risk: cuts sample.
-
-    R4  Replace fallback with priors-data extension — add `[1, 5]` bucket
-        to `data/spot_aware_priors.json` v1 with empirical p_win values
-        from PG §6.2 historical (price-grain bucketed). MOST PRINCIPLED
-        path but requires data engineering on the priors table.
-
-  The diagnosis MUST happen before any remediation ships. Operator decides
-  which path. Default if uncertain: R1 (cleanest; tightest data ask).
+  How to compute: cumulative PnL since H.2.13 restart (1778636957) ÷
+  count of fires settled in that window = $/trade.
 
 ================================================================================
-SECTION C — TIER 70-85% DOWN SECOND LOOK
+SECTION C — FIX CH3 CELL-AVG-PRICE (HIGHEST-LEVERAGE FIX)
 ================================================================================
 
-  Path A (H.2.12) keeps tier 70-85% DOWN firing. Full-history sample was
-  n=31, 74.2% WR, +$0.13/trade — break-even (asymmetric-payoff math at
-  avg price 0.78 needs 78% WR).
+  THE FINDING: CH3 cell (tier 30-50% × |Δ|<5) fires at avg-price ≈ 0.51,
+  not Phase G's ≈ 0.40. Same WR (48.1% — exact match). Opposite-signed
+  $/trade (-$0.39 vs +$0.65). The asymmetric-payoff math:
+     0.481 × (1 - 0.51) - 0.519 × 0.51 = 0.236 - 0.265 = -$0.029/share
+  At $15 avg bet ≈ 30 shares ≈ -$0.87/trade — matches our observation.
 
-  After +24h of live data we should have ~5-10 more tier 70-85% DOWN fires
-  (rate ~3-5/day). Test:
-    - Did the WR hold at 74%+?
-    - Is $/trade still ≥ +$0.10?
-    - At what avg price are these firing? (Same boundary issue as CH3?)
+  At Phase G's cell-avg-price 0.40:
+     0.481 × (1 - 0.40) - 0.519 × 0.40 = 0.289 - 0.208 = +$0.081/share
+  At $15 avg bet ≈ 30 shares ≈ +$2.43/trade.
 
-  If WR < 70% on n ≥ 40 cumulative: shift to Path D (reject tier 70-85%
-  entirely via env: `SPOT_AWARE_BLOCK_DOWN_IN_TIERS="70-85%"`).
+  Bot is firing 10pp TOO HIGH in price within the cell. Fix:
 
-================================================================================
-SECTION D — MULTI-FIRE REDESIGN (2-6x per window for proven edges)
-================================================================================
+  C.1  IMPLEMENTATION (~1 hour):
+       NEW constructor param on SpotAwareStrategyV2_1:
+         tier_relax_price_cap: float = 0.45
+       Check after super() builds Decision; if price_limit > 0.45 AND tier
+       is in tier_relax_delta, abstain (reset _fired_for_window).
+       Env: SPOT_AWARE_TIER_RELAX_PRICE_CAP=0.45 (default 0.45; operator
+       can disable with 1.0 or set lower like 0.42 for more aggression).
 
-  CRITICAL CONTEXT — read carefully:
+  C.2  TESTS (5 new):
+         - test_v2_1_blocks_above_ceiling_in_tier_relax
+         - test_v2_1_does_not_block_below_ceiling
+         - test_v2_1_ceiling_does_not_apply_outside_tier_relax
+         - test_v2_1_ceiling_resets_fired_for_window
+         - test_v2_1_ceiling_invalid_value_raises
 
-  Last session's H.2.11 throttled multi-fire cap from 2→1 because:
-    - Both fires of a multi-fire window ALWAYS settled the same way
-    - Both came from the SAME signal at the same instant (within ms)
-    - PnL was exactly 2x per-fire PnL — pure capital-variance amplifier
-    - WR was IDENTICAL between cap=2 and cap=1 (41.9% on both)
+  C.3  EXPECTED IMPACT (based on prior data):
+         - Fires/day: drops 30-40% (cuts the high-cell-avg subset)
+         - WR: holds at ~48-50% (cell is still good at lower prices)
+         - $/trade: rises from -$0.39 toward +$0.65 (matches PG)
+         - Net daily PnL: small positive vs current small negative
 
-  Operator's ask: "reintroduce per-trade multi-fire not just 2x but 2-6x
-  within the 5-min time frame for PROVEN edges"
-
-  HONEST PUSHBACK before designing: simply raising the cap re-creates the
-  variance disaster. For 2-6x to be MEANINGFUL, the multiple fires per
-  window need to be INDEPENDENT — different signal sources, different
-  bet directions, or different price points. Not "fire the same signal 6
-  times bigger".
-
-  D.1  ARCHITECTURAL OPTIONS (operator-sign-off required for each):
-
-    Option α — TIME-STAGGERED RE-EVALUATION
-      Fire on each significant signal event WITHIN a window. E.g., fire at
-      T+30s (initial signal), then re-evaluate at T+90s, T+150s, T+240s as
-      price evolves. If signal STILL says fire (different p_win calc
-      because spot has moved), fire again. Each fire is a DIFFERENT bet
-      because the |Δ| has changed.
-
-      Risk: fires later in the window have less ttl, so price-improvement
-            window is smaller. Late fires might be net-negative.
-      Test:  back-test the bot history for "fired in same window at T+X
-             and T+Y" patterns. Look at the WR diff between early vs
-             late fires.
-
-    Option β — MULTI-SIDE FIRES
-      Some windows have signals on BOTH sides (e.g., big move up then
-      reversal). Currently the bot fires only one direction per signal
-      type. A multi-side multi-fire would allow firing UP at T+30s and
-      then DOWN at T+150s if the signal flipped.
-
-      Risk: both sides of YES-UP and YES-DOWN can't both win — they're
-            mutually exclusive outcomes. Net exposure could be near-zero
-            if priced correctly.
-      Test:  count windows where Δ flipped sign mid-window (e.g., +10bps
-             at T+30 then -10bps at T+180). How many? What's the
-             ex-post-optimal trade?
-
-    Option γ — MULTI-CELL FIRES (different EDGE SOURCES)
-      Fire ONCE per recognized edge cell. Tier 30-50% × |Δ|<5 = one fire.
-      Tier 15-30% × |Δ|<5 = a second fire (if it materializes). Tier
-      70-85% DOWN = a third fire. Each is INDEPENDENT — different edges,
-      different bet, different decision_id.
-
-      Risk: if the cells correlate within a window (e.g., big BTC move
-            pushes multiple tier prices to qualifying ranges), still
-            correlated bets.
-      Test:  audit current bot history — how many windows had MULTIPLE
-             distinct cells signal-ready simultaneously? n probably small.
-
-    Option δ — DCA / LADDERED ENTRY
-      Single signal, but split the Kelly bet across 2-6 fires at
-      different price points as the orderbook evolves. E.g., bet 1/3
-      at the first signal, second 1/3 if price improves, third 1/3 at
-      ttl end. Same direction, different fill prices.
-
-      Risk: complex. Adds maker-fill simulation complexity.
-      Test:  audit windows where the ask moved significantly during the
-             ttl. How often does the orderbook offer DCA opportunities?
-
-  D.2  MY (Claude's) RECOMMENDED PRIORITIZATION
-
-    1. Option γ (multi-cell) is the CLEANEST. Each cell is a PG-grounded
-       edge with its own data. Different cells have different correlations
-       — if 30-50% and 70-85% DOWN both fire in the same window, they're
-       betting on the same outcome (the bot bets WITH the larger move)
-       so they ARE correlated. Not as clean as I hoped on second thought.
-
-    2. Option α (time-staggered) is the most DATA-WORTH. Back-test it
-       against the bot's 4000+ historical decisions — find windows where
-       a later fire would have HAD a different bet from an earlier fire
-       (because Δ changed). If that subset shows DIFFERENT WR/PnL than
-       the early-only set, option α has real edge.
-
-    3. Option β (multi-side) requires the SAME WINDOW to have signals
-       in OPPOSING directions over the 5min. Historically rare but
-       intriguing. Test the data before coding.
-
-    4. Option δ (DCA) is sophisticated but requires re-architecting the
-       simulator + the fill model. Defer to a later phase.
-
-  D.3  WHAT THIS SESSION SHOULD PRODUCE FOR MULTI-FIRE
-
-    NOT code. The session produces:
-      (a) Data-backed analysis of each option α/β/γ/δ — what's the
-          historical edge if we'd been firing each pattern?
-      (b) Operator-recommendation: which to ship, which to defer.
-      (c) Spec for the chosen option — ready for a future H.3.X code
-          session.
-
-    If H.3 ships any code for multi-fire, it must be:
-      - Backward-compat with the current cap parameter
-      - Operator-flagged off-by-default
-      - Heavily tested (40+ tests) — multi-fire is the highest-risk
-        invariant in the bot
+  C.4  DEPLOY:
+       env-only (`SPOT_AWARE_TIER_RELAX_PRICE_CAP=0.45`) + restart.
+       Verify in startup log: "tier_relax_price_cap=0.45".
 
 ================================================================================
-SECTION E — DEFERRED FOLLOW-UPS FROM LAST SESSION
+SECTION D — HOUR-OF-DAY BLOCKLIST
 ================================================================================
 
-  These were logged but not actioned. Operator may want some shipped
-  in H.3 alongside the deeper edge work:
+  Data-backed from the prior session's tier 70-85% forensic across full
+  bot history (n=72):
+
+  | Hour UTC | n   | WR     | PnL      | $/trade |
+  | 17Z      |  9  | 100%   | +$17.47  | +$1.94  |  ★
+  | 19Z      |  6  |  83%   | + $5.36  | +$0.89  |  ★
+  | 20Z      |  8  |  87%   | + $6.15  | +$0.77  |  ★
+  | 21Z      |  7  |  57%   | + $7.48  | +$1.07  |  ★
+  | 22Z      |  5  |  40%   | -$58.64  | -$11.73 |  ✗
+  | 23Z      | 10  |  30%   | -$109.55 | -$10.95 |  ✗
+  | 00Z      |  9  |  44%   | -$65.37  | -$7.26  |  ✗
+
+  D.1  IMPLEMENTATION (~1-2 hours):
+       NEW constructor param on SpotAwareStrategyV2_1:
+         hour_blocklist: tuple[int, ...] = ()      # e.g. (22, 23, 0)
+         hour_blocklist_tiers: tuple[str, ...] = () # default empty (all)
+       Check at top of _maybe_fire: if current hour UTC in blocklist AND
+       tier is in hour_blocklist_tiers (or blocklist_tiers is empty),
+       abstain.
+       Env: SPOT_AWARE_HOUR_BLOCKLIST_UTC="22,23,0"
+            SPOT_AWARE_HOUR_BLOCKLIST_TIERS="70-85%"  (scope to bleeder)
+
+  D.2  EXPECTED IMPACT:
+       Retrospective save: ~$233 (sum of 22Z, 23Z, 00Z PnL).
+       Hourly fire-rate at blocked hours: drops to 0 for blocked tiers.
+       Overall fires/day drops modestly (~10-15%).
+
+  D.3  HONEST PUSHBACK:
+       n is small per hour (5-10 fires each). The pattern is statistically
+       suggestive but not iron-clad. Consider scoping to 70-85% only
+       (cleaner — known bleeder) vs all tiers (uncertain). Recommend
+       scoping to 70-85% to start.
+
+================================================================================
+SECTION E — ADAPTIVE PRIORS DESIGN (real edge work — DESIGN ONLY THIS SESSION)
+================================================================================
+
+  This is the centerpiece of H.3 forward. DESIGN it; don't code it this
+  session. Operator sign-off required before coding lands.
+
+  E.1  THE CORE IDEA
+
+       Phase G's spot_aware_priors.json is STATIC — built from 5 days of
+       2026-05-08→12 historical data. The cell-avg-price drift discovery
+       proves market microstructure has shifted since then. Static priors
+       can't track this shift.
+
+       Adaptive priors = the priors_table values UPDATE based on the
+       bot's OWN trade outcomes. Rolling window. Bayesian-style update
+       with a prior weight (don't let one bad day flip everything).
+
+       Math:
+         For each (tier, delta-bucket, side) combo:
+           p_win_adaptive = (w_static × p_win_static + w_rolling × p_win_observed)
+                          / (w_static + w_rolling)
+         where:
+           w_static  = some fixed weight (e.g. 100) — anchor to Phase G
+           w_rolling = count of recent fires in this combo (capped, e.g. 200)
+           p_win_observed = observed WR in rolling window
+
+       Initially when w_rolling=0, p_win_adaptive = p_win_static (Phase G).
+       As fires accumulate, p_win_adaptive shifts toward observed.
+
+  E.2  WHY THIS BEATS REGIME DETECTION
+
+       A regime detector says "we're in regime X; apply rule Y." Static
+       rule against changing markets eventually fails.
+
+       Adaptive priors say "this exact cell has shown p_win=X over the
+       last 100 fires; use that." Self-correcting. No regime
+       classification needed.
+
+       Equivalent: regime detection compresses market state into a
+       handful of labels; adaptive priors learn the cell-level state
+       directly. Higher resolution, no labeling needed.
+
+  E.3  PROPOSED ARCHITECTURE
+
+       Component A — RollingCellStats
+         Tracks per (tier_label, delta_bucket, side) combination:
+           - last_N_outcomes: deque[bool]  # max 200
+           - last_N_pnl: deque[float]      # for $/trade tracking
+           - p_win_observed property = sum(last_N_outcomes) / len()
+         Persisted to disk every K updates (default K=10) so survives
+         restart.
+
+       Component B — AdaptivePriors (wraps SpotAwarePriors)
+         lookup(price, abs_delta_bps) → float | None
+         Algorithm:
+           1. real_p_win = real_priors.lookup(price, abs_delta_bps)
+              (or fallback to 0.48 if miss + tier_relax)
+           2. cell_stats = stats_for(tier, delta_bucket, side)
+           3. if cell_stats.n >= 30:
+                blended = (W_STATIC * real_p_win + cell_stats.n * cell_stats.p_win_observed)
+                        / (W_STATIC + cell_stats.n)
+                return blended
+           4. else: return real_p_win
+
+       Component C — runner integration
+         After each settle, call adaptive_priors.observe(cell_key,
+         won, pnl_usd). Periodic disk persistence.
+
+  E.4  TUNABLES
+       - PRIORS_ADAPTIVE_ENABLED (default false; opt-in for safety)
+       - PRIORS_ADAPTIVE_STATIC_WEIGHT (default 100; controls inertia)
+       - PRIORS_ADAPTIVE_ROLLING_WINDOW (default 200; size of recent)
+       - PRIORS_ADAPTIVE_MIN_N (default 30; min sample to use blended)
+
+  E.5  RISKS
+       - Overfit to recent: a bad streak could push priors below real.
+         The static-weight anchor mitigates but doesn't eliminate.
+       - State persistence: rolling deques must survive bot restart.
+         Use same JSONL replay pattern as BankrollTracker.
+       - Backward compat: must work alongside CH3 fallback (priors miss
+         + tier_relax + |Δ|<5 → fallback 0.48). Adaptive priors should
+         layer ON TOP of, not REPLACE, the fallback.
+       - Operator-readable state: dump current adaptive p_win table to a
+         JSON the dashboard can show.
+
+  E.6  WHAT THIS SESSION DELIVERS
+       A spec doc (design/adaptive_priors.md) covering all of E.1-E.5.
+       Operator sign-off. NO code this session. Code lands in H.4.
+
+================================================================================
+SECTION F — DEFERRED REGIME OVERLAYS
+================================================================================
+
+  These are ranked below adaptive priors. Defer until adaptive priors
+  proves out OR doesn't.
+
+  F.1  SIMPLE VOL-RATIO REGIME (cheap; ~1 day to code)
+       1h_rolling_vol / 6h_rolling_vol > 1.5 → "high_vol"
+                                       < 0.7 → "low_vol"
+       Use as Kelly modulator (high_vol → kelly_mult × 0.5).
+       Cost: 30 LOC. No new deps.
+
+  F.2  FEAR & GREED INDEX (sentiment, slow-cadence)
+       Daily poll alternative.me/fng/. Use as Kelly modulator AND
+       per-tier directional bias.
+       Cost: 50 LOC. No deps.
+
+  F.3  AKASH'S HMM/LSTM REGIME CLASSIFIER
+       (akash-kumar5/CryptoMarket_Regime_Classifier)
+       PROS: 6-state classification; well-designed pipeline.
+       CONS: 500MB TensorFlow dep; trained on generic BTC OHLCV not
+             Polymarket-specific; violates "no async I/O in fire path"
+             past-incident defense (model inference adds latency);
+             addresses 2nd-order problem.
+       Recommended only if F.1 + F.2 + adaptive priors don't capture
+       the signal. SHADOW MODE only initially — don't bring TensorFlow
+       into the bot service.
+
+  F.4  CROSS-TAB INVESTIGATION (do BEFORE coding any of F.1-F.3)
+       1. Pull F&G history for bot lifetime (free API)
+       2. Compute simple vol-ratio per fire timestamp
+       3. Cross-tab CH3 cell-avg-price + tier 70-85% outcomes against
+          both F&G and vol regime
+       4. If signal: which approach (F.1/F.2/F.3) captures it?
+       5. If no signal: regime overlays defer indefinitely
+
+================================================================================
+SECTION G — DEFERRED SIGNAL GENERATORS
+================================================================================
+
+  G.1  ORDER-FLOW MICROSTRUCTURE (potentially big edge)
+       Top-of-book imbalance, quote velocity, effective spread, OFI.
+       Operates at the bot's actual 5min timescale. Could improve WR
+       by 2-5pp on top of current edge.
+       Cost: 5-7 days. Requires Polymarket book aggregator.
+
+  G.2  CROSS-EXCHANGE LEAD-LAG (Coinbase already wired)
+       Detect when Coinbase moves N bps in M ms before Binance does.
+       Use as confirmatory signal at fire time.
+       Cost: 3-5 days. Both feeds already in bot.
+
+  G.3  SPOT-PERP BASIS (futures-implied direction)
+       Binance perpetual futures funding rate vs spot. Leading indicator.
+       Cost: 2-3 days. Need new feed.
+
+  G.4  ADAPTIVE PRIORS (Section E) covers most of what G.1-G.3 would
+       capture in lower-dimensional form. Ship adaptive priors first;
+       evaluate whether G.1-G.3 are still needed.
+
+================================================================================
+SECTION H — DEFERRED FOLLOW-UPS FROM PRIOR SESSION
+================================================================================
+
+  Still pending from H.2 / H.2.X work:
 
     1. CH1 strict-equality → `abs(d_bps) < 0.01` (tiny clarity fix)
     2. `_prime_active_window_state` multi-fire — re-prime ALL unsettled
        fires after mid-window restart (Bug E mitigation)
-    3. `POST_HOC_GAMMA_RETRY_INITIAL_DELAY_S` 300s → 60s
-       (shrinks "wrong display" window after chainlink-fallback)
-    4. `feeds_health.json` writer audit — find the heartbeat that should
-       write this, fix; or accept Bug D as low-priority
-    5. Priors data low-Δ extension — add `[1, 5]` bucket from PG §6.2
-       empirical (path R4 from Section B above)
-    6. TopStrip MODE badge → `SPOT_AWARE_V2_1` (1-line React fix)
+    3. `POST_HOC_GAMMA_RETRY_INITIAL_DELAY_S` 300s → 60s (shrink
+       wrong-display window after chainlink-fallback)
+    4. `feeds_health.json` writer audit — locate the heartbeat that
+       should write this; fix or accept as low-priority
+    5. Priors data low-Δ extension — add `[1, 5]` bucket from PG §6.2.
+       NOTE: adaptive priors (Section E) supersedes this — defer.
+    6. TopStrip MODE badge → `SPOT_AWARE_V2_1` (1-line React)
     7. Gamma timeout alert throttle — every-10th → every-50th if
        Telegram noise becomes annoying
-    8. Tier 85-100% — operator surfaced 51 fires / 3 filled / 100% WR.
-       Section A.5 covered the audit; deferred action because n=3 is
-       not statistically actionable. Possible H.3 step: add SHADOW
-       logging for tier 85-100% candidates without firing.
+    8. Tier 85-100% — operator surfaced 51 fires / 3 filled / 100% WR
+       on filled subset. Not actionable as edge (n=3); document as
+       shadow-research candidate
 
 ================================================================================
-SECTION F — HONEST PUSHBACK FOR THIS SESSION
+SECTION I — HONEST PUSHBACK FOR THIS SESSION
 ================================================================================
 
-  F.1  WR sample is still small. By session start (+12h since H.5),
-       n_settled will be ~150-200. Spec §15 PROMOTE gate wants n ≥ 100,
-       so the sample is statistically meaningful — but the per-tier
-       sub-samples (especially tier 70-85% DOWN at n=31 + maybe 5-10
-       new) are still thin. Don't act on tiny sub-samples.
+  I.1  +24h sample is JUST big enough for the PROMOTE gate (n=100
+       threshold). Don't over-interpret per-tier or per-hour sub-samples
+       at n<30. Wait for n=50+ before acting on hour-of-day patterns.
 
-  F.2  The CH3 cell-average-price diagnosis is the most important finding
-       of last session. If it's a REGIME CHANGE (hypothesis H1), v2.1's
-       edge is structurally degraded and the right move is to re-engineer.
-       If it's the GATE INTERACTION (hypothesis H2), it's a 1-line fix.
-       Diagnose first. Don't ship remediation without knowing which.
+  I.2  Sections C, D, E should ALL land in H.4 (not this session).
+       This session delivers AUDIT + DECISIONS + DESIGN SPECS, not
+       new code. The bot has been through enough restarts in 24h —
+       let the +24h gate be a clean data point.
 
-  F.3  Multi-fire 2-6x is a TRAP if implemented wrong. The data show
-       that a 5-min market produces ONE primary direction signal per
-       window — multi-fire that just re-fires the same signal will
-       2-6x the variance with zero edge gain. ONLY scale if the
-       multiple fires are INDEPENDENT (different cells, different
-       times where signal changes, different markets). Operator may
-       be conflating "more fires" with "more edge" — these are not
-       the same thing.
+  I.3  H.2.13 cap=2 reactivation was operator-directed against my
+       honest pushback. The +24h data will say whether the call was
+       right or wrong. Be honest about the verdict — don't soft-pedal
+       either direction.
 
-  F.4  The +24h gate is at 2026-05-13T21:32:47Z which is BEFORE this
-       session runs (session at 09:00Z 2026-05-13 = -12h before gate).
-       Wait — 09:00 is 12h BEFORE the gate (21:32 same day). So this
-       session is at the MIDDLE of the 24h soak, not the end. The +24h
-       audit happens AFTER this session ends. If this session triggers
-       a config change, the +24h gate becomes confused (different
-       config measured in second half). Recommendation: only ship
-       config changes EITHER at session start (so +24h gate measures
-       new config) OR after the +24h gate completes. Probably the
-       cleaner path is to do the full +24h audit at the gate time
-       (~21:32Z) in a third session.
+  I.4  Adaptive priors is the right next investment but it's a 1-2
+       week build, not a 1-day fix. Spec it carefully. Get operator
+       sign-off on the design BEFORE coding. Phase H discipline:
+       design lock before code.
 
-  F.5  Phase G Conservative ($1k → $116k by 90d) was for cap=2 × 58.2%
-       WR backtest. Reality is cap=1 × 48.1% WR. The projection is
-       OFF THE TABLE. New realistic projection: $1k → $1.5-3k by 90d
-       median if edge holds. Manage expectations.
+  I.5  Phase G's $1k → $116k by 90d is STILL OFF the table. cap=2 ×
+       48.1% WR doesn't get us there. Adaptive priors might push WR
+       toward 52-55%, which would put the realistic 90d projection
+       at $5k-$15k. That's the honest framing — significant but not
+       lottery numbers.
 
 ================================================================================
 HARD LIMITS (this session)
 ================================================================================
 
   - Bankroll: $1000 paper. Do not promote to live this session.
-  - bot.service stays DISABLED (only bot-staging.service is the bot).
+  - Do not ship code this session UNLESS the +24h audit triggers a
+    rollback. The audit + decisions are the work product.
+  - bot.service stays DISABLED (only bot-staging.service).
   - Funder key NEVER on VPS.
-  - Anthropic spend: $0 expected (no LLM in fire path).
-  - Tests: 628 baseline. Any code change must keep 628 green AND add
-    tests for the new behavior.
-  - Max 3 commits per work item (force discipline).
-  - At least 1 audit query before suggesting any code change.
+  - Anthropic spend: $0 expected.
+  - Tests: 628 baseline. Any code change must keep green AND add tests.
+  - Max 3 commits per work item.
+  - At least 1 audit query before any decision.
 
 ================================================================================
 SESSION BOUNDARY — ENDS WHEN ONE OF
 ================================================================================
 
-  (a) Full audit done + edge diagnosis written + multi-fire option
-      chosen + spec written + operator sign-off. ✓ full
-  (b) Audit + diagnosis done; multi-fire spec deferred to a future
-      session. ✓ partial (likely outcome — multi-fire deserves its
-      own session)
+  (a) +24h audit done + Section B verdict + adaptive priors design
+      doc + Section C/D specs operator-signed-off. ✓ full
+  (b) Audit + verdict + 1-2 design specs done; rest deferred to H.4.
+      ✓ partial (likely outcome)
   (c) Context ≥ 60% before audit done → stop, write findings, defer
       to next session. ⏸
-  (d) Any code change fails 3 times without resolution → 3-fix rule
-      trips; postmortem. 🛑
-  (e) Bot bankroll trips ROLLBACK gate during the session →
-      emergency rollback path. 🛑
+  (d) Bot bankroll trips ROLLBACK gate during the session →
+      emergency env-flip rollback, postmortem. 🛑
 
 ================================================================================
 QUICK PRE-SESSION CHECKLIST
 ================================================================================
 
-[ ] Reviewed all 3 PDFs (especially Phase G §6.2 winning cell)
-[ ] Reviewed checkpoint_phase_H.md + the 2 project memories
-[ ] Pre-flight SSH passed: 3x active / cbde7f6+ / spot_aware_v2_1+cap=1+path-A
-[ ] uv + reportlab + matplotlib still available
-[ ] Dashboard tunnel reachable: ssh -L 8505:127.0.0.1:8505 ops@108.132.51.116
-[ ] Audit scripts on VPS: /tmp/full_analytics.py, /tmp/cap1_counterfactual.py,
-    /tmp/tier_85_100_deep_dive.py, /tmp/tier_70_85_deep_dive.py
-[ ] Operator awake + ready for the +24h gate decision
+[ ] Reviewed Phase G §6.2 (winning cell historic data + cell-avg-price)
+[ ] Reviewed memory/project_ch3_cell_price_distribution_matters.md
+[ ] Reviewed memory/project_v2_1_multi_fire_pure_variance.md
+[ ] Pre-flight SSH passed
+[ ] Dashboard tunnel reachable
+[ ] Audit scripts on VPS
+[ ] Operator awake + ready for PROMOTE/EXTEND/ROLLBACK call
 
 ================================================================================
 POST-SESSION CHECKLIST
 ================================================================================
 
-[ ] state/sessions/2026-05-13-phase-H-3-edge-deepening.md (new session note)
-[ ] state/phases/phase-H-v2_1.md (phase ledger updated)
-[ ] memory/checkpoint_phase_H.md (durable hand-off refreshed)
-[ ] memory/MEMORY.md (index updated)
-[ ] memory/project_<NEW_FINDING>.md (any new project insights captured)
+[ ] state/sessions/2026-05-13-phase-H-3-edge-deepening.md (new note)
+[ ] state/phases/phase-H-v2_1.md (updated with H.6 gate verdict)
+[ ] memory/checkpoint_phase_H.md (refreshed)
+[ ] memory/MEMORY.md (index)
+[ ] design/adaptive_priors.md (NEW design doc — spec for H.4)
+[ ] Any new project memories (cell-avg fix outcome, h.2.13 verdict)
 [ ] git push origin claude/jovial-hermann-7e103f
-[ ] VPS git pull (vault commits only; no restart unless code changed)
-[ ] If deployed any code: +5min and +30min verify
+[ ] VPS git pull (vault commits only unless rollback)
 
 ================================================================================
 WHAT THIS PHASE UNLOCKS
 ================================================================================
 
-  If H.3 confirms the CH3 cell is structurally productive (after the
-  price-distribution fix or otherwise):
-    → Phase H.4 = priors data extension (R4) — proper grain-bucketed
-      historical p_win for the low-Δ cells
-    → Phase H.5 = multi-fire redesign (option α/β/γ/δ chosen + shipped)
-    → Phase H.6 = full 7-day soak with proper edge + multi-fire
+  After H.3 (this session):
+    → Phase H.4 = adaptive priors code (1-2 weeks)
+                  + CH3 price ceiling (1 hour env-only)
+                  + hour-of-day blocklist (1 day code)
+    → Phase H.5 = order-flow microstructure features (5-7 days)
+    → Phase H.6 = cross-exchange lead-lag (3-5 days)
     → Phase I = live trading readiness review
 
-  If H.3 finds the cell is non-exploitable in current market regime:
-    → Phase H.4 = strategy re-design or v3 pivot
-    → Possible Phase G2 — re-discovery audit with current market data
-    → Operator decides: ship-it-anyway-with-Kelly OR pivot
+  If H.3 audit shows v2.1 is solidly net-positive at +24h:
+    → continue 7d soak with H.4 enhancements coming online
+  If H.3 audit shows net-negative across 24h:
+    → adaptive priors becomes URGENT path forward
+  If H.3 audit shows mixed (path A worked, cap=2 amplified, CH3 hosed):
+    → tactical env rollback + adaptive priors design
 
 ================================================================================
-HONEST PUSHBACK FOR THIS SESSION
+HONEST PUSHBACK FOR THE NEW SESSION'S OPERATOR
 ================================================================================
 
-  - The session should produce DECISIONS, not just analysis. By session
-    end, operator should know: PROMOTE / EXTEND / ROLLBACK at the +24h
-    gate (or how to compute it), AND which multi-fire path to spec.
-
-  - If the CH3 cell turns out non-exploitable in production conditions,
-    the entire Phase H thesis is shaken. Be ready for the possibility.
-    Don't soft-pedal the finding to preserve the narrative.
-
-  - Multi-fire 2-6x is operator-asked but may not be operator-best. The
-    data shows multi-fire is variance-only. The right move might be
-    "fix the cell first; multi-fire is a multiplier, not a fix". Be
-    willing to push back on the multi-fire reintroduction if the
-    primary edge isn't working.
-
-  - 4 hours of soak left to the +24h gate at session start. Don't try
-    to do EVERYTHING in this session. Pick: full audit OR multi-fire
-    spec OR cell diagnosis remediation. Pick one as primary, others
-    as secondary.
+  - The bot is paper-mode. None of this risks real money YET.
+  - Adaptive priors is the right play but it's NOT magic. WR could move
+    from 48% → 52% maybe; not 48% → 65%. Manage expectations.
+  - Don't reintroduce multi-fire 3-6x until adaptive priors lands.
+    Otherwise you're just amplifying current variance.
+  - The $116k/90d Phase G headline was ALWAYS a Conservative-scenario
+    Monte-Carlo MEDIAN under cap=2 × 58.2% WR backtest assumptions.
+    Reality is different. Be honest about that with anyone who asks.
 
 End of prompt.
 
 Source prompts referenced:
-  - phase-prompts/phase-H-2-code-v2_1-2026-05-13.txt (last session's prompt)
+  - phase-prompts/phase-H-2-code-v2_1-2026-05-13.txt (prior session)
+  - phase-prompts/phase-H-3-edge-deepening-2026-05-13.txt (prior version of this)
   - pdfs/PHASE_H_V2_1_FINAL_IMPLEMENTATION_SPEC.pdf (engineering spec)
   - pdfs/PHASE_H_v2_1_IMPLEMENTATION.pdf (strategic plan)
-  - pdfs/PHASE_G_EDGE_DISCOVERY.pdf (edge inventory + analytical predecessor)
+  - pdfs/PHASE_G_EDGE_DISCOVERY.pdf (analytical predecessor)
