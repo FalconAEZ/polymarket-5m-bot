@@ -628,3 +628,148 @@ def test_v2_1_rejects_invalid_price_floor() -> None:
             bankroll_getter=_bankroll(),
             tier_relax_price_floor=-0.1,
         )
+
+
+# ---------- Phase J.2: hour-of-day blocklist ----------
+
+
+import datetime as _dt  # noqa: E402  (test helper; grouped with J.2 fixtures)
+
+
+async def _drive_window_at(
+    strat: SpotAwareStrategyV2_1,
+    *,
+    window_ts: int,
+    open_spot: float,
+    end_spot: float,
+    ask_up: float = 0.45,
+    ask_down: float = 0.45,
+) -> Decision | None:
+    """Drive one window where the timestamp is controlled by the caller
+    (so hour-of-day tests can put the fire at a chosen UTC hour)."""
+    open_ns = window_ts * 1_000_000_000
+    await strat.on_event(WindowBoundary(ts_utc_ns=open_ns, window_ts=window_ts, kind="open"))
+    await strat.on_event(
+        SpotTick(ts_utc_ns=open_ns + 1_000_000_000, source="binance", price=open_spot)
+    )
+    await strat.on_event(
+        BookUpdate(
+            ts_utc_ns=open_ns + 2_000_000_000,
+            asset_id=TOKEN_UP,
+            side="UP",
+            best_bid=max(0.01, ask_up - 0.02),
+            best_ask=ask_up,
+            bid_size_top=100.0,
+            ask_size_top=100.0,
+        )
+    )
+    await strat.on_event(
+        BookUpdate(
+            ts_utc_ns=open_ns + 2_000_000_000,
+            asset_id=TOKEN_DOWN,
+            side="DOWN",
+            best_bid=max(0.01, ask_down - 0.02),
+            best_ask=ask_down,
+            bid_size_top=100.0,
+            ask_size_top=100.0,
+        )
+    )
+    return await strat.on_event(
+        SpotTick(ts_utc_ns=open_ns + 30_000_000_000, source="binance", price=end_spot)
+    )
+
+
+def _ts_at_utc_hour(hour: int) -> int:
+    """Return a unix seconds timestamp whose UTC hour is the given hour."""
+    return int(_dt.datetime(2026, 5, 13, hour, 0, 0, tzinfo=_dt.UTC).timestamp())
+
+
+async def test_v2_1_blocks_at_blocklist_hour_for_blocked_tier() -> None:
+    """J.2 — A fire at UTC 23:00 in tier 70-85% with that tier in the
+    blocklist MUST abstain. Construction: stub p_win=0.85 + ask=0.72
+    (tier 70-85%) — EV is well above gate; the blocklist is the cause
+    of abstain."""
+    strat = SpotAwareStrategyV2_1(
+        priors=_StubPriors(p_win=0.85),
+        bankroll_getter=_bankroll(1000.0),
+        hour_blocklist_utc=(23,),
+        hour_blocklist_tiers=("70-85%",),
+    )
+    ts_23 = _ts_at_utc_hour(23)
+    decision = await _drive_window_at(
+        strat, window_ts=ts_23, open_spot=80_000.0, end_spot=80_080.0, ask_up=0.72
+    )
+    assert decision is None, "23Z x 70-85% with blocklist active must abstain"
+
+
+async def test_v2_1_does_not_block_outside_blocklist_hour() -> None:
+    """J.2 — At UTC 12:00 (NOT in blocklist), the same fire fires through.
+    Same tier as the blocked test; only hour differs."""
+    strat = SpotAwareStrategyV2_1(
+        priors=_StubPriors(p_win=0.85),
+        bankroll_getter=_bankroll(1000.0),
+        hour_blocklist_utc=(23,),
+        hour_blocklist_tiers=("70-85%",),
+    )
+    ts_12 = _ts_at_utc_hour(12)
+    decision = await _drive_window_at(
+        strat, window_ts=ts_12, open_spot=80_000.0, end_spot=80_080.0, ask_up=0.72
+    )
+    assert decision is not None, "12Z x 70-85% must fire (hour not blocked)"
+    assert "side=UP" in decision.rationale
+
+
+async def test_v2_1_does_not_block_at_blocklist_hour_for_other_tier() -> None:
+    """J.2 — At UTC 23:00 but in tier 30-50% (NOT in blocklist), the
+    fire fires through. Blocklist is scoped to 70-85% only.
+
+    Disables the J.1 floor so the price (0.45) doesn't get caught by
+    that filter — isolates the hour-blocklist behavior."""
+    strat = SpotAwareStrategyV2_1(
+        priors=_StubPriors(p_win=0.55),
+        bankroll_getter=_bankroll(1000.0),
+        hour_blocklist_utc=(23,),
+        hour_blocklist_tiers=("70-85%",),
+        tier_relax_price_floor=0.0,
+    )
+    ts_23 = _ts_at_utc_hour(23)
+    decision = await _drive_window_at(
+        strat, window_ts=ts_23, open_spot=80_000.0, end_spot=80_080.0, ask_up=0.45
+    )
+    assert decision is not None, "23Z x 30-50% must fire (tier not blocked)"
+    assert "side=UP" in decision.rationale
+
+
+async def test_v2_1_empty_hour_blocklist_is_noop() -> None:
+    """J.2 — With both blocklists empty (default), every fire passes
+    through regardless of hour. Even at 23Z, a 70-85% fire fires."""
+    strat = SpotAwareStrategyV2_1(
+        priors=_StubPriors(p_win=0.85),
+        bankroll_getter=_bankroll(1000.0),
+        # defaults: both tuples empty
+    )
+    ts_23 = _ts_at_utc_hour(23)
+    decision = await _drive_window_at(
+        strat, window_ts=ts_23, open_spot=80_000.0, end_spot=80_080.0, ask_up=0.72
+    )
+    assert decision is not None, "empty blocklist must be noop"
+
+
+def test_v2_1_empty_tier_scope_is_rejected_at_init() -> None:
+    """J.2 — Setting hours without tier scope is a misconfiguration:
+    block-all-tiers at an hour is not supported. Init must raise.
+    Also covers out-of-range hour validation."""
+    with pytest.raises(ValueError, match="hour_blocklist_tiers"):
+        SpotAwareStrategyV2_1(
+            priors=_real_priors(),
+            bankroll_getter=_bankroll(),
+            hour_blocklist_utc=(23,),
+            hour_blocklist_tiers=(),
+        )
+    with pytest.raises(ValueError, match="hour_blocklist_utc"):
+        SpotAwareStrategyV2_1(
+            priors=_real_priors(),
+            bankroll_getter=_bankroll(),
+            hour_blocklist_utc=(24,),
+            hour_blocklist_tiers=("70-85%",),
+        )

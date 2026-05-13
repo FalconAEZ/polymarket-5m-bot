@@ -437,11 +437,31 @@ def _build_strategy(name: str) -> Strategy:
         # Default 0.42 = data-optimal; 0.40 conservative; 0.43 aggressive.
         price_floor_raw = _env_float("SPOT_AWARE_TIER_RELAX_PRICE_FLOOR", 0.42)
         price_floor_val = price_floor_raw if price_floor_raw is not None else 0.42
+        # Phase J.2 — hour-of-day blocklist (UTC). Both env vars default
+        # empty (no blocking). Operator sets e.g.
+        # SPOT_AWARE_HOUR_BLOCKLIST_UTC="22,23,0" +
+        # SPOT_AWARE_HOUR_BLOCKLIST_TIERS="70-85%" per H.3 audit finding.
+        # Validation: hours must be in [0, 23]; tiers must be non-empty
+        # if hours are. Strategy init raises if mis-configured.
+        hour_blocklist_raw = _env_csv("SPOT_AWARE_HOUR_BLOCKLIST_UTC")
+        hour_blocklist_utc: tuple[int, ...] = ()
+        if hour_blocklist_raw:
+            try:
+                hour_blocklist_utc = tuple(int(h) for h in hour_blocklist_raw)
+            except ValueError:
+                LOG.error(
+                    "SPOT_AWARE_HOUR_BLOCKLIST_UTC=%r contains non-integer; " "treating as empty",
+                    hour_blocklist_raw,
+                )
+                hour_blocklist_utc = ()
+        hour_blocklist_tiers = _env_csv("SPOT_AWARE_HOUR_BLOCKLIST_TIERS")
         LOG.warning(
             "spot_aware_v2_1: kelly_mult=%.2f max_bet_abs=$%.0f "
             "multi_fire_cap=%d tier_relax_p_win_fallback=%s "
             "tier_relax_price_floor=%.3f "
-            "block_up_in_tiers=%s block_down_in_tiers=%s overrides=%s",
+            "block_up_in_tiers=%s block_down_in_tiers=%s "
+            "hour_blocklist_utc=%s hour_blocklist_tiers=%s "
+            "overrides=%s",
             kelly_mult,
             kelly_max_bet_abs,
             multi_fire_cap,
@@ -449,6 +469,8 @@ def _build_strategy(name: str) -> Strategy:
             price_floor_val,
             block_up,
             block_down,
+            hour_blocklist_utc,
+            hour_blocklist_tiers,
             v21_kwargs,
         )
         return SpotAwareStrategyV2_1(
@@ -460,6 +482,8 @@ def _build_strategy(name: str) -> Strategy:
             block_up_in_tiers=block_up,
             block_down_in_tiers=block_down,
             tier_relax_price_floor=price_floor_val,
+            hour_blocklist_utc=hour_blocklist_utc,
+            hour_blocklist_tiers=hour_blocklist_tiers,
             **v21_kwargs,
         )
     if name == "ensemble":

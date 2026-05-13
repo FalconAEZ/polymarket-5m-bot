@@ -46,6 +46,7 @@ fires to v2 in 2026-05-12 audit tooling.
 
 from __future__ import annotations
 
+import datetime as _dt
 import re
 from collections.abc import Callable
 from dataclasses import replace as dc_replace
@@ -92,6 +93,15 @@ DEFAULT_TIER_RELAX_P_WIN_FALLBACK: float | None = 0.48
 # Set to 0.0 to disable (kill-switch); 0.40 conservative; 0.43
 # aggressive. Operator override via SPOT_AWARE_TIER_RELAX_PRICE_FLOOR.
 DEFAULT_TIER_RELAX_PRICE_FLOOR: float = 0.42
+
+# Default hour-of-day blocklist (UTC) — Phase J.2. Empty by default
+# (no blocking). Wired via SPOT_AWARE_HOUR_BLOCKLIST_UTC env (comma-list
+# of integers 0-23) + SPOT_AWARE_HOUR_BLOCKLIST_TIERS (comma-list of
+# canonical tier labels). H.3 audit 2026-05-13 H.5 era recommended
+# tier 70-85% x (22, 23, 0) UTC based on retrospective historical save
+# of ~$152-$233 across the affected hours.
+DEFAULT_HOUR_BLOCKLIST_UTC: tuple[int, ...] = ()
+DEFAULT_HOUR_BLOCKLIST_TIERS: tuple[str, ...] = ()
 
 
 class _PriorsFallback:
@@ -228,6 +238,8 @@ class SpotAwareStrategyV2_1(SpotAwareStrategyV2):
         block_up_in_tiers: tuple[str, ...] = (),
         block_down_in_tiers: tuple[str, ...] = (),
         tier_relax_price_floor: float = DEFAULT_TIER_RELAX_PRICE_FLOOR,
+        hour_blocklist_utc: tuple[int, ...] = DEFAULT_HOUR_BLOCKLIST_UTC,
+        hour_blocklist_tiers: tuple[str, ...] = DEFAULT_HOUR_BLOCKLIST_TIERS,
         **v2_kwargs: object,
     ) -> None:
         super().__init__(priors=priors, **v2_kwargs)  # type: ignore[arg-type]
@@ -245,6 +257,15 @@ class SpotAwareStrategyV2_1(SpotAwareStrategyV2):
             raise ValueError(
                 f"tier_relax_price_floor must be in [0.0, 1.0); " f"got {tier_relax_price_floor}"
             )
+        for h in hour_blocklist_utc:
+            if not 0 <= h <= 23:
+                raise ValueError(f"hour_blocklist_utc entries must be in [0, 23]; got {h}")
+        if hour_blocklist_utc and not hour_blocklist_tiers:
+            raise ValueError(
+                "hour_blocklist_tiers must be non-empty when hour_blocklist_utc "
+                "is non-empty (no-tier-scope = block-all is not supported; "
+                "set both to empty tuples to disable)"
+            )
         self._bankroll_getter = bankroll_getter
         self._kelly = kelly if kelly is not None else KellyConfig()
         self._multi_fire_cap = multi_fire_cap
@@ -254,6 +275,8 @@ class SpotAwareStrategyV2_1(SpotAwareStrategyV2):
         self._block_up_in_tiers = frozenset(block_up_in_tiers)
         self._block_down_in_tiers = frozenset(block_down_in_tiers)
         self._tier_relax_price_floor = tier_relax_price_floor
+        self._hour_blocklist_utc = frozenset(hour_blocklist_utc)
+        self._hour_blocklist_tiers = frozenset(hour_blocklist_tiers)
         self._fires_this_window: int = 0
 
     @property
@@ -316,6 +339,20 @@ class SpotAwareStrategyV2_1(SpotAwareStrategyV2):
         if ask_guess is None:
             return None
         tier = tier_label_for_price(ask_guess)
+
+        # J.2 — hour-of-day blocklist. Operator-scoped abstain by (UTC
+        # hour, tier label). H.3 audit 2026-05-13 H.5 era: tier 70-85% x
+        # (22, 23, 0) UTC was the catastrophic bleed band (23Z WR 0% /
+        # -$18.32/tr, 00Z -$7.02/tr). 21Z x 70-85% was profitable
+        # (+$2.13/tr) — the scope is intentionally narrow. Both
+        # blocklists empty → noop. Abstain BEFORE the multi-fire counter
+        # ticks; the window stays free for a later qualifying tick after
+        # the hour rolls over (though in practice a window spans only
+        # 5 min so hours don't roll mid-window).
+        if self._hour_blocklist_utc:
+            hour = _dt.datetime.fromtimestamp(now_ts_utc_ns / 1_000_000_000, tz=_dt.UTC).hour
+            if hour in self._hour_blocklist_utc and tier in self._hour_blocklist_tiers:
+                return None
 
         # H.2.12 path A — per-tier side-direction block. Operator can
         # disable specific side/tier combinations via env. Default
