@@ -422,13 +422,25 @@ def _build_strategy(name: str) -> Strategy:
             fallback_val = None
         else:
             fallback_val = fallback_raw
+        # H.2.12 path A — per-tier side-direction block. Env-only, defaults
+        # to empty (no blocking). Operator sets e.g.
+        # SPOT_AWARE_BLOCK_UP_IN_TIERS="70-85%" after Phase-G-data
+        # follow-up found UP fires in tier 70-85% net -$5/trade. Comma-
+        # separated tier labels; tier labels are the canonical TIER_LABELS
+        # set ('<15%' / '15-30%' / '30-50%' / '50-70%' / '70-85%' /
+        # '85-100%'). Unknown labels pass through but never match (no-op).
+        block_up = _env_csv("SPOT_AWARE_BLOCK_UP_IN_TIERS")
+        block_down = _env_csv("SPOT_AWARE_BLOCK_DOWN_IN_TIERS")
         LOG.warning(
             "spot_aware_v2_1: kelly_mult=%.2f max_bet_abs=$%.0f "
-            "multi_fire_cap=%d tier_relax_p_win_fallback=%s overrides=%s",
+            "multi_fire_cap=%d tier_relax_p_win_fallback=%s "
+            "block_up_in_tiers=%s block_down_in_tiers=%s overrides=%s",
             kelly_mult,
             kelly_max_bet_abs,
             multi_fire_cap,
             fallback_val,
+            block_up,
+            block_down,
             v21_kwargs,
         )
         return SpotAwareStrategyV2_1(
@@ -437,6 +449,8 @@ def _build_strategy(name: str) -> Strategy:
             kelly=kelly,
             multi_fire_cap=multi_fire_cap,
             tier_relax_p_win_fallback=fallback_val,
+            block_up_in_tiers=block_up,
+            block_down_in_tiers=block_down,
             **v21_kwargs,
         )
     if name == "ensemble":

@@ -31,6 +31,14 @@ BankrollTracker via a `bankroll_getter` callback at fire time (CH5/CH6
 in spec). Per-window cap=2 default (CH7); PaperRunner refactor lifted
 the singular pending_decision invariant to admit it (CH8 / spec §6).
 
+Path A side-direction block (H.2.12, post-Phase-G operator
+follow-up): live data 2026-05-13 showed tier 70-85% UP fires netted
+-$5.06/trade (n=41) while DOWN at +$0.13/trade (n=31) — the UP side
+was the catastrophic bleeder. `block_up_in_tiers` and
+`block_down_in_tiers` operator-tunable env vars surgically reject
+side/tier combinations before super() runs. Defaults are empty
+tuples (no blocking).
+
 Rationale self-tags as `strategy=spot_aware_v2_1` at construction
 (spec §7.1) — avoids the v3 inheritance bug that mis-attributed v3
 fires to v2 in 2026-05-12 audit tooling.
@@ -197,6 +205,16 @@ class SpotAwareStrategyV2_1(SpotAwareStrategyV2):
         tier_relax_delta: tuple[str, ...] = DEFAULT_TIER_RELAX_V2_1,
         ev_bad_bucket: tuple[float, float] = DEFAULT_EV_BAD_BUCKET_V2_1,
         tier_relax_p_win_fallback: float | None = DEFAULT_TIER_RELAX_P_WIN_FALLBACK,
+        # H.2.12 path A - per-tier side-direction block. Operator-tunable
+        # via env. Each tuple lists tier labels (e.g. "70-85%") where the
+        # corresponding side is REJECTED. Phase-G-data follow-up:
+        # tier 70-85% UP fires net -$5.06/trade (n=41) vs DOWN at +$0.13
+        # (n=31); blocking UP in that tier eliminates the catastrophic
+        # asymmetric-payoff bleeder. Symmetric block_down option is the
+        # mirror case (e.g. block DOWN in 15-30% if a future audit
+        # surfaces the same pattern on the low end).
+        block_up_in_tiers: tuple[str, ...] = (),
+        block_down_in_tiers: tuple[str, ...] = (),
         **v2_kwargs: object,
     ) -> None:
         super().__init__(priors=priors, **v2_kwargs)  # type: ignore[arg-type]
@@ -216,6 +234,8 @@ class SpotAwareStrategyV2_1(SpotAwareStrategyV2):
         self._tier_relax = frozenset(tier_relax_delta)
         self._ev_bad_lo, self._ev_bad_hi = ev_bad_bucket
         self._tier_relax_p_win_fallback = tier_relax_p_win_fallback
+        self._block_up_in_tiers = frozenset(block_up_in_tiers)
+        self._block_down_in_tiers = frozenset(block_down_in_tiers)
         self._fires_this_window: int = 0
 
     @property
@@ -278,6 +298,16 @@ class SpotAwareStrategyV2_1(SpotAwareStrategyV2):
         if ask_guess is None:
             return None
         tier = tier_label_for_price(ask_guess)
+
+        # H.2.12 path A — per-tier side-direction block. Operator can
+        # disable specific side/tier combinations via env. Default
+        # empty sets pass through unchanged. Surgical: abstain BEFORE
+        # the multi-fire counter ticks and BEFORE any super() work,
+        # so the window remains free for a later qualifying tick.
+        if side_guess == "UP" and tier in self._block_up_in_tiers:
+            return None
+        if side_guess == "DOWN" and tier in self._block_down_in_tiers:
+            return None
 
         # v2's `_maybe_fire` reads `self._delta_min` and `self._priors`
         # directly. We swap both for this fire only (single-threaded

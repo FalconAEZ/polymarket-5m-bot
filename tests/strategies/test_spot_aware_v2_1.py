@@ -463,6 +463,81 @@ def test_v2_1_rejects_invalid_ev_bucket() -> None:
         )
 
 
+# ---------- H.2.12 path A: per-tier side block ----------
+
+
+async def test_v2_1_block_up_in_tier_70_85_abstains() -> None:
+    """Path A — when SPOT_AWARE_BLOCK_UP_IN_TIERS includes '70-85%', an
+    UP candidate in that tier MUST abstain even if all other gates
+    pass. Uses ask=0.72 + p_win=0.85 so EV=0.105 is comfortably above
+    the gate — proves path A is the abstaining cause, not the EV
+    filter."""
+    strat = SpotAwareStrategyV2_1(
+        priors=_StubPriors(p_win=0.85),
+        bankroll_getter=_bankroll(1000.0),
+        block_up_in_tiers=("70-85%",),
+    )
+    decision = await _drive_simple_window(strat, open_spot=80_000.0, end_spot=80_080.0, ask_up=0.72)
+    assert decision is None, "block_up_in_tiers must reject UP fire in 70-85%"
+
+
+async def test_v2_1_block_up_does_not_apply_to_other_tiers() -> None:
+    """Path A is surgical: blocking UP in 70-85% must NOT affect UP
+    fires in other tiers (e.g., 30-50%)."""
+    strat = SpotAwareStrategyV2_1(
+        priors=_StubPriors(p_win=0.55),
+        bankroll_getter=_bankroll(1000.0),
+        block_up_in_tiers=("70-85%",),
+    )
+    decision = await _drive_simple_window(strat, open_spot=80_000.0, end_spot=80_080.0, ask_up=0.45)
+    assert decision is not None, "tier 30-50% UP must still fire when only 70-85% is blocked"
+
+
+async def test_v2_1_block_up_does_not_block_down_in_same_tier() -> None:
+    """Path A is direction-specific: blocking UP in tier 70-85% must NOT
+    affect DOWN fires in the same tier. Tier 70-85% DOWN-only is the
+    intent."""
+    strat = SpotAwareStrategyV2_1(
+        priors=_StubPriors(p_win=0.85),
+        bankroll_getter=_bankroll(1000.0),
+        block_up_in_tiers=("70-85%",),
+    )
+    # Spot FALLS → bot bets DOWN. ask_down in tier 70-85% (=0.72) keeps
+    # EV well above gate.
+    decision = await _drive_simple_window(
+        strat, open_spot=80_000.0, end_spot=79_920.0, ask_down=0.72
+    )
+    assert decision is not None
+    assert "side=DOWN" in decision.rationale
+
+
+async def test_v2_1_block_down_symmetric() -> None:
+    """Symmetric block_down_in_tiers: a DOWN candidate in a blocked tier
+    must abstain. (Reserved for future tier 15-30% analysis.)"""
+    strat = SpotAwareStrategyV2_1(
+        priors=_StubPriors(p_win=0.85),
+        bankroll_getter=_bankroll(1000.0),
+        block_down_in_tiers=("70-85%",),
+    )
+    decision = await _drive_simple_window(
+        strat, open_spot=80_000.0, end_spot=79_920.0, ask_down=0.72
+    )
+    assert decision is None
+
+
+async def test_v2_1_empty_block_tuples_are_noop() -> None:
+    """Default empty tuples must not affect any firing decisions."""
+    strat = SpotAwareStrategyV2_1(
+        priors=_StubPriors(p_win=0.85),
+        bankroll_getter=_bankroll(1000.0),
+        block_up_in_tiers=(),
+        block_down_in_tiers=(),
+    )
+    decision = await _drive_simple_window(strat, open_spot=80_000.0, end_spot=80_080.0, ask_up=0.72)
+    assert decision is not None
+    assert "side=UP" in decision.rationale
+
+
 def test_v2_1_rejects_invalid_p_win_fallback() -> None:
     """Fallback must be in (0, 1) or None — outside that range raises."""
     with pytest.raises(ValueError, match="tier_relax_p_win_fallback"):
