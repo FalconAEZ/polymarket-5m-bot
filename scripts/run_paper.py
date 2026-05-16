@@ -32,6 +32,11 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
+from polymarket_bot._live.auto_halt import (  # noqa: E402
+    JsonlDailyPnlReader,
+    SentinelHaltWriter,
+    auto_halt_watcher,
+)
 from polymarket_bot._live.feeds.oracle import OracleFeed  # noqa: E402
 from polymarket_bot._live.feeds.polymarket import GammaClient, PolymarketFeed  # noqa: E402
 from polymarket_bot._live.feeds.spot_binance import BinanceTradeFeed  # noqa: E402
@@ -894,12 +899,44 @@ async def main() -> int:
     runner_task = asyncio.create_task(runner.run(stop=stop_event), name="paper-runner")
     halt_task = asyncio.create_task(_halt_watcher(stop_event), name="halt-watcher")
 
+    # L.5 — daily-PnL auto-halt. DARK ship: env-default OFF. When enabled, runs
+    # alongside the operator /halt watcher and writes the same sentinel at UTC
+    # close if the day's realized PnL falls at-or-below DAILY_PNL_GATE_USD.
+    auto_halt_task: asyncio.Task[None] | None = None
+    if _env_bool("DAILY_PNL_AUTO_HALT_ENABLED", False):
+        gate_threshold = _env_float("DAILY_PNL_GATE_USD", -30.0) or -30.0
+        check_hour = int(os.environ.get("DAILY_PNL_CHECK_HOUR_UTC", "23"))
+        check_minute = int(os.environ.get("DAILY_PNL_CHECK_MINUTE_UTC", "50"))
+        LOG.info(
+            "L.5 auto-halt ENABLED: gate=$%.2f, check=%02d:%02d UTC",
+            gate_threshold,
+            check_hour,
+            check_minute,
+        )
+        auto_halt_task = asyncio.create_task(
+            auto_halt_watcher(
+                pnl_reader=JsonlDailyPnlReader(),
+                halt_writer=SentinelHaltWriter(),
+                alerts=alert_sink,
+                threshold_usd=gate_threshold,
+                check_hour_utc=check_hour,
+                check_minute_utc=check_minute,
+                stop=stop_event,
+            ),
+            name="auto-halt-watcher",
+        )
+    else:
+        LOG.info("L.5 auto-halt DISABLED (DAILY_PNL_AUTO_HALT_ENABLED=false)")
+
     LOG.info("paper-mode runtime up; waiting for SIGTERM/SIGINT or halt sentinel")
     try:
         await stop_event.wait()
         LOG.info("shutdown signal received")
         runner.stop()
-        await asyncio.gather(runner_task, warmer_task, halt_task, return_exceptions=True)
+        tasks_to_drain: list[asyncio.Task[None]] = [runner_task, warmer_task, halt_task]
+        if auto_halt_task is not None:
+            tasks_to_drain.append(auto_halt_task)
+        await asyncio.gather(*tasks_to_drain, return_exceptions=True)
     finally:
         # Always close the gamma httpx.Client to avoid FD leaks across
         # restarts -- audit 2026-05-10 found this as a CRITICAL deploy-blocker.

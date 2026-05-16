@@ -17,12 +17,18 @@ from pathlib import Path
 DEFAULT_SENTINEL_PATH = Path("state/halt.sentinel")
 
 
-def write_halt_sentinel(reason: str, ts_ns: int, *, path: Path = DEFAULT_SENTINEL_PATH) -> None:
+def write_halt_sentinel(
+    reason: str,
+    ts_ns: int,
+    *,
+    by: str = "telegram-/halt",
+    path: Path = DEFAULT_SENTINEL_PATH,
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
     payload = {
         "halted_at_ns": ts_ns,
-        "halted_by": "telegram-/halt",
+        "halted_by": by,
         "reason": reason,
     }
     tmp.write_text(json.dumps(payload, separators=(",", ":")))
