@@ -51,8 +51,9 @@ import re
 from collections.abc import Callable
 from dataclasses import replace as dc_replace
 
-from polymarket_bot.backtest.types import Decision, MarketEvent, Side, WindowBoundary
+from polymarket_bot.backtest.types import Decision, MarketEvent, Side, SpotTick, WindowBoundary
 from polymarket_bot.strategies.kelly_config import KellyConfig
+from polymarket_bot.strategies.regime_detector import RegimeDetector
 from polymarket_bot.strategies.spot_aware import delta_bps
 from polymarket_bot.strategies.spot_aware_priors import SpotAwarePriors
 from polymarket_bot.strategies.spot_aware_v2 import SpotAwareStrategyV2
@@ -240,6 +241,12 @@ class SpotAwareStrategyV2_1(SpotAwareStrategyV2):
         tier_relax_price_floor: float = DEFAULT_TIER_RELAX_PRICE_FLOOR,
         hour_blocklist_utc: tuple[int, ...] = DEFAULT_HOUR_BLOCKLIST_UTC,
         hour_blocklist_tiers: tuple[str, ...] = DEFAULT_HOUR_BLOCKLIST_TIERS,
+        # M.1a v0 — SHADOW-LOG regime classifier. When both arguments
+        # are set, every fire's rationale is annotated with
+        # ` regime=<label>` (trending|chop|mixed|unknown) but firing
+        # behavior is UNCHANGED. design/M.1a-flat-vs-trend-shadow-log.md.
+        regime_detector: RegimeDetector | None = None,
+        regime_shadow_enabled: bool = False,
         **v2_kwargs: object,
     ) -> None:
         super().__init__(priors=priors, **v2_kwargs)  # type: ignore[arg-type]
@@ -277,6 +284,10 @@ class SpotAwareStrategyV2_1(SpotAwareStrategyV2):
         self._tier_relax_price_floor = tier_relax_price_floor
         self._hour_blocklist_utc = frozenset(hour_blocklist_utc)
         self._hour_blocklist_tiers = frozenset(hour_blocklist_tiers)
+        # M.1a v0 — shadow log. Detector is optional (defensive: shadow
+        # without detector is a no-op rather than a crash).
+        self._regime_detector = regime_detector
+        self._regime_shadow_enabled = regime_shadow_enabled
         self._fires_this_window: int = 0
 
     @property
@@ -447,11 +458,32 @@ class SpotAwareStrategyV2_1(SpotAwareStrategyV2):
             fire_n=self._fires_this_window,
             cap=self._multi_fire_cap,
         )
+        # M.1a v0 — SHADOW LOG: annotate rationale with regime label. Never
+        # alters the fire decision itself; this is observability only. The
+        # detector is fed in `on_event` below; here we just classify with
+        # the current ts.
+        if self._regime_shadow_enabled:
+            regime_label = (
+                self._regime_detector.classify(now_ts_utc_ns)
+                if self._regime_detector is not None
+                else "shadow_off"
+            )
+            new_rationale = f"{new_rationale} regime={regime_label}"
         if self._fires_this_window < self._multi_fire_cap:
             self._fired_for_window = None
         return dc_replace(base_decision, size_usd=bet, rationale=new_rationale)
 
     async def on_event(self, event: MarketEvent) -> Decision | None:
+        # M.1a v0 — feed spot ticks into the regime detector BEFORE v2's
+        # dispatch so a classify() inside _maybe_fire sees the latest
+        # tick. Mirrors SpotAwareStrategyV3's pattern. No-op if shadow
+        # logging is off or detector wasn't constructed.
+        if (
+            self._regime_shadow_enabled
+            and self._regime_detector is not None
+            and isinstance(event, SpotTick)
+        ):
+            self._regime_detector.observe_spot(event.ts_utc_ns, event.price)
         # Inherit v2's dispatch verbatim — no async I/O added in the
         # fire path (defense L3 against the LLM queue-overflow class
         # of incidents).

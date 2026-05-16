@@ -773,3 +773,115 @@ def test_v2_1_empty_tier_scope_is_rejected_at_init() -> None:
             hour_blocklist_utc=(24,),
             hour_blocklist_tiers=("70-85%",),
         )
+
+
+# ---------- M.1a v0 (SHADOW-LOG regime classifier) ----------
+# design/M.1a-flat-vs-trend-shadow-log.md §6.
+
+
+class _FakeRegimeDetector:
+    """Test-only RegimeDetector duck-type. Constant label; counts observe calls."""
+
+    def __init__(self, label: str = "trending") -> None:
+        self._label = label
+        self.observe_count = 0
+
+    def observe_spot(self, ts_ns: int, price: float) -> None:
+        del ts_ns, price
+        self.observe_count += 1
+
+    def classify(self, now_ns: int) -> str:
+        del now_ns
+        return self._label
+
+
+async def test_m1a_shadow_disabled_no_regime_in_rationale() -> None:
+    """Baseline: regime_shadow_enabled=False (default) → rationale unchanged."""
+    strat = SpotAwareStrategyV2_1(priors=_StubPriors(p_win=0.55), bankroll_getter=_bankroll(1000.0))
+    decision = await _drive_simple_window(strat, open_spot=80_000.0, end_spot=80_080.0, ask_up=0.40)
+    assert decision is not None
+    assert " regime=" not in decision.rationale
+
+
+async def test_m1a_shadow_enabled_appends_trending_label() -> None:
+    """shadow=True + detector returning 'trending' → rationale ends with `regime=trending`."""
+    detector = _FakeRegimeDetector("trending")
+    strat = SpotAwareStrategyV2_1(
+        priors=_StubPriors(p_win=0.55),
+        bankroll_getter=_bankroll(1000.0),
+        regime_detector=detector,  # type: ignore[arg-type]
+        regime_shadow_enabled=True,
+    )
+    decision = await _drive_simple_window(strat, open_spot=80_000.0, end_spot=80_080.0, ask_up=0.40)
+    assert decision is not None
+    assert decision.rationale.endswith(" regime=trending")
+    # Spot ticks were observed (open + first + last → at least 2)
+    assert detector.observe_count >= 2
+
+
+async def test_m1a_shadow_enabled_appends_chop_label() -> None:
+    """shadow=True + detector returning 'chop' → rationale ends with `regime=chop`.
+
+    Confirms the label is whatever the detector says; the strategy doesn't gate."""
+    detector = _FakeRegimeDetector("chop")
+    strat = SpotAwareStrategyV2_1(
+        priors=_StubPriors(p_win=0.55),
+        bankroll_getter=_bankroll(1000.0),
+        regime_detector=detector,  # type: ignore[arg-type]
+        regime_shadow_enabled=True,
+    )
+    decision = await _drive_simple_window(strat, open_spot=80_000.0, end_spot=80_080.0, ask_up=0.40)
+    assert decision is not None, "chop label must NOT abstain in v0 (shadow-log only)"
+    assert decision.rationale.endswith(" regime=chop")
+
+
+async def test_m1a_shadow_enabled_with_no_detector_uses_shadow_off() -> None:
+    """Defensive: shadow=True but detector=None → label `shadow_off` rather than crash."""
+    strat = SpotAwareStrategyV2_1(
+        priors=_StubPriors(p_win=0.55),
+        bankroll_getter=_bankroll(1000.0),
+        regime_detector=None,
+        regime_shadow_enabled=True,
+    )
+    decision = await _drive_simple_window(strat, open_spot=80_000.0, end_spot=80_080.0, ask_up=0.40)
+    assert decision is not None
+    assert decision.rationale.endswith(" regime=shadow_off")
+
+
+async def test_m1a_shadow_does_not_change_fire_size_or_side() -> None:
+    """v0 contract — fire decision (size_usd, side, price_limit) is byte-identical
+    with shadow on or off; only rationale string differs."""
+    base = SpotAwareStrategyV2_1(priors=_StubPriors(p_win=0.55), bankroll_getter=_bankroll(1000.0))
+    shadow = SpotAwareStrategyV2_1(
+        priors=_StubPriors(p_win=0.55),
+        bankroll_getter=_bankroll(1000.0),
+        regime_detector=_FakeRegimeDetector("trending"),  # type: ignore[arg-type]
+        regime_shadow_enabled=True,
+    )
+    base_dec = await _drive_simple_window(base, open_spot=80_000.0, end_spot=80_080.0, ask_up=0.40)
+    shadow_dec = await _drive_simple_window(
+        shadow, open_spot=80_000.0, end_spot=80_080.0, ask_up=0.40
+    )
+    assert base_dec is not None
+    assert shadow_dec is not None
+    assert base_dec.size_usd == shadow_dec.size_usd
+    assert base_dec.side == shadow_dec.side
+    assert base_dec.price_limit == shadow_dec.price_limit
+
+
+async def test_m1a_real_regime_detector_unknown_at_cold_start() -> None:
+    """End-to-end with the real RegimeDetector: cold-start (no ticks fed yet)
+    yields `regime=unknown` per classify() contract."""
+    from polymarket_bot.strategies.regime_detector import RegimeDetector
+
+    detector = RegimeDetector(min_samples=10)
+    strat = SpotAwareStrategyV2_1(
+        priors=_StubPriors(p_win=0.55),
+        bankroll_getter=_bankroll(1000.0),
+        regime_detector=detector,
+        regime_shadow_enabled=True,
+    )
+    # _drive_simple_window only feeds 2 spot ticks; min_samples=10 → unknown.
+    decision = await _drive_simple_window(strat, open_spot=80_000.0, end_spot=80_080.0, ask_up=0.40)
+    assert decision is not None
+    assert decision.rationale.endswith(" regime=unknown")

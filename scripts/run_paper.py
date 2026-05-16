@@ -478,6 +478,24 @@ def _build_strategy(name: str) -> Strategy:
             hour_blocklist_tiers,
             v21_kwargs,
         )
+        # M.1a v0 — SHADOW-LOG regime classifier. Wires the existing
+        # RegimeDetector into v2.1's tick pipeline; every fire's rationale
+        # gains ` regime=<label>`. No firing change. Promote to active
+        # gate (M.1a v1) only after 3-5 days of shadow data shows chop
+        # is empirically a drag on Phase J.1.6 firing pattern.
+        # design/M.1a-flat-vs-trend-shadow-log.md.
+        v21_regime_detector: RegimeDetector | None = None
+        v21_regime_shadow_enabled = _env_bool("REGIME_CLASSIFIER_V2_SHADOW_ENABLED", False)
+        if v21_regime_shadow_enabled:
+            v21_regime_detector = RegimeDetector()
+            LOG.info(
+                "M.1a v0 shadow ENABLED — RegimeDetector wired into spot_aware_v2_1 "
+                "(thresholds trending>%.2f chop<%.2f); rationale annotated with regime=<label>",
+                v21_regime_detector._trending_threshold,
+                v21_regime_detector._chop_threshold,
+            )
+        else:
+            LOG.info("M.1a v0 shadow DISABLED (REGIME_CLASSIFIER_V2_SHADOW_ENABLED=false)")
         return SpotAwareStrategyV2_1(
             priors=load_priors(),
             bankroll_getter=lambda: 1000.0,  # placeholder; rebound in main()
@@ -489,6 +507,8 @@ def _build_strategy(name: str) -> Strategy:
             tier_relax_price_floor=price_floor_val,
             hour_blocklist_utc=hour_blocklist_utc,
             hour_blocklist_tiers=hour_blocklist_tiers,
+            regime_detector=v21_regime_detector,
+            regime_shadow_enabled=v21_regime_shadow_enabled,
             **v21_kwargs,
         )
     if name == "ensemble":
