@@ -11,8 +11,11 @@ no cache decoration is needed for v1.
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable
-from dataclasses import dataclass
+import os
+import re
+import subprocess
+from collections.abc import Iterable, Sequence
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
@@ -90,6 +93,12 @@ class DecisionRow:
     fee_usd: float | None
     resolution: Side | None
     pnl_usd: float | None
+    # H.2.7 multi-fire telemetry — populated when the strategy's rationale
+    # carries the `fire_n=N/M` marker (v2.1+). For single-fire strategies
+    # (v1, v2, v3, wide_fire), both fields are None and the dashboard
+    # tape omits the fire-index badge.
+    fire_n: int | None
+    fire_total: int | None
 
 
 def load_process_status(state_dir: Path | str) -> tuple[ProcessStatus, ProcessStatus]:
@@ -106,9 +115,91 @@ def load_process_status(state_dir: Path | str) -> tuple[ProcessStatus, ProcessSt
     )
 
 
+def _systemd_unit_for(name: Literal["capture", "paper"]) -> str | None:
+    """Returns the systemd unit name to query for this process, or None.
+    Honors PMB_DASH_PAPER_SYSTEMD_UNIT and PMB_DASH_CAPTURE_SYSTEMD_UNIT
+    env vars (set by the v3 dashboard-server.service on the VPS).
+    """
+    return os.environ.get(f"PMB_DASH_{name.upper()}_SYSTEMD_UNIT") or None
+
+
+_SYSTEMCTL_PATHS: tuple[str, ...] = ("/usr/bin/systemctl", "/bin/systemctl")
+
+
+def _systemctl_path() -> str | None:
+    """Locate systemctl on a Linux host. Returns None on macOS/Windows
+    or any system where the binary isn't at a standard path."""
+    for p in _SYSTEMCTL_PATHS:
+        if Path(p).exists():
+            return p
+    return None
+
+
+def _from_systemd(
+    name: Literal["capture", "paper"], pid_file: Path, unit: str
+) -> ProcessStatus | None:
+    """Query systemd for the unit's MainPID + ActiveState, build a
+    ProcessStatus equivalent to what we'd derive from a pid file.
+    Returns None on any error so the caller can fall through.
+    """
+    systemctl = _systemctl_path()
+    if systemctl is None:
+        return None
+    try:
+        result = subprocess.run(  # noqa: S603
+            [
+                systemctl,
+                "show",
+                unit,
+                "--property=MainPID",
+                "--property=ActiveState",
+                "--property=ExecMainStartTimestamp",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=2.0,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    fields: dict[str, str] = {}
+    for line in result.stdout.splitlines():
+        if "=" in line:
+            k, _, v = line.partition("=")
+            fields[k.strip()] = v.strip()
+    active_state = fields.get("ActiveState", "")
+    pid_raw = fields.get("MainPID", "0")
+    try:
+        pid = int(pid_raw)
+    except ValueError:
+        pid = 0
+    if active_state != "active" or pid <= 0:
+        return ProcessStatus(
+            name=name, pid=None, alive=False, pid_file=pid_file, create_time_utc=None
+        )
+    create_time_utc: datetime | None = None
+    if psutil.pid_exists(pid):
+        try:
+            proc = psutil.Process(pid)
+            create_time_utc = datetime.fromtimestamp(proc.create_time(), tz=UTC)
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            create_time_utc = None
+    return ProcessStatus(
+        name=name, pid=pid, alive=True, pid_file=pid_file, create_time_utc=create_time_utc
+    )
+
+
 def _read_process(state_dir: Path, name: Literal["capture", "paper"]) -> ProcessStatus:
     pid_file = state_dir / f"{name}.pid"
     if not pid_file.exists():
+        # Fallback: maybe the bot runs as a systemd unit (the v3 deploy
+        # path on the VPS). Honor PMB_DASH_PAPER_SYSTEMD_UNIT etc.
+        unit = _systemd_unit_for(name)
+        if unit:
+            via_systemd = _from_systemd(name, pid_file, unit)
+            if via_systemd is not None:
+                return via_systemd
         return ProcessStatus(
             name=name, pid=None, alive=False, pid_file=pid_file, create_time_utc=None
         )
@@ -206,6 +297,71 @@ def load_decisions(
     return rows
 
 
+def apply_settled_corrections(
+    rows: list[DecisionRow],
+    raw_decisions_dir: Path | str,
+    *,
+    since_utc_date: str | None = None,
+) -> list[DecisionRow]:
+    """Overlay `kind=settled_correction` records on top of `rows`.
+
+    The bot writes raw decisions + settled records to state/decisions/.
+    The dashboard's resolver_loop polls Polymarket Gamma directly and
+    writes corrected versions into state/decisions-resolved/, which is
+    the primary source `load_decisions()` reads. But the bot ALSO
+    appends `settled_correction` records to its own raw log when (a)
+    the post-hoc gamma retry catches a chainlink/gamma divergence after
+    the dashboard's resolver_loop already ran, or (b) an operator-
+    blessed phantom-fill backfill neutralizes a simulator-bug win.
+    The dashboard's resolver_loop has no way to know about these — its
+    gamma re-resolution would happily re-confirm the phantom win as
+    "yes UP truly won" (because gamma DOES say UP won; the bug was the
+    fill size, not the resolution).
+
+    This function reads those settled_correction records from the bot's
+    raw log and overlays them: for each `decision_id`, set `resolution`
+    and `pnl_usd` to the corrected values. Last write wins if there's
+    more than one correction for the same decision_id.
+
+    Idempotent + cheap: the corrections file is small and read-only.
+    """
+    base = Path(raw_decisions_dir)
+    if not base.exists():
+        return rows
+    paths = sorted(base.glob("*.jsonl"))
+    if since_utc_date is not None:
+        paths = [p for p in paths if p.stem >= since_utc_date]
+    corrections: dict[str, dict[str, Any]] = {}
+    for p in paths:
+        try:
+            for rec in read_jsonl(p):
+                if rec.get("kind") != "settled_correction":
+                    continue
+                did = rec.get("decision_id")
+                if isinstance(did, str):
+                    corrections[did] = rec  # last-write-wins
+        except OSError:
+            continue
+    if not corrections:
+        return rows
+    overlaid: list[DecisionRow] = []
+    for r in rows:
+        c = corrections.get(r.decision_id)
+        if c is None:
+            overlaid.append(r)
+            continue
+        new_resolution: Side | None = r.resolution
+        res_raw = c.get("corrected_resolution")
+        if res_raw in ("UP", "DOWN"):
+            new_resolution = res_raw
+        new_pnl = r.pnl_usd
+        pnl_raw = c.get("corrected_pnl_usd")
+        if isinstance(pnl_raw, int | float):
+            new_pnl = float(pnl_raw)
+        overlaid.append(replace(r, resolution=new_resolution, pnl_usd=new_pnl))
+    return overlaid
+
+
 def _row_from_pair(fired: dict[str, Any], settled: dict[str, Any] | None) -> DecisionRow | None:
     decision_id = fired.get("decision_id")
     if not isinstance(decision_id, str):
@@ -241,6 +397,9 @@ def _row_from_pair(fired: dict[str, Any], settled: dict[str, Any] | None) -> Dec
     delta_bps = _float_marker(rationale, "delta_bps=")
     p_win = _float_marker(rationale, "p_win=")
     ev_dollars = _float_marker(rationale, "ev=")
+    fire_n_pair = _fire_n_from_rationale(rationale)
+    fire_n = fire_n_pair[0] if fire_n_pair is not None else None
+    fire_total = fire_n_pair[1] if fire_n_pair is not None else None
     resolution: Side | None = None
     pnl_usd: float | None = None
     if settled is not None:
@@ -269,6 +428,8 @@ def _row_from_pair(fired: dict[str, Any], settled: dict[str, Any] | None) -> Dec
         fee_usd=fee_usd,
         resolution=resolution,
         pnl_usd=pnl_usd,
+        fire_n=fire_n,
+        fire_total=fire_total,
     )
 
 
@@ -300,19 +461,35 @@ def _mode_from_rationale(rationale: str) -> str | None:
     return None
 
 
-def _float_marker(rationale: str, marker: str) -> float | None:
-    """Parse 'marker<number>' out of a rationale string. Returns None if absent."""
-    idx = rationale.find(marker)
-    if idx < 0:
-        return None
-    tail = rationale[idx + len(marker) :]
-    end = 0
-    while end < len(tail) and (tail[end].isdigit() or tail[end] in "+-.eE"):
-        end += 1
-    if end == 0:
+def _fire_n_from_rationale(rationale: str) -> tuple[int, int] | None:
+    """Parse `fire_n=N/M` from a v2.1+ rationale. Returns (1, 2) for the
+    first fire in a 2-cap window, (2, 2) for the second. None for legacy
+    single-fire strategies (which omit the marker entirely).
+
+    Word-boundary regex prevents accidental matches inside larger tokens.
+    """
+    m = re.search(r"\bfire_n=(\d+)/(\d+)\b", rationale)
+    if m is None:
         return None
     try:
-        return float(tail[:end])
+        return (int(m.group(1)), int(m.group(2)))
+    except ValueError:
+        return None
+
+
+def _float_marker(rationale: str, marker: str) -> float | None:
+    """Parse 'marker<number>' out of a rationale string. Anchored at
+    start-of-string or whitespace so a longer marker name ending with
+    `marker` can't be mistaken for it (e.g. `last_delta_bps=80400` would
+    not match a search for `delta_bps=` and return 80400 — which was the
+    v3 dashboard bug spotted in operator screenshot 2026-05-09).
+    """
+    pattern = re.compile(r"(?:^|\s)" + re.escape(marker) + r"([+-]?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)")
+    m = pattern.search(rationale)
+    if m is None:
+        return None
+    try:
+        return float(m.group(1))
     except ValueError:
         return None
 
@@ -434,6 +611,67 @@ def latest_active_mode(rows: Iterable[DecisionRow]) -> str | None:
         return None
     most_recent = max(rows_list, key=lambda r: r.decision_dt_utc)
     return most_recent.mode or most_recent.strategy
+
+
+SCENARIO_BANKROLLS_USD: tuple[float, ...] = (500.0, 1000.0, 2000.0, 5000.0, 10000.0)
+
+
+@dataclass(frozen=True, slots=True)
+class ScenarioResult:
+    """One row of the Phase 16 bankroll-display scenarios panel.
+
+    Stake is fixed at ``fixed_stake_usd`` per trade (locked decision #9),
+    so realised PnL is INDEPENDENT of the starting bankroll. The end
+    balance is simply ``start_bankroll_usd + realized_pnl_usd``.
+    `is_bankrupt` flags scenarios where the small starting bankroll
+    cannot absorb the realised loss; the panel still shows the negative
+    number rather than clamping to 0.
+    """
+
+    start_bankroll_usd: float
+    end_bankroll_usd: float
+    realized_pnl_usd: float
+    n_settled: int
+    fixed_stake_usd: float
+    is_bankrupt: bool
+
+
+def compute_scenarios(
+    rows: Iterable[DecisionRow],
+    scenarios: Sequence[float] = SCENARIO_BANKROLLS_USD,
+    *,
+    fixed_stake_usd: float = 5.0,
+) -> list[ScenarioResult]:
+    """Project today's realised PnL onto alternative starting bankrolls.
+
+    Caller is expected to pass corrections-applied rows (i.e. the output
+    of ``apply_settled_corrections(load_decisions(...), ...)`` — see
+    design/phase-16-bankroll-display.md §"hidden requirement"). Passing
+    raw `load_decisions` output produces a phantom-inflated projection
+    that double-counts the May 9 chainlink-resolver-mismatch class.
+
+    Stake is fixed (locked decision #9), so the PnL added to each
+    scenario is the SAME absolute amount — scenarios differ only in
+    starting balance. ``is_bankrupt`` flags scenarios pushed below 0;
+    the result reflects the negative balance rather than clamping.
+    """
+    rows_list = list(rows)
+    realized = sum((r.pnl_usd or 0.0) for r in rows_list if r.pnl_usd is not None)
+    n_settled = sum(1 for r in rows_list if r.pnl_usd is not None)
+    out: list[ScenarioResult] = []
+    for start in scenarios:
+        end = start + realized
+        out.append(
+            ScenarioResult(
+                start_bankroll_usd=float(start),
+                end_bankroll_usd=float(end),
+                realized_pnl_usd=float(realized),
+                n_settled=n_settled,
+                fixed_stake_usd=fixed_stake_usd,
+                is_bankrupt=end <= 0,
+            )
+        )
+    return out
 
 
 def aggregate_pnl(rows: Iterable[DecisionRow]) -> dict[str, float | int | None]:

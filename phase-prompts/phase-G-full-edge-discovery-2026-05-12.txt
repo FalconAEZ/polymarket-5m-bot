@@ -1,0 +1,540 @@
+Subject: Phase G — Full edge discovery + projected future state
+         Read-only deep dive. Output is a real reportlab PDF with concrete
+         filter recommendations + a 7-day / 30-day projection. The pivot moment.
+
+Operator framing (verbatim, 2026-05-12 ~17:35 UTC):
+  "why are we losing always? what data are we missing? there must be
+   something we're totally missing! ... we need to re-execute the
+   winning strategy and right filters! make a full study plan, pdf style"
+   "this is the moment you shine in this case! ... your free to also
+   use outside resources if needed! ... I ALSO NEED A Future prediction
+   once all fixes and optimizations and version and features are chosen
+   properly!"
+
+Authorizations granted:
+  • 3-4 hours of focused analytical work
+  • Bot stays running on v2 during the study (paper, no urgency)
+  • Real reportlab PDF (pdfs/PHASE_G_EDGE_DISCOVERY.pdf), not just markdown
+  • External resources permitted (Polymarket docs, microstructure research,
+    Bonereaper agent-skills repo, web research on related strategies)
+  • Future-state projection REQUIRED as Item 7
+
+================================================================================
+HONEST PUSHBACK — what's already known + what's NEW
+================================================================================
+
+Already done partial analyses (DON'T re-redo, READ first):
+  • runbooks/research/edge-discovery-2026-05-09.md — 256-fire audit that
+    drove v2's design (tier 50-70% killer; 30-50% sweet spot)
+  • runbooks/gate-evidence/regime-classifier-validation.txt — 299-fire
+    regime audit that drove v3 (trending=70% WR on n=19 — thin sample)
+  • runbooks/research/bonereaper-microstructure-30d-2026-05-08.md
+  • runbooks/research/bonereaper-spot-vs-book-30d-2026-05-08.md
+  • runbooks/research/regime-shift-investigation-2026-05-09.md
+  • runbooks/research/scout-final-comparison-2026-05-08.md
+  • runbooks/research/leaderboard-scout-2026-05-08.md
+  • runbooks/decisions/aggressive-mode-2026-05-09.md
+  • runbooks/decisions/loose-start-2026-05-09.md
+  • runbooks/decisions/phase-11.a.2-refinement-plan-2026-05-09.md
+  • runbooks/decisions/llm-ab-result.md
+  • scripts/audit_per_tier_wr.py + audit_regime_wr.py + audit_pnl_truth.py
+    + audit_unfilled_by_regime_v3.py + audit_router_counterfactual.py
+  • scripts/four_day_audit.py + scripts/study_v2_edge.py +
+    scripts/study_v2_universe.py (shipped 2026-05-12)
+  • Phase F baseline at runbooks/gate-evidence/phase-F-baseline.txt
+  • Phase F stability sweep at
+    runbooks/gate-evidence/phase-F-stability-sweep-2026-05-12.txt
+
+What's NOT yet done (the gaps that probably hide the edge):
+  1. TEMPORAL: hour-of-day × strategy × WR. Are there "hot hours" (e.g.,
+     US open / Asia open / weekend overnight) where we win and "cold
+     hours" we should skip? Existing audits aggregate.
+  2. CROSS-DIMENSIONAL: tier × |delta| × side. The intersections might
+     show a clean winning region the marginal cuts miss.
+  3. REGIME × STRATEGY: retroactively classify every fire's regime
+     and PnL → which strategy works in which regime?
+  4. SURVIVORSHIP: counterfactual — what if v2 had been running on
+     wide_fire's universe (with v2's gates applied)? Phase F prompt
+     printed one such number for May 10; need it for every day.
+  5. MICROSTRUCTURE: ask_size_top, bid-ask spread, depth at fire time.
+     The unfilled rate by tier suggests microstructure matters but we
+     haven't quantified.
+  6. CHAINLINK SPECIFIC: delta is computed against the Chainlink oracle
+     last value. Is oracle-staleness a factor? Some fires might be on
+     stale oracle data.
+  7. PNL DECAY: bot peaked at +$117 (cumulative PnL), is now -$19. The
+     -$136 drawdown over how many days? What changed?
+  8. BTC MACRO: was BTC trending up/down/sideways during winning vs
+     losing days? Did the bot's edge depend on BTC volatility regime?
+  9. TODAY'S v2 SUBSET (post-PHASE-F-4): 19 fires in 1h52m, WR 47.1%,
+     PnL -$25. Compare against historical 17-fire v2 universe (75% WR,
+     +$1.55/trade). The opposite-direction trend is itself a data point.
+ 10. POLYMARKET PRICE-DISCOVERY: when a fire lands at limit 0.23 and
+     resolves UP, the market knew something we didn't (or didn't). Look
+     at price drift between fire time and settle.
+
+================================================================================
+REFERENCE MATERIAL — read or cite, do not skim
+================================================================================
+
+PHASE PROMPTS (24 files — the bot's full development chronology):
+  phase-1-prompt.txt                     — wallet & auth (Phase 1A no-money)
+  phase-2-prompt.txt, phase-2-analysis-prompt.txt — data plane
+  phase-3.3-prompt.txt                   — LLM A/B (verdict: CUT)
+  phase-4-prompt.txt                     — paper runtime
+  phase-5-prompt.txt, phase-5.5-chunk2-prompt.txt, phase-5.7-litestream-prompt.txt — VPS + alerter + backup
+  phase-5-ensemble-evaluation-2026-05-12.txt — ensemble re-eval
+  phase-5-settle-resolution-bug-2026-05-11.txt — chainlink-vs-polymarket fix
+  phase-11.a-gate-2026-05-10.txt + .v2.txt — SpotAware soak gate
+  phase-11.a.2-post-incident-2026-05-10.txt — aggressive-mode incident
+  phase-12-fill-rate-and-bankroll-2026-05-11.txt — master plan locked
+  phase-15-regime-gate-2026-05-12.txt    — Phase 15 regime gate infra
+  phase-15.5-pnl-truth-pass-2026-05-13.txt — truth-correction overlay
+  phase-16-bankroll-display-2026-05-13.txt — scenarios panel
+  phase-16b-every-window-mode-2026-05-11.txt + phase-16b-4-wrapper-wire-2026-05-12.txt
+  phase-18b-meta-observability-2026-05-13.txt — meta_outcome telemetry
+  phase-F-final-stage-architecture-audit-2026-05-13.txt — the Phase F cut
+  phase-F-3-spot-aware-v3-soak-audit-2026-05-14.txt — F.3 audit
+  dashboard-overhaul.txt                 — v3 dashboard rebuild
+
+PDFs (5 source-of-record + their builders in pdfs/):
+  pdfs/MASTERPLAN.pdf            — architectural rationale, 5 edge sources
+  pdfs/BUILD_SPEC.pdf            — visual master spec (24 pp)
+  pdfs/REQUIREMENTS.pdf          — bootstrap shopping list
+  pdfs/SPOT_AWARE_STRATEGY.pdf   — v1 strategy locked spec (6 pp)
+  pdfs/BONEREAPER_STUDY.pdf      — ARCHIVED — research stream postmortem
+
+  Builders to model the Phase G PDF on:
+  pdfs/build_pdf.py              — masterplan builder
+  pdfs/build_spec_pdf.py         — build-spec builder
+  pdfs/build_spot_aware_strategy_pdf.py — strategy-doc builder
+  pdfs/build_study_pdf.py        — bonereaper study builder
+  pdfs/build_requirements_pdf.py — requirements builder
+
+DESIGN DOCS (locked specs — what's been built):
+  design/agents.md, alerter.md, backtest.md, bot_v3_roadmap.md,
+        dashboard.md, data_plane.md, derive_creds.md, gasless.md,
+        genwallets.md, instant_settlement.md, litestream.md, paper.md,
+        regime_detector.md, spot_aware_strategy.md,
+        spot_aware_v2_tier_restricted.md, test_auth.md,
+        phase-14-tier-gate.md, phase-15-regime-gate.md,
+        phase-16-bankroll-display.md, phase-16b-every-window-mode.md,
+        phase-18b-meta-observability.md, phase-19-llm-async-precompute.md,
+        phase-5-llm-ensemble.md
+
+MEMORY CHECKPOINTS (24 files at ~/.claude/projects/-...-PolyMarket-5m/memory/):
+  checkpoint_phase_0 … 5, 5.1, 5.2, 5.4, 5.5, 5.5_chunk1, 4_dev, 4.5,
+  3, 3_dev, 1a, 2_dev,
+  11_a, 11_a_x_b_dashboard_v3 (the dashboard incident),
+  5_llm_ensemble, 5_settle_resolution_bug,
+  12_master_plan, 13_null, 14_tier_gate, 15_regime_gate,
+  15.5_pnl_truth_bundle, 16b_router, F (today)
+
+VAULT OVERVIEW (state/ tree):
+  state/README.md                 — MOC, root index
+  state/sessions/*.md             — 20+ daily session logs, May 6-12
+  state/sessions/README.md        — sessions ledger
+  state/phases/*.md               — phase-by-phase notes
+  state/phases/README.md          — phase ledger
+  state/decisions/README.md       — locked-decisions index (also via memory)
+  state/postmortems/*.md          — incidents
+  state/research/*.md             — vault-side research notes
+  state/research/bonereaper-study-postmortem.md
+  state/research/2026-05-11-router-counterfactual.md
+  state/research/phase-16b-every-window-study.md
+  state/research/audit-pipeline-recipe.md
+  state/research/data-sources-map.md
+  state/research/binance_historical/ — historical BTC price data
+  state/research/bonereaper/      — Bonereaper raw data
+  state/concepts/                 — conceptual notes
+  state/runbooks/                 — vault-side runbook drafts
+  state/staging/                  — dashboard staging area
+  state/decisions/*.jsonl         — the live fire log (gitignored; on VPS)
+
+SOURCE TREE (50+ Python modules):
+  src/polymarket_bot/strategies/
+    spot_aware.py / spot_aware_v2.py / spot_aware_v3.py    — production family
+    spot_aware_priors.py + data/spot_aware_priors.json    — priors table
+    wide_fire.py                                          — research artifact
+    deterministic.py                                      — baseline
+    regime_detector.py                                    — v3's gate
+    ensemble_wrapper.py                                   — LLM ensemble (cut)
+    every_window/ (router, sizing, blender, signals, etc.)— Phase 16.B (paused)
+    protocol.py
+  src/polymarket_bot/agents/                              — LLM ensemble (cut path)
+    orderbook.py, oracle_gap.py, momentum.py, meta.py
+    anthropic_client.py, budget.py, cache.py
+  src/polymarket_bot/_paper/
+    runner.py                                             — main event loop
+    decision_log.py                                       — JSONL persistence
+    shadow_book.py                                        — fill simulator
+  src/polymarket_bot/_live/                               — placeholder for Phase 6
+  src/polymarket_bot/dashboard_server/                    — v3 dashboard (FastAPI)
+  src/polymarket_bot/dashboard/                           — render helpers
+  src/polymarket_bot/_live/feeds/                         — 4 WS feeds
+    spot_binance.py, spot_coinbase.py, oracle.py, polymarket.py
+  src/polymarket_bot/backtest/                            — replay engine + types
+  src/polymarket_bot/alerts/                              — Redis → Telegram
+  src/polymarket_bot/resolver.py + gamma_resolver.py      — window resolution
+
+EXISTING AUDIT SCRIPTS (don't rewrite — extend):
+  scripts/four_day_audit.py        — per-day W/L/Z/PnL with truth overlay
+  scripts/audit_per_tier_wr.py     — per-tier WR with Wilson CI
+  scripts/audit_pnl_truth.py       — Phase 15.5 truth classification
+  scripts/audit_regime_wr.py       — regime × WR (drove v3's design)
+  scripts/audit_unfilled_v2.py + audit_unfilled_by_regime_v3.py — fill-rate
+  scripts/audit_router_counterfactual.py — Phase 16.B counterfactual
+  scripts/study_v2_edge.py + study_v2_universe.py — v2-only deep dives
+
+LOCKED DECISIONS (memory/project_decisions.md):
+  #1  UAE operator (Polymarket-permitted)
+  #2  Dublin AWS Lightsail eu-west-1
+  #3  NautilusTrader engine + py-clob-client
+  #4  Anthropic API only (no OpenAI fallback)
+  #5  3 agents + meta-decider (orderbook + oracle-gap + momentum + Sonnet)
+  #6  Composite ≥0.6 threshold (revisited under 16.B; still locked)
+  #7  Telegram via @BotFather
+  #8  GitHub private repo
+  #9  $5 flat per trade for first 100 trades, then fractional Kelly
+       (revisited under 16.B partially; Phase 17/18 subsumed; STILL locked)
+  #10 $1,000 starting bankroll
+  #11 Funder/Signer separation from Phase 1
+  #12 Hardware wallet trigger = $2k bankroll
+  #13 Phase 1 order: derive creds → test sign → fund
+  #14 Anthropic budget: $50 → $150 → $300 → $200/mo
+  #15 UTC everywhere
+  #16 LLM A/B in Phase 3; ensemble only if uplift ≥3pp
+  #17 Polymarket gasless relayer (avoid MEV)
+  #18 Obsidian vault on laptop only; bot writes to state/ in git
+  #19 Bonereaper cloning study ABORTED 2026-05-06
+  #20 Phase 1B (funding) deferred to head of Phase 6
+  #21 (Phase 2/3 parallelization decision)
+
+================================================================================
+SCOPE OF ANALYSIS — 17 dimensions on every fire
+================================================================================
+
+Input dataset:
+  state/decisions/2026-05-{08,09,10,11,12,13,14...}.jsonl
+  All days available. Current = May 8 → today.
+  ~630+ fires across 5 strategies (v1, v1-aggressive, v2, v3, wide_fire+ens)
+
+Dimensions stratified per fire:
+  A. Strategy provenance (parsed from rationale)
+  B. Tier (from price_limit, dashboard buckets)
+  C. |Δ_bps| bucket
+  D. Δ sign (UP-aligned vs DOWN-aligned)
+  E. p_win prior bucket
+  F. EV bucket
+  G. Side (UP/DOWN)
+  H. Fill class (taker_at_fire / maker_at_settle / no_fill / phantom-corrected)
+  I. Spot direction during window (UP_strong/weak, DOWN_strong/weak)
+  J. Hour-of-day (UTC) + day-of-week
+  K. Regime (retroactive: classify each fire's window via 5m/10m vol ratio)
+  L. ask_size_top at fire time (microstructure depth)
+  M. bid-ask spread at fire time
+  N. Oracle staleness (decision_ts - oracle_last_ts)
+  O. BTC macro direction (rolling 60m / 4h / 1d direction)
+  P. Polymarket implied probability at fire (price_limit) — winners by region?
+  Q. Settle latency (settled_ts - decision_ts) — does fast vs slow settle
+      correlate with WR? (might reveal late-arrival phantom fills)
+
+Cross-tabs (the intersections that single-dim doesn't catch):
+  • Tier × |Δ_bps|
+  • Strategy × Hour
+  • Regime × Strategy
+  • Side × Spot-direction
+  • Fill-class × Tier (does phantom-fill cluster in <15% only?)
+  • Hour × Regime
+  • BTC-macro × Regime (does our edge depend on BTC volatility regime?)
+
+Counterfactual replays:
+  • If v2 had run every day's wide_fire universe, what PnL?
+  • If v3 had run, what PnL?
+  • If "winning intersection" (top-quartile cells from cross-tabs) only,
+    what PnL?
+  • If we'd halted on the worst hour-of-day, what PnL?
+
+================================================================================
+OUTSIDE RESOURCES — explicitly permitted
+================================================================================
+
+The operator granted permission to look beyond the repo. High-leverage external
+references to check if internal data is ambiguous:
+
+  • Polymarket docs (docs.polymarket.com) — orderbook microstructure,
+    fee schedule, settle resolution timing
+  • Polymarket/agent-skills repo (~/.claude/skills/agent-skills/) — official
+    SDK patterns + market structure helpers
+  • Polymarket CLOB API + Gamma API — for any extra fields not in JSONL
+  • BTC market structure literature (price-impact, 5m return autocorrelation,
+    short-interval volatility clustering) — to validate the regime detector's
+    5m/10m vol-ratio threshold
+  • py-clob-client GitHub — for any nuances in fill detection
+  • Chainlink BTC/USD oracle on Polygon — staleness behavior, heartbeat
+  • Prediction-market academic literature (Wolfers/Zitzewitz on accuracy of
+    short-interval prediction markets, if relevant)
+
+Do NOT fetch images, social media, or anything outside the technical
+substantive sources above. Document every external citation used.
+
+================================================================================
+THE WORK — SEVEN items in strict order
+================================================================================
+
+Item 1 — Vault + codebase + reference review (~30 min)
+  Read all session notes May 6-12 chronologically to reconstruct decision history.
+  Read each strategy's design doc + implementation:
+    design/spot_aware_strategy.md, spot_aware_v2_tier_restricted.md,
+    regime_detector.md, phase-5-llm-ensemble.md, phase-16b-every-window-mode.md
+  Read the locked-decisions list + memory checkpoints (especially F, 15.5,
+    16b_router, 11_a, 5_settle_resolution_bug, 5_llm_ensemble).
+  Read existing audit outputs (edge-discovery-2026-05-09-output.txt,
+    regime-shift-investigation outputs).
+  Identify what filters HAVE been tried + what their stated rationale was +
+    what the data said.
+  DELIVERABLE: a chronological "strategy switch ledger" — what changed when
+    and why, with PnL impact attribution.
+
+Item 2 — Data preparation (~30 min)
+  Pull fresh state/decisions/*.jsonl from VPS (post-PHASE-F-4 has new fires;
+    today's v2 sample is the most recent live data).
+  Apply truth-correction overlay (settled_correction overrides).
+  Compute every dimension A-Q for every fire. Output a parquet/csv with one
+  row per fired-record + ~20 dimension columns.
+  Tool: scripts/build_edge_dataset.py (new; ~150 LOC; type-hinted with tests).
+  DELIVERABLE: state/research/phase-G-fires-dataset.parquet (or .csv) +
+    a quick verification table showing row counts per strategy/day.
+
+Item 3 — Strategy × time journey (~30 min)
+  Per-day PnL trajectory, hour-by-hour for the most active days.
+  Plot cumulative PnL curve labeled by strategy switch points:
+    spot_aware launch → loose-start → aggressive → v2 → wide_fire shadow →
+    ensemble gate promote → Phase F cut → PHASE-F-2 → PHASE-F-3 → PHASE-F-4.
+  Identify: when did the bot peak? When did the drawdown start? What
+  changed at that boundary?
+  DELIVERABLE: chart (matplotlib PNG embedded in PDF) + numeric inflection
+    table.
+
+Item 4 — Dimensional breakdown (~1h)
+  Run each of A-Q singly. Identify:
+    • Significant winners (Wilson lower bound > 52% on n>=30)
+    • Significant losers (WR < 45% on n>=30)
+    • Suggestive but underpowered (interesting on n<30)
+  Truth-corrected throughout.
+  DELIVERABLE: 17 tables, one per dimension, flagged with *WINNER* / *LOSER*
+    / *marginal* / *underpowered*.
+
+Item 5 — Cross-tab winners (~1h)
+  Run the 7 cross-tabs. Find the top-quartile cells by per-trade $ on
+  cells with n>=10.
+  Counterfactual: what PnL if we'd only fired in those cells over the
+  full 5-day dataset?
+  DELIVERABLE: 7 cross-tab heatmaps (or tables) + a "winning intersection"
+    spec.
+
+Item 6 — Synthesis: "v_next" filter spec (~30 min)
+  Based on Items 4 + 5 (+ outside-resource validation), propose concrete
+  filter changes:
+    • What gates to ADD (e.g., "skip fires when ask_size_top < $50")
+    • What gates to LOOSEN (e.g., "allow tier 50-70% IF Δ>10bps")
+    • What gates to KEEP (the existing v2 floor)
+    • What gates to REMOVE (any that data shows are redundant)
+  Per recommendation: cite the data, give expected (n, WR, $/day) impact,
+  flag the sample-size confidence (Wilson CI).
+  DELIVERABLE: a "v_next" strategy spec — could be `spot_aware_v2.1` or
+    `spot_aware_v4` depending on scope.
+
+Item 7 — FUTURE PREDICTION (~30 min) — THE NEW ITEM
+  Project what the bot looks like after the v_next changes are deployed
+  AND fully soaked.
+
+  Methodology:
+    a. Take the v_next filter spec from Item 6.
+    b. Apply it to the historical 5-day dataset as a backtest.
+    c. Extract: expected fires/day, WR, per-trade $, daily $, fill rate.
+    d. Build a Monte Carlo bankroll trajectory:
+       - Starting bankroll $1,006 (current)
+       - Daily PnL ~ Normal(μ_daily, σ_daily) where μ, σ from the historical
+         backtest
+       - 1000 trajectories over 7 days, 30 days, 90 days
+       - Report: median, p10, p90, P(bankroll > $1,250) at each horizon
+    e. Compute time-to-Phase-6-readiness:
+       - Locked decision #12: hardware wallet at $2k
+       - Locked decision #10: $1k start (DONE)
+       - Phase 23 requirement: 7-day stat-sig sample
+       - When does the bot reach $2k? P($2k by day 30)?
+    f. Compute time-to-breakeven if not already there.
+    g. Identify the BREAKING POINT scenarios:
+       - What WR drop would trigger the rollback trip-wire?
+       - What does a 2-day cold streak look like statistically?
+    h. Compare against May 8-12 backtest baseline:
+       - "If we'd run v_next every day since May 8, the bot would be at $X.YY"
+       - "Actual current bankroll = $1,006 — gap of $Z.ZZ" attributable to
+         each historical filter change.
+
+  DELIVERABLE: Section 11 of the PDF — "Where we go from here", with:
+    • The single-line headline ("Bot at $1,250 in 14 days at 60% confidence")
+    • The trajectory chart (Monte Carlo fan, 7-day + 30-day horizons)
+    • The "what would change my mind" section — under what data would we
+      revert v_next + try something else
+    • The Phase 6 readiness timeline tied to bankroll milestones
+
+================================================================================
+OUTPUT — REAL PDF, NOT JUST MARKDOWN
+================================================================================
+
+Target source file: runbooks/research/phase-G-edge-discovery-2026-05-12.md
+Builder script:    pdfs/build_phase_g_edge_discovery_pdf.py
+                   (~100 LOC; reportlab; SAME pattern as build_study_pdf.py)
+Output PDF:        pdfs/PHASE_G_EDGE_DISCOVERY.pdf
+
+Document structure (25-35 pp):
+  1. Executive summary — "the edge we're missing is X; recommendation: Y;
+     projected bankroll: $1,250 by day N at 60% confidence"
+  2. Where we were: cumulative PnL curve since bot start (annotated)
+  3. Strategy-by-strategy summary table (n fires, WR, PnL, per-trade, era)
+  4. The 11-strategy-switch chronology + Phase F's empirical case
+  5. Single-dimension breakdowns (A-Q), one section each, tables + flags
+  6. Cross-tab winners (top intersections by per-trade $)
+  7. Phantom-fill class breakdown (how much of cumulative PnL is real?)
+  8. Counterfactual: "if we'd run v_next + cross-tab winners only" replay
+  9. The v_next filter spec — concrete, deployable
+  10. Outside-resource citations (Polymarket docs, microstructure refs)
+  11. **FUTURE PREDICTION** (Item 7 output): 7-day + 30-day + 90-day
+      Monte Carlo bankroll trajectories with confidence intervals,
+      time-to-Phase-6, breaking-point scenarios
+  12. Honest pushback section: where the data is too thin
+
+Charts to embed (matplotlib PNGs, embedded via reportlab Image):
+  - Cumulative PnL curve with strategy-switch markers
+  - WR by hour-of-day (bar)
+  - Tier × |Δ_bps| heatmap
+  - Regime × Strategy heatmap
+  - Monte Carlo bankroll fan (7-day + 30-day)
+
+================================================================================
+WHAT THIS PHASE EXPLICITLY DOES NOT DO
+================================================================================
+
+  • Does NOT touch the bot during the analysis. Read-only.
+  • Does NOT modify any locked decision (must be flagged if it tempts to).
+  • Does NOT promise an edge exists — the data might show "the bot is
+    correctly identifying that BTC 5m up/down is hard" and the right move
+    is to halt + redesign. Honest pushback if so.
+  • Does NOT immediately deploy v_next. Implementation is a separate phase
+    after the operator reviews the PDF.
+
+================================================================================
+ANTI-VIBE RULES — relevant this session
+================================================================================
+
+  • Design doc before code (#1): the v_next spec IS the design doc.
+  • Bug → failing test → fix → green (#2): if Item 6 proposes new filters,
+    they get tests before they get deployed (next session).
+  • 3-fix rule (#3): if Item 2's dataset build fails 3 ways, STOP and
+    write runbooks/incidents/<date>-phase-G-dataset-build.md.
+  • Type hints + module docstring on every new script (#5, #6).
+  • Honest pushback (feedback_honest_pushback): if the data shows v_next
+    is marginal or thin-sample, SAY SO. Don't promise an edge that isn't
+    backed.
+  • External resource citations: every claim cited from outside the repo
+    must have a footnote with URL + access date.
+  • The PDF output must look like the other PDFs in the repo (reportlab
+    pattern + section headings + page numbers + cover page).
+
+================================================================================
+HARD LIMITS
+================================================================================
+
+  • Bankroll: $1,000 paper (locked decision #10). UNTOUCHED.
+  • Bot stays on v2 during the study (operator authorized). No restart.
+  • bot.service stays DISABLED.
+  • Funder key NEVER on VPS.
+  • Anthropic spend: ~$0/day expected (no LLM in fire path).
+  • 4 gates remain green at every commit.
+
+================================================================================
+SESSION BOUNDARY — ENDS WHEN ONE OF
+================================================================================
+
+  (a) Items 1-7 complete + PDF generated → ship report; operator decides
+      v_next deployment in next session. ✅ full.
+  (b) Items 1-5 complete (single-dim + cross-tabs done) but Item 6 needs
+      operator input on weighting/risk → ship interim PDF + decision
+      points. ✅ partial.
+  (c) Item 2 dataset build fails → 3-fix rule triggers; incident write-up;
+      defer Phase G to next session with smaller scope. 🛑
+  (d) Context ≥60% before Item 7 → ship Items 1-6 PDF, defer Future
+      Prediction to follow-up session. ⏸
+
+================================================================================
+QUICK PRE-SESSION CHECKLIST
+================================================================================
+
+Before driving:
+[ ] Bot still active on VPS (`systemctl is-active bot-staging.service`)
+[ ] Dashboard still active
+[ ] VPS HEAD ≥ `ab7dc0f` (PHASE-F-4 close-out)
+[ ] state/decisions/*.jsonl pulled fresh from VPS
+[ ] reportlab installed in the venv (pdfs/ builders need it)
+[ ] matplotlib installed (for embedded charts)
+[ ] Reviewed:
+    [ ] this prompt
+    [ ] state/sessions/2026-05-12-phase-F-arch-audit-execute.md (today's
+        chronology)
+    [ ] memory/checkpoint_phase_F.md (current state)
+    [ ] runbooks/research/edge-discovery-2026-05-09.md (existing audit)
+    [ ] runbooks/gate-evidence/regime-classifier-validation.txt (v3 base)
+
+After session:
+[ ] runbooks/research/phase-G-edge-discovery-2026-05-12.md committed
+[ ] pdfs/PHASE_G_EDGE_DISCOVERY.pdf committed
+[ ] pdfs/build_phase_g_edge_discovery_pdf.py committed (with type hints + tests)
+[ ] scripts/build_edge_dataset.py committed (with tests)
+[ ] state/research/phase-G-fires-dataset.{csv|parquet} committed
+    (small enough — <5MB compressed)
+[ ] state/sessions/2026-05-12-phase-G-edge-discovery.md (this session's note)
+[ ] state/phases/phase-G-edge-discovery.md (phase ledger entry)
+[ ] memory/checkpoint_phase_G.md (durable hand-off)
+[ ] MEMORY.md index updated
+[ ] state/phases/README.md updated
+[ ] git push origin claude/jovial-hermann-7e103f
+
+================================================================================
+WHAT THIS PHASE UNLOCKS
+================================================================================
+
+If Phase G's PDF identifies a clean edge with statistically-supported
+filters AND a Monte Carlo trajectory that hits $2k in <60 days:
+  → Phase H = deploy v_next (small code change, full tests, deferred-
+    deploy if needed, 4-gate-green)
+  → Phase 6 readiness timeline accelerates
+
+If Phase G's PDF concludes "the bot's current architecture is at the
+limit of what 5-min BTC up/down can earn":
+  → Operator-gated discussion: change market (try different windows,
+    different assets, different volatility profile)
+  → OR scale up sizing (revisit locked decision #9 with confidence)
+  → OR sit on the data and decide later
+
+Either outcome is valuable. The PDF is the artifact.
+
+================================================================================
+THE EXPECTATION
+================================================================================
+
+Operator framing: "this is the moment you shine."
+
+This is not a quick check. This is the full audit that decides whether
+the bot's architecture can be salvaged with filter tuning, or whether
+the next move is structural (different market / different strategy class
+/ different size).
+
+The PDF + Monte Carlo projection should give the operator enough
+confidence to either commit capital scaling or commit to pivoting.
+
+Anything less than a complete, honest, data-driven report is failure
+mode for this phase.
+
+End of prompt.

@@ -13,7 +13,19 @@ from typing import Any
 from pydantic import BaseModel
 
 from polymarket_bot.agents.budget import BudgetTracker
-from polymarket_bot.agents.protocol import AgentContext, AgentVote, TokenUsage
+from polymarket_bot.agents.protocol import (
+    AgentContext,
+    AgentVote,
+    MetaOutcome,
+    TokenUsage,
+)
+
+# Phase 18B: the adapter contract is now a 3-tuple. The fake accepts
+# either a 2-tuple (legacy — outcome auto-derived from `parsed is None`)
+# or a 3-tuple (explicit — for tests asserting on a specific tag).
+FakeResponse = (
+    tuple[BaseModel | None, TokenUsage] | tuple[BaseModel | None, TokenUsage, MetaOutcome]
+)
 
 
 @dataclass
@@ -31,12 +43,14 @@ class FakeCall:
 class FakeAdapter:
     """Mocks AnthropicAdapter.parse for unit tests.
 
-    Construct with a list of (parsed_or_None, usage) tuples; each .parse()
-    call pops the next pair. Records every call's kwargs in .calls so tests
+    Construct with a list of (parsed_or_None, usage[, outcome]) tuples;
+    each .parse() call pops the next entry. If a 2-tuple is supplied,
+    outcome auto-derives as "ok" when parsed is set, "validation_failed"
+    when parsed is None. Records every call's kwargs in .calls so tests
     can assert on the wire shape.
     """
 
-    responses: list[tuple[BaseModel | None, TokenUsage]] = field(default_factory=list)
+    responses: list[FakeResponse] = field(default_factory=list)
     calls: list[FakeCall] = field(default_factory=list)
     budget: BudgetTracker = field(default_factory=lambda: BudgetTracker(hard_limit_usd=100.0))
 
@@ -50,7 +64,7 @@ class FakeAdapter:
         thinking: dict[str, object] | None = None,
         effort: str | None = None,
         max_tokens: int = 1024,
-    ) -> tuple[BaseModel | None, TokenUsage]:
+    ) -> tuple[BaseModel | None, TokenUsage, MetaOutcome]:
         self.calls.append(
             FakeCall(
                 model=model,
@@ -63,8 +77,13 @@ class FakeAdapter:
             )
         )
         if not self.responses:
-            return None, TokenUsage()
-        return self.responses.pop(0)
+            return None, TokenUsage(), "validation_failed"
+        r = self.responses.pop(0)
+        if len(r) == 3:
+            return r[0], r[1], r[2]
+        parsed, usage = r
+        outcome: MetaOutcome = "ok" if parsed is not None else "validation_failed"
+        return parsed, usage, outcome
 
 
 def sample_context(**overrides: Any) -> AgentContext:

@@ -1,0 +1,17 @@
+PRE-STOP SNAPSHOT — bot-staging.service stopped 2026-05-10 23:23:13 UTC (SIGKILL after 30s SIGTERM timeout while draining 1 in-flight settle)
+service stop result: failed (Result: timeout) — process killed cleanly, orphan-recovery should catch the dropped settle task on restart
+
+KIND counts:
+  fired                 : 484
+  settled               : 482
+  settled_correction    : 45
+
+Per-day:
+  2026-05-08: fired=39 settled=35 settled_correction=0
+  2026-05-09: fired=262 settled=266 settled_correction=0
+  2026-05-10: fired=183 settled=181 settled_correction=45
+
+RAW sum(settled.pnl_usd)             = $+2,556.25
+Correction delta                     = $-2,533.39
+RAW + corrections                    = $+22.86
+Distinct decision_ids with correction = 41

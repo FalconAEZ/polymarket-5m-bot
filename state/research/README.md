@@ -7,6 +7,7 @@ tags: [moc, research]
 
 ## Active artifacts
 
+- [[phase-16b-every-window-study]] — **Phase 16.B research study** (2026-05-11). Comprehensive signal inventory + counterfactual design for the every-window mode router. Operator-authorized revisit of locked decisions #6 + #9 (partial). Companion phase prompt at `phase-prompts/phase-16b-every-window-mode-2026-05-11.txt`. **Awaiting operator sign-off** on §8 questions before design doc lock.
 - [[bonereaper-study-postmortem]] — Phase A's research output. Cloning study aborted; pipeline kept.
 - [[audit-pipeline-recipe]] — the reusable per-market enumeration method that produced the 7-day audit.
 - [[data-sources-map]] — Polymarket data source taxonomy with caveats and best-use guides.

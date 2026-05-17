@@ -1,0 +1,180 @@
+================================================================================
+Phase F stability sweep — captured 2026-05-12 ~14:55 UTC
+during the 48-72h spot_aware_v3 soak
+================================================================================
+
+Operator-directed comprehensive health audit covering 6 stability domains.
+Soak window: 2026-05-12 14:27:13 UTC → 2026-05-14 14:27 UTC (PHASE-F-2
+process, MainPID 584489).
+
+================================================================================
+EXECUTIVE SUMMARY
+================================================================================
+
+GREEN on every measurable criterion. Two yellows worth understanding (both
+diagnosed — neither requires immediate action). One source-level fix
+shipped during the sweep (committed at 74f7541, deferred deploy).
+
+  • Bot has produced its first v3 fire (13:35:16 UTC, single LOSS)
+  • Total 5-day truth-corrected PnL: −$5.26 over 612 fires (≈ $0)
+  • All defense layers operational, no error log entries
+  • Disk + memory + FD count have huge headroom
+  • All 6 systemd units in healthy state; bot.service stays disabled per
+    hard limit (locked decision)
+
+================================================================================
+A. SYSTEM RESOURCES (GREEN)
+================================================================================
+
+  Load average:      0.29 / 0.41 / 0.41    (4 cores → ~10% utilization)
+  Memory:            919MB used / 3.7GB    (24%; 2.8GB available)
+  Disk root:         5.4GB / 77GB           (8% used; 72GB free)
+  Bot process RSS:   39MB                   (very lean)
+  Open FDs:          11                     (tight)
+  Threads:           3                      (asyncio default)
+
+================================================================================
+B. DECISION-LOG + DATA GROWTH (GREEN, headroom is enormous)
+================================================================================
+
+  state/decisions/ size: 740K across 5 days (~150KB/day avg)
+  state/ total:         149M (includes caches)
+  trades.db:            at /home/ops/polymarket-5m-bot/state/trades.db,
+                         replicated to S3 by litestream every ~1s
+                         (txid=0000000000000003 stable)
+
+  1-year projection: ~55MB of decision-logs. Trivial against 72GB free.
+
+================================================================================
+C. SERVICE TOPOLOGY (GREEN — all 6 services as designed)
+================================================================================
+
+  bot-staging.service       active running    MainPID 584489 since 14:27:13
+  dashboard-server.service  active running    MainPID 534982 since 2026-05-11
+  litestream.service        active running    replicating trades.db → S3
+  tg-alerter.service        active running    enabled, Restart=on-failure
+  grafana-agent.service     active running    pushing node-exporter metrics
+  rtt-collector.service     active running    VPS-side provider RTT
+  bot.service               INACTIVE+DISABLED  (live trading; locked per CLAUDE.md)
+
+  No service has Restart counts > 0. No service shows error log entries
+  in the last 1 hour.
+
+================================================================================
+D. STRATEGY + DECISION LAYER (GREEN — with caveats now understood)
+================================================================================
+
+  Strategy state:        active strategy = spot_aware_v3
+  Regime detector:       5m=300s / 10m=600s thresholds trending>1.2 chop<0.8
+  EV_min override:       NONE (v3 default 0.005, PHASE-F-2 tightened)
+  Anthropic API calls:   0 over the last 1 hour (LLM off the fire path)
+  Gamma API:             38/38 = 100% success in last 1 hour
+  Halt sentinel:         polling every 1s at state/halt.sentinel
+                          (no sentinel present; mechanism wired)
+
+  V3 has FIRED 1 trade post-cut:
+    2026-05-12 13:35:16 UTC, side=UP, delta_bps=-9.75, settled as LOSS
+    (this fire was on the pre-PHASE-F-2 process at EV_min=0.003;
+    PHASE-F-2 process has fired 0 trades in 30 min)
+
+  Rationale-inheritance BUG (identified and fixed):
+    v3 inherits its rationale from v2 → v3 fires log as `strategy=
+    spot_aware_v2 mode=tier_restricted ...`. Three artifacts addressed:
+      - scripts/four_day_audit.py: --strategy-override flag (5fedb9d)
+      - scripts/watch_first_v3_fire.py: dropped rationale regex (5fedb9d)
+      - src/polymarket_bot/strategies/spot_aware_v3.py: rewrite rationale
+        at source (74f7541) — committed, NOT deployed; ride on next
+        natural restart per feedback_defer_deploys_to_natural_restart
+
+================================================================================
+E. DEFENSE LAYERS (GREEN — all 5 operational)
+================================================================================
+
+  Phase 11.A phantom-fill defense:   wired (no recent triggers)
+  Instant-settle:                    ENABLED (gamma poll, 5s interval)
+  Periodic orphan-recovery:          ENABLED (5min cadence)
+  Post-hoc gamma retry:              ENABLED (300s delay, 30s interval,
+                                              max 50 attempts)
+  Decision-log inode-stability:      ENABLED (May 9 incident defense)
+
+  Recent orphan-recovery activity (last 24h):
+    - Most cycles found 0 orphans (healthy)
+    - One persistent "1 unresolved" pattern on 2026-05-12 11:36-12:21
+      (pre-cut bot, persisted across 4 cycles, cleared on cut restart)
+    - One transient "1 unresolved" at 13:41:24 (PHASE-F-1 process)
+      → cleared 6 min later at 13:47:01 (matches the v3 fire timeline:
+      13:35:16 fire → 13:41:24 detected as orphan → 13:47:01 settled
+      naturally). NOT A BUG — normal late-settle behavior.
+
+  Salvage / atomic-rename / inode-stability warnings: NONE in 24h
+  (May 9 FD-orphan incident class shows zero recurrence).
+
+================================================================================
+F. OBSERVABILITY GAPS (cosmetic only — not affecting bot stability)
+================================================================================
+
+  Dashboard `/api/state.feeds: []` and `feeds_snapshot_age_s: null`:
+    Root cause: no redis `feeds*` keys exist; no state/feeds_health.json
+    file is being produced. The bot is correctly receiving and processing
+    feeds (orphan-recovery + warmer + gamma activity prove it), but the
+    feed-status PUBLISH path isn't wired. Dashboard panel is consequently
+    empty. Operator UX issue; does not affect trading correctness.
+
+  This is a known limitation of the v3 dashboard rewrite (per Phase 11.A.X.B
+  checkpoint memory). Tracked as a follow-up; out of Phase F scope.
+
+================================================================================
+CHANGES SHIPPED THIS SESSION (12 commits on claude/jovial-hermann-7e103f)
+================================================================================
+
+  d1510bd  Default flip: spot_aware → spot_aware_v3
+  1123602  Phase F close-out docs
+  ca4336a  F.3 next-session prompt drafted
+  5b1ab54  +30min verify results
+  5801c41  scripts/four_day_audit.py + 16 tests + frozen baseline
+  1a6ddf8  Session-note refresh
+  c196e43  PHASE-F-2 EV_min tighten close-out (14:27:13 deploy)
+  c30e5ce  scripts/watch_first_v3_fire.py + 17 tests
+  126a396  Watcher launch documented
+  5fedb9d  Watcher + audit tooling fix (rationale-agnostic)
+  74f7541  Source-level v3 rationale rewrite (committed, NOT deployed)
+  (this commit) Stability sweep evidence
+
+  pytest:        581 passing
+  ruff:          clean
+  mypy --strict: clean
+  pre-commit:    all hooks green
+
+================================================================================
+WHAT THIS SWEEP DELIBERATELY DID NOT DO
+================================================================================
+
+  - ❌ Send a real test Telegram message (avoid operator spam during soak)
+  - ❌ Test halt sentinel by creating it (would interrupt the soak)
+  - ❌ Deploy the v3 rationale source fix (per feedback_defer_deploys_to_
+       natural_restart; ride on F.3 verdict / ROLLBACK / any later deploy)
+  - ❌ Fix the dashboard feeds:[] gap (out of Phase F scope; tracked
+       elsewhere)
+  - ❌ Touch any locked decision
+
+================================================================================
+NEXT CHECKPOINTS
+================================================================================
+
+  +5h    (2026-05-12 19:27 UTC): operator may run audit on VPS:
+         `python3 -u scripts/four_day_audit.py \
+              --strategy-override "2026-05-12T14:27:13+00:00" "spot_aware_v3"`
+         Note: use the PHASE-F-2 timestamp for canonical post-tighten data;
+         the cut-era timestamp (12:25:33) attributes the pre-PHASE-F-2
+         data point too.
+
+  +24h   (2026-05-13 14:27 UTC): first-fire watcher TIMEOUT alert lands if
+         the PHASE-F-2 process has produced ZERO fires. Operator decides
+         whether to extend soak or investigate.
+
+  +48h   (2026-05-14 14:27 UTC): Phase F.3 audit session — full
+         PROMOTE/ROLLBACK/EXTEND verdict per phase-prompts/phase-F-3-...
+
+================================================================================
+END
+================================================================================

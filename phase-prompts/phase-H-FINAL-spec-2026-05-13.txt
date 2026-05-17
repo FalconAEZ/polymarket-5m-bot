@@ -1,0 +1,36 @@
+[See prompt above — saved as phase-prompts/phase-H-FINAL-spec-2026-05-13.txt]
+
+SUBJECT: Phase H.FINAL — Engineering implementation specification PDF
+         The H.1 PDF was strategic. This is the engineering spec — file
+         paths, type signatures, integration points, test assertions,
+         deployment commands, past-incident defenses.
+
+DELIVERABLE:
+  pdfs/PHASE_H_V2_1_FINAL_IMPLEMENTATION_SPEC.pdf (25-30 pp)
+  ~/Desktop/PHASE_H_V2_1_FINAL_IMPLEMENTATION_SPEC.pdf
+
+INPUTS: 10 source files + 14 memory checkpoints + Phase F/G outputs + past incidents
+
+SECTIONS (18):
+  1. Executive summary
+  2. Code architecture
+  3. Class definition (SpotAwareStrategyV2_1)
+  4. KellyConfig dataclass
+  5. Bankroll-getter integration
+  6. Multi-fire state machine
+  7. Rationale format (self-tagging)
+  8. Decision-log schema additions
+  9. Dashboard integration
+ 10. Test plan (~18 tests)
+ 11. .envrc spec
+ 12. scripts/run_paper.py dispatch
+ 13. Deployment runbook
+ 14. Verification gates (+5/+30/+24h/+7d)
+ 15. Past-incident defense matrix
+ 16. Rollback decision tree
+ 17. Open questions (Q1-Q5) + defaults
+ 18. Honest pushback
+
+DEFAULTS: NO hour gate · NO regime gate · 2 fires/window · Kelly 0.10× · $2k promotion
+
+Does NOT ship code. PDF is the artifact. Next session = Phase H.2 code shipping.

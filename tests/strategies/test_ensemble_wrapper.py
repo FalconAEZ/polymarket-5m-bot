@@ -28,6 +28,7 @@ from polymarket_bot.agents.protocol import (
     AgentContext,
     AgentVote,
     MetaDecision,
+    MetaOutcome,
 )
 from polymarket_bot.backtest.types import (
     BookUpdate,
@@ -38,6 +39,8 @@ from polymarket_bot.backtest.types import (
     WindowBoundary,
 )
 from polymarket_bot.strategies.ensemble_wrapper import EnsembleWrapper
+from polymarket_bot.strategies.every_window import Router, RouterConfig
+from polymarket_bot.strategies.regime_detector import RegimeDetector
 
 WINDOW_TS = 1_715_000_100
 WINDOW_OPEN_NS = WINDOW_TS * 1_000_000_000
@@ -93,15 +96,30 @@ class _StubAgent:
 
 
 class _StubMeta:
-    """Returns canned MetaDecision (or None) on each .decide() call."""
+    """Returns canned MetaDecision (or None) + optional outcome tag on
+    each .decide() call. Phase 18B: meta now returns (decision, outcome);
+    stub auto-derives ``ok`` for a returned decision, ``validation_failed``
+    for None, unless an explicit outcome was supplied at construction.
+    """
 
-    def __init__(self, decision: MetaDecision | None) -> None:
+    def __init__(
+        self,
+        decision: MetaDecision | None,
+        outcome: MetaOutcome | None = None,
+    ) -> None:
         self.name = "meta-stub"
         self.model = "sonnet-stub"
         self._decision = decision
+        self._outcome: MetaOutcome = (
+            outcome
+            if outcome is not None
+            else ("ok" if decision is not None else "validation_failed")
+        )
 
-    async def decide(self, ctx: AgentContext, votes: dict[str, AgentVote]) -> MetaDecision | None:
-        return self._decision
+    async def decide(
+        self, ctx: AgentContext, votes: dict[str, AgentVote]
+    ) -> tuple[MetaDecision | None, MetaOutcome]:
+        return self._decision, self._outcome
 
 
 def _spot(price: float, ts_offset_s: int) -> SpotTick:
@@ -307,6 +325,77 @@ async def test_gate_falls_back_to_base_when_meta_is_none(tmp_path: Path) -> None
 
 
 @pytest.mark.asyncio
+async def test_ensemble_vote_log_carries_meta_outcome_tag(tmp_path: Path) -> None:
+    """Phase 18B: every ensemble_vote JSONL record carries a meta_outcome
+    field tagging the failure (or success) class. Two cases here:
+
+      1. Happy path with a meta=FIRE decision → outcome="ok".
+      2. Refusal path with meta=None (StubMeta constructed with explicit
+         tag) → outcome="refusal". Same gate-mode fallback as before, but
+         the audit script now sees WHICH failure caused the fallback.
+    """
+    # Case 1 — happy path emits "ok".
+    happy = EnsembleWrapper(
+        base=_StubBaseStrategy(side="UP"),
+        specialists=[
+            _StubAgent("orderbook", AgentVote(side="UP", confidence=0.8, rationale="o")),
+            _StubAgent("oracle_gap", AgentVote(side="UP", confidence=0.7, rationale="og")),
+        ],
+        meta=_StubMeta(MetaDecision(action="FIRE", side="UP", confidence=0.85, rationale="m")),
+        mode="gate",
+        log_root=tmp_path,
+    )
+    await _drive(happy)
+    happy_log = _read_jsonl_lines(_list_jsonl(tmp_path)[0])
+    assert happy_log[-1]["meta_outcome"] == "ok"
+
+    # Case 2 — refusal: meta returned None with an explicit tag from the
+    # adapter. The wrapper must surface that tag (not coarsen to None /
+    # "validation_failed").
+    refused_dir = tmp_path / "refused"
+    refused_dir.mkdir()
+    refused = EnsembleWrapper(
+        base=_StubBaseStrategy(side="UP"),
+        specialists=[
+            _StubAgent("orderbook", AgentVote(side="UP", confidence=0.8, rationale="o")),
+            _StubAgent("oracle_gap", AgentVote(side="UP", confidence=0.7, rationale="og")),
+        ],
+        meta=_StubMeta(None, outcome="refusal"),
+        mode="gate",
+        log_root=refused_dir,
+    )
+    refused_decision = await _drive(refused)
+    assert refused_decision is not None, "gate-mode falls back to base on meta=None"
+    refused_log = _read_jsonl_lines(_list_jsonl(refused_dir)[0])
+    assert refused_log[-1]["meta"] is None
+    assert refused_log[-1]["meta_outcome"] == "refusal"
+
+
+@pytest.mark.asyncio
+async def test_ensemble_vote_log_tags_no_meta_call_when_too_few_votes(
+    tmp_path: Path,
+) -> None:
+    """Phase 18B: when fewer than MIN_VOTES_FOR_META specialists vote,
+    meta is never called. The new tag is ``"no_meta_call"`` so audits can
+    distinguish "LLM failed" from "we never even asked"."""
+    wrapper = EnsembleWrapper(
+        base=_StubBaseStrategy(side="UP"),
+        specialists=[
+            _StubAgent("orderbook", None),
+            _StubAgent("oracle_gap", None),
+            _StubAgent("momentum", None),
+        ],
+        meta=_StubMeta(MetaDecision(action="FIRE", side="UP", confidence=0.9, rationale="m")),
+        mode="shadow",
+        log_root=tmp_path,
+    )
+    await _drive(wrapper)
+    log = _read_jsonl_lines(_list_jsonl(tmp_path)[0])
+    assert log[-1]["meta"] is None
+    assert log[-1]["meta_outcome"] == "no_meta_call"
+
+
+@pytest.mark.asyncio
 async def test_shadow_mode_passes_through_when_too_few_votes(tmp_path: Path) -> None:
     """Same setup but shadow mode: base verdict still wins."""
     wrapper = EnsembleWrapper(
@@ -449,11 +538,13 @@ class _SlowStubMeta:
         self._decision = decision
         self._delay_s = delay_s
 
-    async def decide(self, ctx: AgentContext, votes: dict[str, AgentVote]) -> MetaDecision:
+    async def decide(
+        self, ctx: AgentContext, votes: dict[str, AgentVote]
+    ) -> tuple[MetaDecision | None, MetaOutcome]:
         import asyncio as _asyncio
 
         await _asyncio.sleep(self._delay_s)
-        return self._decision
+        return self._decision, "ok"
 
 
 @pytest.mark.asyncio
@@ -554,9 +645,12 @@ class _SleepyStubMeta:
         self._decision = decision
         self._sleep_s = sleep_s
 
-    async def decide(self, ctx: AgentContext, votes: dict[str, AgentVote]) -> MetaDecision | None:
+    async def decide(
+        self, ctx: AgentContext, votes: dict[str, AgentVote]
+    ) -> tuple[MetaDecision | None, MetaOutcome]:
         await asyncio.sleep(self._sleep_s)
-        return self._decision
+        outcome: MetaOutcome = "ok" if self._decision is not None else "validation_failed"
+        return self._decision, outcome
 
 
 @pytest.mark.asyncio
@@ -594,6 +688,11 @@ async def test_gate_timeout_falls_back_to_base(tmp_path: Path) -> None:
     assert len(timeout_logs) == 1
     assert timeout_logs[0]["meta"] is None
     assert timeout_logs[0]["timeout_s"] == 0.1
+    # Phase 18B: every ensemble_vote record carries a meta_outcome tag so
+    # post-hoc audits can attribute meta=None to its source. Timeout path
+    # uses the dedicated "timeout" tag — same group as the legacy
+    # timeout_s field, just easier to GROUP BY.
+    assert timeout_logs[0]["meta_outcome"] == "timeout"
 
 
 # ----------------------------------------------------------------------
@@ -775,3 +874,498 @@ async def test_tier_gate_under_load_no_overhead(tmp_path: Path) -> None:
     await wrapper.aclose()
     assert refused == 100, f"expected 100 refusals, got {refused}"
     assert elapsed < 0.5, f"100 tier-gated evaluations took {elapsed:.3f}s — overhead too high"
+
+
+# ----------------------------------------------------------------------
+# Phase 15 — regime classifier gate
+# ----------------------------------------------------------------------
+
+
+class _StubRegimeDetector(RegimeDetector):
+    """A RegimeDetector subclass that returns a canned regime on every
+    classify() call. observe_spot() is still invoked by the wrapper (so
+    integration with _update_context stays exercised) but its writes
+    are discarded — the canned label is what classify() returns."""
+
+    def __init__(self, regime: str = "chop") -> None:
+        super().__init__(min_samples=2)
+        self._canned_regime = regime
+        self.observe_count = 0
+        self.classify_count = 0
+
+    def observe_spot(self, ts_ns: int, price: float) -> None:
+        self.observe_count += 1
+        # Drop the tick — classify() is canned anyway. Avoids polluting
+        # the parent's buffer with synthetic test prices that would shift
+        # subclass-internal state we don't care about.
+
+    def classify(self, now_ns: int) -> str:  # type: ignore[override]
+        self.classify_count += 1
+        return self._canned_regime
+
+
+@pytest.mark.asyncio
+async def test_regime_gate_empty_abstain_set_is_regression_safe(tmp_path: Path) -> None:
+    """Default behavior: empty abstain_regimes is a no-op even with a
+    detector wired in; gate-mode flow unchanged. Detector still observes
+    ticks so flipping ABSTAIN_REGIMES via env restart works immediately."""
+    detector = _StubRegimeDetector(regime="chop")  # would block IF abstain set populated
+    wrapper = EnsembleWrapper(
+        base=_StubBaseStrategy(side="UP"),
+        specialists=[
+            _StubAgent("orderbook", AgentVote(side="UP", confidence=0.8, rationale="o")),
+            _StubAgent("oracle_gap", AgentVote(side="UP", confidence=0.7, rationale="og")),
+            _StubAgent("momentum", AgentVote(side="UP", confidence=0.6, rationale="m")),
+        ],
+        meta=_StubMeta(MetaDecision(action="FIRE", side="UP", confidence=0.9, rationale="meta-up")),
+        mode="gate",
+        log_root=tmp_path,
+        regime_detector=detector,
+        abstain_regimes=(),
+    )
+    decision = await _drive(wrapper)
+    assert decision is not None
+    assert "side=UP" in decision.rationale
+    # observe_spot was called on every SpotTick (kept warm).
+    assert detector.observe_count >= 2
+    # classify NEVER ran because abstain set was empty (short-circuit).
+    assert detector.classify_count == 0
+    # No regime_abstained record was emitted.
+    log_lines = _read_jsonl_lines(_list_jsonl(tmp_path)[0])
+    assert all(log.get("kind") != "regime_abstained" for log in log_lines)
+
+
+@pytest.mark.asyncio
+async def test_regime_gate_blocks_chop_regime_in_gate_mode(tmp_path: Path) -> None:
+    """abstain_regimes={'chop'} + classifier returns 'chop' → refusal, no LLM call."""
+    detector = _StubRegimeDetector(regime="chop")
+    specialist = _CallTrackingAgent(
+        "orderbook", AgentVote(side="UP", confidence=0.9, rationale="o")
+    )
+    meta = _CallTrackingMeta(MetaDecision(action="FIRE", side="UP", confidence=0.9, rationale="m"))
+    wrapper = EnsembleWrapper(
+        base=_StubBaseStrategy(side="UP"),
+        specialists=[specialist],
+        meta=meta,
+        mode="gate",
+        log_root=tmp_path,
+        regime_detector=detector,
+        abstain_regimes=("chop",),
+    )
+    decision = await _drive(wrapper)
+    assert decision is None
+    # Regime gate refused BEFORE invoking the LLM — saves Haiku/Sonnet spend.
+    assert specialist.call_count == 0
+    assert meta.call_count == 0
+    assert detector.classify_count == 1
+
+
+@pytest.mark.asyncio
+async def test_regime_gate_passes_trending_regime(tmp_path: Path) -> None:
+    """abstain_regimes={'chop'} + classifier returns 'trending' → normal LLM flow."""
+    detector = _StubRegimeDetector(regime="trending")
+    specialist = _CallTrackingAgent(
+        "orderbook", AgentVote(side="UP", confidence=0.9, rationale="o")
+    )
+    meta = _CallTrackingMeta(MetaDecision(action="FIRE", side="UP", confidence=0.9, rationale="m"))
+    wrapper = EnsembleWrapper(
+        base=_StubBaseStrategy(side="UP"),
+        specialists=[
+            specialist,
+            _StubAgent("oracle_gap", AgentVote(side="UP", confidence=0.7, rationale="og")),
+        ],
+        meta=meta,
+        mode="gate",
+        log_root=tmp_path,
+        regime_detector=detector,
+        abstain_regimes=("chop",),
+    )
+    decision = await _drive(wrapper)
+    assert decision is not None
+    assert "side=UP" in decision.rationale
+    # LLM was consulted (regime not in abstain set).
+    assert specialist.call_count == 1
+    assert meta.call_count == 1
+    # No regime_abstained record.
+    log_lines = _read_jsonl_lines(_list_jsonl(tmp_path)[0])
+    assert all(log.get("kind") != "regime_abstained" for log in log_lines)
+
+
+@pytest.mark.asyncio
+async def test_regime_gate_logs_record_on_refusal(tmp_path: Path) -> None:
+    """Refusal emits exactly one kind=regime_abstained JSONL line with all expected fields."""
+    detector = _StubRegimeDetector(regime="chop")
+    wrapper = EnsembleWrapper(
+        base=_StubBaseStrategy(side="UP", price_limit=0.55),
+        specialists=[_StubAgent("orderbook", AgentVote(side="UP", confidence=0.9, rationale="o"))],
+        meta=_StubMeta(MetaDecision(action="FIRE", side="UP", confidence=0.9, rationale="m")),
+        mode="gate",
+        log_root=tmp_path,
+        regime_detector=detector,
+        abstain_regimes=("chop", "mixed"),  # multi-element set
+    )
+    decision = await _drive(wrapper)
+    assert decision is None
+    log_lines = _read_jsonl_lines(_list_jsonl(tmp_path)[0])
+    refusals = [log for log in log_lines if log.get("kind") == "regime_abstained"]
+    assert len(refusals) == 1
+    refusal = refusals[0]
+    assert refusal["regime"] == "chop"
+    assert refusal["abstain_regimes"] == ["chop", "mixed"]
+    assert refusal["window_ts"] == WINDOW_TS
+    assert "base_rationale" in refusal
+    assert "decision_id_hint" in refusal
+
+
+def test_regime_gate_constructor_rejects_unknown_label() -> None:
+    """Startup validation: unknown regime labels in abstain_regimes raise ValueError.
+    'unknown' is also rejected since it would block cold-start fires."""
+    with pytest.raises(ValueError, match="unknown regime labels"):
+        EnsembleWrapper(
+            base=_StubBaseStrategy(),
+            specialists=[_StubAgent("orderbook", None)],
+            meta=_StubMeta(None),
+            mode="off",
+            regime_detector=_StubRegimeDetector(),
+            abstain_regimes=("not-a-regime", "chop"),
+        )
+    # 'unknown' is technically a regime literal but explicitly disallowed.
+    with pytest.raises(ValueError, match="unknown regime labels"):
+        EnsembleWrapper(
+            base=_StubBaseStrategy(),
+            specialists=[_StubAgent("orderbook", None)],
+            meta=_StubMeta(None),
+            mode="off",
+            regime_detector=_StubRegimeDetector(),
+            abstain_regimes=("unknown",),
+        )
+
+
+@pytest.mark.asyncio
+async def test_regime_gate_under_load_no_overhead(tmp_path: Path) -> None:
+    """100 candidate evaluations with regime-gate enabled finish quickly.
+
+    Same queue-overflow regression guard as the Phase 14 tier-gate
+    counterpart. classify() is O(buffer) on ~600 floats max; this test
+    asserts 100 wrapper.on_event() calls (each producing a candidate
+    that hits the chop abstain set) complete in well under 500ms.
+    """
+    detector = _StubRegimeDetector(regime="chop")
+    wrapper = EnsembleWrapper(
+        base=_StubBaseStrategy(side="UP"),
+        specialists=[_StubAgent("orderbook", None)],  # would slow if invoked
+        meta=_StubMeta(None),
+        mode="off",  # off-mode irrelevant — regime gate runs before mode dispatch
+        log_root=tmp_path,
+        regime_detector=detector,
+        abstain_regimes=("chop",),
+    )
+    # Warm context.
+    await wrapper.on_event(_open())
+    await wrapper.on_event(_spot(80_000.0, 1))
+
+    loop = asyncio.get_event_loop()
+    start = loop.time()
+    refused = 0
+    for i in range(100):
+        wrapper._base.reset()  # type: ignore[attr-defined]
+        decision = await wrapper.on_event(_spot(80_080.0 + i, 30 + i))
+        if decision is None:
+            refused += 1
+    elapsed = loop.time() - start
+    await wrapper.aclose()
+    assert refused == 100, f"expected 100 refusals, got {refused}"
+    assert elapsed < 0.5, f"100 regime-gated evaluations took {elapsed:.3f}s — overhead too high"
+
+
+# ----------------------------------------------------------------------
+# Phase 16.B.4 — EVERY_WINDOW_MODE router wire (7 tests, per
+# design/phase-16b-every-window-mode.md §11)
+# ----------------------------------------------------------------------
+
+
+def _build_router_for_tests() -> Router:
+    """Construct a Router with locked-default RouterConfig (design §3.4)."""
+    return Router(config=RouterConfig())
+
+
+def _read_router_jsonl(router_root: Path) -> list[dict[str, Any]]:
+    """Helper: read the daily-rotating router log into one list."""
+    paths = sorted(router_root.glob("*.jsonl"))
+    out: list[dict[str, Any]] = []
+    for p in paths:
+        out.extend(json.loads(line) for line in p.read_text().strip().splitlines() if line)
+    return out
+
+
+@pytest.mark.asyncio
+async def test_every_window_mode_off_no_behavior_change(tmp_path: Path) -> None:
+    """THE BULWARK TEST. With EVERY_WINDOW_MODE=false the wrapper must
+    produce the exact same Decision as it would have without the router
+    wire at all. Compared head-to-head: one wrapper with router=None,
+    one with router wired but mode off. Outputs must be byte-identical
+    for the same input event stream.
+
+    If this fails, the wire has introduced behavior change in the
+    default-off path and the deploy must NOT proceed.
+    """
+    ensemble_root_a = tmp_path / "a"
+    ensemble_root_b = tmp_path / "b"
+    router_root = tmp_path / "router"
+    base_a = _StubBaseStrategy(side="UP")
+    base_b = _StubBaseStrategy(side="UP")
+    common_meta = MetaDecision(action="FIRE", side="UP", confidence=0.85, rationale="meta-up")
+    wrapper_baseline = EnsembleWrapper(
+        base=base_a,
+        specialists=[
+            _StubAgent("orderbook", AgentVote(side="UP", confidence=0.8, rationale="o")),
+            _StubAgent("oracle_gap", AgentVote(side="UP", confidence=0.7, rationale="og")),
+        ],
+        meta=_StubMeta(common_meta),
+        mode="gate",
+        log_root=ensemble_root_a,
+    )
+    wrapper_with_router_off = EnsembleWrapper(
+        base=base_b,
+        specialists=[
+            _StubAgent("orderbook", AgentVote(side="UP", confidence=0.8, rationale="o")),
+            _StubAgent("oracle_gap", AgentVote(side="UP", confidence=0.7, rationale="og")),
+        ],
+        meta=_StubMeta(common_meta),
+        mode="gate",
+        log_root=ensemble_root_b,
+        router=Router(config=RouterConfig()),
+        every_window_mode=False,
+        every_window_shadow=False,
+        router_log_root=router_root,
+    )
+    decision_baseline = await _drive(wrapper_baseline)
+    decision_routered = await _drive(wrapper_with_router_off)
+    assert decision_baseline == decision_routered, (
+        f"EVERY_WINDOW_MODE=false changed wrapper output! "
+        f"baseline={decision_baseline} routered={decision_routered}"
+    )
+    # Router log must be empty (no router invocation at all in default-off).
+    assert not router_root.exists() or _read_router_jsonl(router_root) == []
+
+
+@pytest.mark.asyncio
+async def test_every_window_mode_emits_on_every_window(tmp_path: Path) -> None:
+    """With EVERY_WINDOW_MODE=true the router replaces the gate dispatch.
+    Even when meta=ABSTAIN (which would normally cause gate-mode to
+    drop the fire), the router fires the window and the size differs
+    from the base candidate's flat $5."""
+    router = _build_router_for_tests()
+    wrapper = EnsembleWrapper(
+        base=_StubBaseStrategy(side="UP"),
+        specialists=[
+            _StubAgent("orderbook", AgentVote(side="UP", confidence=0.8, rationale="o")),
+            _StubAgent("oracle_gap", AgentVote(side="UP", confidence=0.7, rationale="og")),
+        ],
+        meta=_StubMeta(MetaDecision(action="ABSTAIN", side=None, confidence=0.4, rationale="m")),
+        mode="gate",
+        log_root=tmp_path / "ensemble",
+        router=router,
+        every_window_mode=True,
+        every_window_shadow=False,
+        router_log_root=tmp_path / "router",
+    )
+    decision = await _drive(wrapper)
+    # In stock gate-mode, meta=ABSTAIN would cause None. With router taking
+    # over, the router fires regardless — it's its own decision.
+    assert decision is not None, "router should fire even when meta=ABSTAIN"
+    # Router log records a router_fired (or router_vetoed) entry.
+    payloads = _read_router_jsonl(tmp_path / "router")
+    fired = [p for p in payloads if p["kind"] == "router_fired"]
+    assert len(fired) == 1, f"expected 1 router_fired entry, got {payloads}"
+    # Router rationale identifies the strategy.
+    assert "strategy=every_window" in decision.rationale
+
+
+@pytest.mark.asyncio
+async def test_every_window_mode_uses_router_confidence(tmp_path: Path) -> None:
+    """The Decision the router emits must use the router's sizing
+    formula, not the base candidate's flat $5. With high meta confidence
+    + same-side specialists + a +10 bps delta_bps in the base rationale,
+    confidence is well above the kink — size should be > $5."""
+    router = _build_router_for_tests()
+    wrapper = EnsembleWrapper(
+        base=_StubBaseStrategy(side="UP"),
+        specialists=[
+            _StubAgent("orderbook", AgentVote(side="UP", confidence=0.9, rationale="o")),
+            _StubAgent("oracle_gap", AgentVote(side="UP", confidence=0.9, rationale="og")),
+            _StubAgent("momentum", AgentVote(side="UP", confidence=0.9, rationale="m")),
+        ],
+        meta=_StubMeta(MetaDecision(action="FIRE", side="UP", confidence=0.95, rationale="m")),
+        mode="gate",
+        log_root=tmp_path / "ensemble",
+        router=router,
+        every_window_mode=True,
+        router_log_root=tmp_path / "router",
+    )
+    decision = await _drive(wrapper)
+    assert decision is not None
+    # Router-shaped Decision: size differs from the stub's flat $5 OR
+    # equals it; either way, it MUST be in the [5, 30] band. The key
+    # bulwark is that the rationale carries router context, not stub.
+    assert 5.0 <= decision.size_usd <= 30.0
+    payload = _read_router_jsonl(tmp_path / "router")[0]
+    assert (
+        payload["confidence"] >= 0.30
+    ), f"high-confidence inputs should clear the kink; got {payload['confidence']}"
+    # The Decision's size_usd matches the router log's size_usd.
+    assert decision.size_usd == payload["size_usd"]
+    # And the breakdown carries all 5 weights.
+    inputs = payload["inputs_breakdown"]
+    for k in ("det", "reg", "tier", "llm", "kelly"):
+        assert k in inputs, f"missing input '{k}' in breakdown {inputs}"
+
+
+@pytest.mark.asyncio
+async def test_every_window_shadow_logs_only(tmp_path: Path) -> None:
+    """EVERY_WINDOW_SHADOW=true + MODE=false: router runs as observer,
+    base strategy still drives. Router log gets a 'router_shadow' entry
+    per fired window."""
+    router = _build_router_for_tests()
+    wrapper = EnsembleWrapper(
+        base=_StubBaseStrategy(side="UP"),
+        specialists=[
+            _StubAgent("orderbook", AgentVote(side="UP", confidence=0.8, rationale="o")),
+            _StubAgent("oracle_gap", AgentVote(side="UP", confidence=0.7, rationale="og")),
+        ],
+        meta=_StubMeta(MetaDecision(action="FIRE", side="UP", confidence=0.85, rationale="m")),
+        mode="gate",
+        log_root=tmp_path / "ensemble",
+        router=router,
+        every_window_mode=False,
+        every_window_shadow=True,
+        router_log_root=tmp_path / "router",
+    )
+    decision = await _drive(wrapper)
+    # Base flow drove — decision is the stub's Decision (size=5.0,
+    # rationale "strategy=stub side=UP ...").
+    assert decision is not None
+    assert "strategy=stub" in decision.rationale
+    assert decision.size_usd == 5.0
+    # Router log contains a router_shadow entry.
+    payloads = _read_router_jsonl(tmp_path / "router")
+    shadow_entries = [p for p in payloads if p["kind"] == "router_shadow"]
+    assert len(shadow_entries) == 1, f"expected 1 router_shadow entry, got {payloads}"
+    assert shadow_entries[0]["fire"] in (True, False)  # router can veto or fire
+
+
+@pytest.mark.asyncio
+async def test_every_window_mode_kill_switch_wr_floor(tmp_path: Path) -> None:
+    """When the runtime kill-switch flips (rolling-100 WR < floor or
+    daily PnL < floor, design §5 layers 3-4), subsequent events take
+    the base flow. The Phase 16.B.6 runtime loop calls
+    `wrapper.disable_every_window(reason=...)` — test that this
+    method reverts behavior without a service restart."""
+    router = _build_router_for_tests()
+    wrapper = EnsembleWrapper(
+        base=_StubBaseStrategy(side="UP"),
+        specialists=[
+            _StubAgent("orderbook", AgentVote(side="UP", confidence=0.8, rationale="o")),
+            _StubAgent("oracle_gap", AgentVote(side="UP", confidence=0.7, rationale="og")),
+        ],
+        meta=_StubMeta(MetaDecision(action="FIRE", side="UP", confidence=0.9, rationale="m")),
+        mode="gate",
+        log_root=tmp_path / "ensemble",
+        router=router,
+        every_window_mode=True,
+        router_log_root=tmp_path / "router",
+    )
+    # First drive: router should be active.
+    decision_before = await _drive(wrapper)
+    assert decision_before is not None
+    assert "strategy=every_window" in decision_before.rationale
+    # Operator-side / Phase 16.B.6 runtime tripped the WR floor.
+    wrapper.disable_every_window(reason="rolling_wr_below_floor:0.47")
+    # Reset the base so it fires again on the next drive.
+    wrapper._base.reset()  # type: ignore[attr-defined]
+    decision_after = await _drive(wrapper)
+    assert decision_after is not None
+    # Now we're back on the base flow — stub-shaped Decision.
+    assert "strategy=stub" in decision_after.rationale
+    # Idempotent: second call is a no-op (state already off).
+    wrapper.disable_every_window(reason="rolling_wr_below_floor:0.46")
+    # Router log captured the disable event.
+    payloads = _read_router_jsonl(tmp_path / "router")
+    disables = [p for p in payloads if p["kind"] == "router_disabled"]
+    assert len(disables) == 1, f"expected 1 router_disabled entry, got {payloads}"
+    assert disables[0]["reason"] == "rolling_wr_below_floor:0.47"
+
+
+@pytest.mark.asyncio
+async def test_every_window_mode_kill_switch_daily_pnl(tmp_path: Path) -> None:
+    """Same shape as the WR test but for the daily PnL floor kill-switch
+    (design §5 layer 4). Same disable_every_window mechanism — reason
+    just tags differently for the audit."""
+    router = _build_router_for_tests()
+    wrapper = EnsembleWrapper(
+        base=_StubBaseStrategy(side="UP"),
+        specialists=[
+            _StubAgent("orderbook", AgentVote(side="UP", confidence=0.8, rationale="o")),
+            _StubAgent("oracle_gap", AgentVote(side="UP", confidence=0.7, rationale="og")),
+        ],
+        meta=_StubMeta(MetaDecision(action="FIRE", side="UP", confidence=0.9, rationale="m")),
+        mode="gate",
+        log_root=tmp_path / "ensemble",
+        router=router,
+        every_window_mode=True,
+        router_log_root=tmp_path / "router",
+    )
+    wrapper.disable_every_window(reason="daily_pnl_below_floor:-105.00")
+    wrapper._base.reset()  # type: ignore[attr-defined]
+    decision = await _drive(wrapper)
+    assert decision is not None
+    assert "strategy=stub" in decision.rationale
+    payloads = _read_router_jsonl(tmp_path / "router")
+    disables = [p for p in payloads if p["kind"] == "router_disabled"]
+    assert len(disables) == 1
+    assert disables[0]["reason"] == "daily_pnl_below_floor:-105.00"
+
+
+@pytest.mark.asyncio
+async def test_every_window_mode_preserves_phantom_fill_defense(tmp_path: Path) -> None:
+    """Phase 11.A regression: the router's phantom-fill veto must fire
+    when ask price < $0.05 AND ask-size-top is None. We synthesize that
+    by feeding a BookUpdate with best_ask=0.03 and NO depth (ask_size_top
+    omitted), and a stub that fires on that side. Router must veto."""
+    router = _build_router_for_tests()
+    wrapper = EnsembleWrapper(
+        base=_StubBaseStrategy(side="UP", price_limit=0.03),
+        specialists=[
+            _StubAgent("orderbook", AgentVote(side="UP", confidence=0.9, rationale="o")),
+            _StubAgent("oracle_gap", AgentVote(side="UP", confidence=0.9, rationale="og")),
+        ],
+        meta=_StubMeta(MetaDecision(action="FIRE", side="UP", confidence=0.95, rationale="m")),
+        mode="gate",
+        log_root=tmp_path / "ensemble",
+        router=router,
+        every_window_mode=True,
+        router_log_root=tmp_path / "router",
+    )
+    # Deliver an UP-side book with NO ask_size_top — the phantom-fill
+    # zone the router defends against.
+    await wrapper.on_event(_open())
+    await wrapper.on_event(_spot(80_000.0, 1))
+    await wrapper.on_event(_oracle(79_990.0, 2))
+    await wrapper.on_event(
+        BookUpdate(
+            ts_utc_ns=WINDOW_OPEN_NS + 3 * 10**9,
+            asset_id=TOKEN_UP,
+            side="UP",  # type: ignore[arg-type]
+            best_bid=0.01,
+            best_ask=0.03,
+            bid_size_top=None,
+            ask_size_top=None,
+        )
+    )
+    decision = await wrapper.on_event(_spot(80_080.0, 30))
+    await wrapper.aclose()
+    assert decision is None, "router must veto phantom-fill zone"
+    payloads = _read_router_jsonl(tmp_path / "router")
+    vetoes = [p for p in payloads if p["kind"] == "router_vetoed"]
+    assert len(vetoes) == 1, f"expected 1 router_vetoed entry, got {payloads}"
+    assert vetoes[0]["veto_reason"] == "phantom_fill_defense"

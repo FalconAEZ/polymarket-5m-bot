@@ -1,0 +1,276 @@
+Subject: Phase F.3 — spot_aware_v3 48-72h soak audit (PROMOTE / ROLLBACK / EXTEND)
+       Companion to phase-prompts/phase-F-final-stage-architecture-audit-2026-05-13.txt.
+       Items 1 + 2 of Phase F shipped 2026-05-12 12:25:33 UTC; this prompt drives
+       Item 3 (the soak audit) and produces a verdict.
+
+================================================================================
+ORIGIN CONTEXT — what shipped + what we're now measuring
+================================================================================
+
+Phase F Items 1 + 2 shipped 2026-05-12 12:25:33 UTC at commit `d1510bd` on
+branch `claude/jovial-hermann-7e103f`. The cut:
+
+  • scripts/run_paper.py DEFAULT_STRATEGY_NAME: spot_aware → spot_aware_v3
+  • VPS .envrc: STRATEGY=spot_aware_v3 (was ensemble + wide_fire + gate)
+                ENSEMBLE_MODE=gate           → commented
+                ENSEMBLE_BASE_STRATEGY=...   → commented
+                EVERY_WINDOW_SHADOW=true     → commented
+                (backup at .envrc.phase-F-backup-20260512-122500)
+
+PHASE-F-2 follow-up restart 2026-05-12 14:27:13 UTC at MainPID 584489:
+  • SPOT_AWARE_EV_MIN_DOLLARS=0.003 → commented (v3 now at default 0.005)
+  • Resolves the "KNOWN DIVERGENCE" section below
+  • Backup at .envrc.phase-F-2-backup-20260512-142703
+
+PHASE-F-3 final restart 2026-05-12 15:06:59 UTC at MainPID 585607:
+  • Deployed the v3 source rationale-rewrite fix (commit 74f7541)
+  • v3 fires now self-tag at fire time:
+    `strategy=spot_aware_v3 mode=trending_only ... regime=trending`
+  • Tooling --strategy-override flag still needed for the ONE historical
+    pre-fix v3 fire (at 13:35:16 UTC on 2026-05-12). Any fire AFTER
+    15:06:59 UTC self-tags correctly.
+
+VPS state at hand-off (verify before driving):
+
+  bot-staging.service active since 2026-05-12 15:06:59 UTC (PHASE-F-3), MainPID 585607
+  dashboard-server.service active since 2026-05-11 06:25:15 UTC
+  HEAD on VPS: should be `7aaf337` or later
+  CANONICAL SOAK CLOCK START: 2026-05-12 15:06:59 UTC (epoch 1778598419)
+    → +24h check at 2026-05-13 15:06:59 UTC
+    → +48h verdict at 2026-05-14 15:06:59 UTC
+
+Pre-flight (run BEFORE driving):
+
+  ssh -i $HOME/Downloads/LightsailDefaultKey-eu-west-1.pem -p 2222 ops@108.132.51.116 \
+    'systemctl is-active bot-staging.service dashboard-server.service; \
+     cd /home/ops/polymarket-5m-bot && git rev-parse --short HEAD; \
+     grep ^export\\ STRATEGY .envrc'
+
+  Expected: active / active / 1123602-or-later / spot_aware_v3
+
+================================================================================
+THE SOAK GATE — verbatim from Phase F prompt
+================================================================================
+
+PROMOTE criteria (Phase F.3 → F.4 = Phase 6 readiness review):
+
+  rolling_wr_at_72h >= 0.52
+  AND daily_pnl_min >= -10.0       (the worst day must be at least -$10)
+  AND fires_per_day >= 50          (else the strategy is too selective)
+  AND queue_overflow_incidents == 0 (predicted true since gate is removed)
+
+ROLLBACK criteria:
+
+  WR < 0.45 over 48h
+  OR daily_pnl < -30 on any day
+  OR fires_per_day < 20            (gated too tight even for v3's selectivity)
+  → revert env to ensemble + wide_fire; postmortem at runbooks/postmortems/
+
+EXTEND (decided by operator if data is between PROMOTE and ROLLBACK):
+
+  • Mid-zone: 0.45 <= WR < 0.52, OR fires_per_day in [20, 50), OR daily_pnl
+    in [-30, -10) on the worst day
+  • Action: extend soak by 48-72h, re-audit
+  • Alternative: tighten v3 by commenting SPOT_AWARE_EV_MIN_DOLLARS=0.003
+    (back to v3 default 0.005) — see "EV_min divergence" below
+
+================================================================================
+EV_MIN DIVERGENCE — RESOLVED 2026-05-12 (PHASE-F-2)
+================================================================================
+
+The `SPOT_AWARE_EV_MIN_DOLLARS=0.003` override was tightened back to v3's
+default 0.005 in the PHASE-F-2 restart at 14:27:13 UTC. Startup log on
+the PHASE-F-2 process no longer prints the override warning — v3 is at
+full validated defaults. The canonical soak data for the F.3 verdict
+starts from PHASE-F-2 deploy (14:27:13 UTC), not from the original cut
+(12:25:33 UTC). The 2-hour pre-tightening window saw zero v3 fires so
+the data loss is nil.
+
+================================================================================
+DATA-GATHERING — script is committed; just run it
+================================================================================
+
+`scripts/four_day_audit.py` is the canonical per-day audit tool, committed
+during the Items-1+2 session along with `tests/test_four_day_audit.py`
+(16 passing tests). It reproduces the Phase F prompt's 5-day table row-
+for-row exact (with a minor +2-fires correction to May 12 vs the prompt's
+eyeball estimate) and prints a `TOTAL` footer.
+
+Run during F.3.2:
+
+  uv run python -u scripts/four_day_audit.py
+  uv run python -u scripts/four_day_audit.py --days 7
+  uv run python -u scripts/four_day_audit.py --since 2026-05-12
+
+Baseline output captured at `runbooks/gate-evidence/phase-F-baseline.txt`
+(45 min post-cut). Compare F.3's run to that baseline; the delta is the
+v3 soak signal.
+
+Required output table per the Phase F format:
+
+  date         fires  filled  fillR  WR     pnl_truth  per_trade  strategy
+  2026-05-12     ...   ...    ...%   ...%    $...       $...      mixed (pre/post-cut)
+  2026-05-13     ...   ...    ...%   ...%    $...       $...      spot_aware_v3
+  2026-05-14     ...   ...    ...%   ...%    $...       $...      spot_aware_v3
+                                              ────────
+                                                $...    TOTAL soak window
+
+Plus invariants:
+  - dropped_records counter at journal shutdown (should be ~0 post-cut)
+  - meta_outcome distribution (should be empty — confirms no ensemble fires)
+  - any error-level log lines since 12:25:33 UTC
+
+================================================================================
+THE WORK — three items in strict order
+================================================================================
+
+------------------------------------------------------------------------
+ITEM F.3.1 — Re-verify state (no code) ~10 min
+------------------------------------------------------------------------
+
+a. Pre-flight SSH check (above).
+b. Pull current /api/state JSON; compare bankroll/PnL to 2026-05-12
+   pre-deploy baseline (n_decisions=611, WR=51.23%, PnL trip-wire=$+0.00).
+c. Verify .envrc still has STRATEGY=spot_aware_v3 (parallel sessions can
+   silently reset things — per feedback_vps_deploy_verify_late memory).
+d. Verify VPS HEAD includes commit `1123602` (the close-out docs).
+e. Spot-check the active strategy log line: journalctl -u bot-staging
+   --since 12:25:33 | head shows "active strategy: spot_aware_v3".
+
+------------------------------------------------------------------------
+ITEM F.3.2 — Per-day audit (read-only) ~30 min
+------------------------------------------------------------------------
+
+a. Pull the day-segmented WR/PnL/fires/fillR/per_trade table for:
+     2026-05-12 (mixed: pre-cut + post-cut)
+     2026-05-13 (full v3 day)
+     2026-05-14 (partial up to audit time)
+b. Within each day, segment by strategy tag if both pre/post-cut records
+   are present (only relevant for 2026-05-12).
+c. Count dropped_records from journal shutdown messages or the runner's
+   periodic counter. Should be ~0 under v3.
+d. Count meta_outcome occurrences. Should be 0 — confirms no fallback
+   to ensemble path.
+e. Check for error-level logs.
+
+Compose the audit per "DATA-GATHERING" §A above.
+
+------------------------------------------------------------------------
+ITEM F.3.3 — Verdict + action ~20 min
+------------------------------------------------------------------------
+
+Operator reviews the audit table + applies the gate:
+
+PROMOTE → write `phase-prompts/phase-F-4-phase-6-readiness-2026-05-NN.txt`
+       (the deferred Phase 24 from master plan: bankroll, funding flow,
+       hardware-wallet status, stat-sig sample size, operator readiness).
+       Phase F closes. Memory checkpoint updated.
+
+ROLLBACK → execute revert: SSH to VPS, cp the .envrc backup, restart
+       bot-staging. Write postmortem at
+       `runbooks/postmortems/2026-05-NN-phase-F-rollback.md` documenting:
+         - what the data showed
+         - which criterion tripped
+         - hypothesis for WHY v3 underperformed
+         - what experiment (if any) re-engages a profitable path
+       Phase F closes as "REJECTED — data did not support cut."
+
+EXTEND → operator decides:
+       (i) extend soak as-is by 48-72h
+       (ii) tighten EV_min (comment out SPOT_AWARE_EV_MIN_DOLLARS) and re-soak
+       (iii) parallel A/B: re-enable ensemble in shadow alongside v3 for
+            comparative measurement
+       Update session note + next-session prompt accordingly.
+
+OPERATOR SIGN-OFF GATE: verdict requires operator typed-confirm.
+
+================================================================================
+ROLLBACK PROCEDURE (single-command)
+================================================================================
+
+  ssh -i $HOME/Downloads/LightsailDefaultKey-eu-west-1.pem -p 2222 \
+      ops@108.132.51.116 \
+    'cp /home/ops/polymarket-5m-bot/.envrc.phase-F-backup-20260512-122500 \
+        /home/ops/polymarket-5m-bot/.envrc && \
+     sudo systemctl restart bot-staging.service && \
+     systemctl is-active bot-staging.service'
+
+After rollback: +5min verify (per feedback_vps_deploy_verify_late);
++30min verify; +24h verify (next day).
+
+================================================================================
+WHAT THIS PHASE EXPLICITLY DOES NOT DO
+================================================================================
+
+- ❌ Write a new audit script unless verdict is ROLLBACK (and even then
+  the postmortem is the higher priority).
+- ❌ Change v3 internals. v3's existing test suite stands; gate change
+  is at the deployment-config layer.
+- ❌ Touch Phase 19 / Phase 16.B code. Those are SHELVED / PAUSED.
+- ❌ Re-enable any ensemble paths without operator typed-confirm.
+- ❌ Modify locked decisions.
+
+================================================================================
+ANTI-VIBE RULES — relevant this session
+================================================================================
+
+- Design doc before code (#1): an audit isn't code. If we ship script
+  (B), it gets a docstring per rule #5 + type hints per rule #6.
+- 3-fix rule (#3): if the audit data is inconsistent (e.g., per-day
+  totals don't reconcile), STOP at the third try and document at
+  `runbooks/incidents/<date>-phase-F.3-audit-inconsistency.md`.
+- Honest pushback (`feedback_honest_pushback`): if the data is messy or
+  the verdict is ambiguous, say so — don't paper over with optimism.
+  The operator wants real numbers; the cut may have been wrong.
+- VPS deploy verify late (`feedback_vps_deploy_verify_late`): if Item
+  F.3.3 produces a rollback or env edit, do +5min/+30min/+24h checks.
+
+================================================================================
+HARD LIMITS
+================================================================================
+
+- Bankroll: $1,000 paper (locked decision #10). UNTOUCHED.
+- bot.service stays DISABLED.
+- Funder key NEVER on VPS.
+- Anthropic spend: should be ~$0/day post-cut. If non-zero in audit
+  window, INVESTIGATE — means an LLM path is still being hit.
+- 4 gates remain green at every commit.
+
+================================================================================
+SESSION BOUNDARY — ENDS WHEN ONE OF
+================================================================================
+
+(a) PROMOTE verdict typed + F.4 prompt drafted → write F.4 prompt; close
+    Phase F. ✅ full.
+(b) ROLLBACK verdict typed + revert deployed + postmortem written →
+    close Phase F as REJECTED. ✅ full.
+(c) EXTEND verdict typed + next-soak prompt drafted → defer to N+48h. ⏸
+(d) Context ≥60% before verdict reached → commit data table only;
+    operator reviews offline. ⏸
+
+================================================================================
+QUICK PRE-SESSION CHECKLIST
+================================================================================
+
+Before driving:
+[ ] Bot still active on VPS (`systemctl is-active bot-staging.service`)
+[ ] Dashboard still active
+[ ] STRATEGY=spot_aware_v3 in .envrc (parallel-session guard)
+[ ] VPS HEAD ≥ `1123602`
+[ ] Reviewed:
+    [ ] phase-prompts/phase-F-final-stage-architecture-audit-2026-05-13.txt
+    [ ] state/sessions/2026-05-12-phase-F-arch-audit-execute.md (with +5min check)
+    [ ] memory/checkpoint_phase_F.md
+    [ ] state/phases/phase-F-architecture-audit.md
+
+After session:
+[ ] Append F.3 verdict + audit table to state/sessions/<date>-phase-F-3-audit.md
+[ ] Update state/phases/phase-F-architecture-audit.md with Item 3 disposition
+[ ] Update memory/checkpoint_phase_F.md to "Phase F closed" or "Phase F extended"
+[ ] Update MEMORY.md index
+[ ] git push origin claude/jovial-hermann-7e103f
+[ ] If PROMOTE: draft phase-prompts/phase-F-4-phase-6-readiness-2026-05-NN.txt
+    If ROLLBACK: write runbooks/postmortems/<date>-phase-F-rollback.md
+    If EXTEND: draft the next soak prompt
+
+End of prompt.

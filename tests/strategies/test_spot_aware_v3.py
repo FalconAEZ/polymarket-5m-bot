@@ -112,12 +112,34 @@ async def _drive_v3_to_decision(
 @pytest.mark.asyncio
 async def test_v3_fires_when_v2_fires_and_regime_trending() -> None:
     """Underlying v2 decides to fire (tier 30-50%, |Δ|=10bps, EV positive)
-    AND the regime detector says 'trending' → v3 lets the fire through."""
+    AND the regime detector says 'trending' → v3 lets the fire through.
+
+    Rationale is rewritten to self-tag as v3 (see SpotAwareStrategyV3
+    module docstring re: `_RE_STRATEGY`). The v2 marker MUST NOT appear
+    in the final rationale — downstream tooling parses this string to
+    attribute strategy, and a v2 tag on a v3 fire would mis-classify."""
     strat = SpotAwareStrategyV3(priors=_priors(), regime_detector=_FixedRegimeDetector("trending"))
     decision = await _drive_v3_to_decision(strat)
     assert decision is not None
-    assert "strategy=spot_aware_v2" in decision.rationale  # v3 inherits v2 marker
-    assert "side=UP" in decision.rationale
+    assert "strategy=spot_aware_v3" in decision.rationale
+    assert "strategy=spot_aware_v2" not in decision.rationale  # rewritten away
+    assert "mode=trending_only" in decision.rationale
+    assert "mode=tier_restricted" not in decision.rationale  # rewritten away
+    assert "regime=trending" in decision.rationale  # appended marker
+    assert "side=UP" in decision.rationale  # v2's existing detail preserved
+
+
+@pytest.mark.asyncio
+async def test_v3_rationale_preserves_v2_quantitative_fields() -> None:
+    """The rationale rewrite is surgical — only strategy + mode tokens
+    change. delta_bps, p_win, ev, ttl, side from v2 must survive."""
+    strat = SpotAwareStrategyV3(priors=_priors(), regime_detector=_FixedRegimeDetector("trending"))
+    decision = await _drive_v3_to_decision(strat)
+    assert decision is not None
+    # _drive_v3_to_decision produces a known fire shape; verify each piece
+    # of v2's careful rationale survives.
+    for token in ("delta_bps=", "p_win=", "ev=", "ttl=", "side="):
+        assert token in decision.rationale, f"missing {token!r} after rewrite"
 
 
 # ----------------------------------------------------------------------

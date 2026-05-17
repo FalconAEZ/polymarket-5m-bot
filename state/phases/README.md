@@ -20,18 +20,27 @@ Chronological + status. Each phase has its own note when work begins; tags are p
 - [[phase-11-spot-aware|Phase 11.A SpotAware soak]] — superseded by Phase 5 LLM-ensemble experiment 2026-05-10. Bot promoted shadow→gate at 2026-05-10 16:31:15 UTC after operator-confirmed +4.1pp WR uplift.
 - Phase 12 (master plan) — planning artifact only; `pdfs/PHASE_12_MASTER_PLAN.pdf` (36 pages) drafted 2026-05-10. Locks the 12-phase optimization roadmap targeting fill-rate 85%+ and 60% WR Phase-23 gate.
 - [[phase-13-fill-rate]] — **NULL result** 2026-05-10. Audit closed by operator choice; no `SPOT_AWARE_LIMIT_LIFT_BPS` env, no code change. Commit `d4f3fde`.
-- [[phase-14-tier-gate]] — **infra dark-shipped** 2026-05-10. `TIER_GATE_ENABLED` + `TIER_GATE_BLOCKLIST` envs in `EnsembleWrapper` + `scripts/run_paper.py`, default OFF. Commit `b6b3599`. **VPS deploy DEFERRED** — parallel dashboard track on VPS has ~80 uncommitted lines on `loaders.py` + 10 untracked dashboard files. 481 tests green.
+- [[phase-14-tier-gate]] — **infra dark-shipped** 2026-05-10. `TIER_GATE_ENABLED` + `TIER_GATE_BLOCKLIST` envs in `EnsembleWrapper` + `scripts/run_paper.py`, default OFF. Commit `b6b3599`. **DEPLOYED via Phase 15 bundle** 2026-05-10 21:58:44 UTC. 481 tests green.
+- [[phase-15-regime-gate]] — **infra dark-shipped** 2026-05-10. `REGIME_GATE_ENABLED` + `REGIME_GATE_ABSTAIN_REGIMES` envs added; default OFF. Commit `fbcd38a`. Bundled VPS deploy with Phase 14 + dashboard track. Audit (n=477) found chop MARGINAL but PnL-dominant — infra-only ship per honest pushback, abstain set empty. 487 tests green.
+- [[phase-15.5-pnl-truth-bundle]] — **SHIPPED + LIVE** 2026-05-11. Triage bundle of Phase 15.5 (PnL truth pass) + Phase 18B (`meta_outcome` telemetry) + Phase 16 (bankroll scenarios) + v3 dashboard recovery. Naive sum +$2,556 → corrected +$75.26; entire gap = 41 `settled_correction` records (20 polymarket-flips + 21 phantom-neutralized). Commits `d6f02d1 → f0ee20d` (10 total). 487 tests green + React build clean. **Streamlit dashboard fully deleted** per operator directive.
 
 ## Live operation
 
-- **bot-staging.service** active since 2026-05-10 16:31:15 UTC on VPS at HEAD `c66fc07`.
-- Strategy: `ensemble` (`ENSEMBLE_MODE=gate`, `ENSEMBLE_BASE_STRATEGY=wide_fire`).
-- Edge: 52.0% WR / +$76.79 / 402 settled / 12.5% LLM timeout rate / 62.5% effective fire rate (2026-05-10).
-- Phase 14 default behavior unchanged on production until env is flipped on (or until VPS pull arrives, then no behavior change with default false).
+- **bot-staging.service** active since **2026-05-12 15:42:38 UTC** (PHASE-F-4 — honest-pushback pivot to v2 after v3 fired 0 in 36 min; canonical soak clock reset) on VPS at HEAD `af53490`. MainPID `593311`; orphan-recovery primed at startup. **Strategy = `spot_aware_v2`** (no regime gate; matches May 10's proven +$46-day profile). First v2 fire at 15:43:23 UTC (45 sec after deploy). Expected ~184 fires/day, ~52% WR, ~$0.25/trade.
+- **dashboard-server.service** (v3 FastAPI + React) active since **2026-05-11 06:25:15 UTC** on VPS at HEAD `f0ee20d`. Bound to `127.0.0.1:8505`; access via SSH local-port-forward. `/api/state.scenarios` returns 5-row bankroll projection. `decisions_truth_source=polymarket`.
+- Strategy: **`spot_aware_v3`** (regime-detector gate, no LLM wrapper). Cut 2026-05-12 per [[phase-F-architecture-audit]].
+- Pre-cut 5-day audit (truth-corrected): ensemble+wide_fire era (May 11-12) at WR 38-44% / −$0.58/trade vs spot_aware family (May 9-10) at WR 52% / +$0.20/trade. The +4.1pp shadow uplift did not reproduce in gate mode.
+- Phase 14 + 15 kill-switches still dark (env unset / `=false`). Phase 18B `meta_outcome` telemetry will be empty post-cut since no ensemble fires.
 
 ## In progress / next
 
-- **Phase 15** — regime gate wired to ensemble (`REGIME_GATE_ENABLED` + `REGIME_GATE_ABSTAIN_REGIMES`). Same audit→design→implement→test→ship-dark pattern as Phase 14. Prompt at `phase-prompts/phase-15-regime-gate-2026-05-12.txt`. Next session.
+- [[phase-F-architecture-audit|Phase F]] — architecture audit + convergence. ✅ **CLOSED 2026-05-12** after 4 restarts. Final state: `STRATEGY=spot_aware_v2` (PHASE-F-4 pivot from v3 after 0 fires in 36 min). Soak underway. Phase F.3 audit superseded by Phase G full study.
+- [[phase-G-edge-discovery|**Phase G**]] — full edge-discovery deep dive. ✅ **CLOSED 2026-05-13** analytical-only. 635 fires audited, 17 dimensions, Kelly + Monte Carlo. Headline: tier 30-50% × |Δ|<5 is the winning cell v2 rejects. 629K PDF on operator's Desktop. Feeds Phase H.
+- [[phase-H-v2_1|**Phase H — v2.1 LIVE TRADING**]]. 🟢 **H.2 + H.5 + H.2.7-H.2.12 ALL SHIPPED 2026-05-12 → 2026-05-13** (`73dcc73 → c746db3`, 6 commits). **24h soak in progress to 2026-05-13T21:32:47Z.** Final config: cap=1, Kelly 0.10×, CH3 fallback 0.48, path A blocks UP in 70-85%, gamma timeout 30s. **628 tests green.** Bot LIVE on `c746db3` since H.2.12 restart 2026-05-13T00:56:31Z. Bankroll $807.28 (replay) / dashboard converging. CH3 cell exploiting Phase G prediction; tier 70-85% UP blocked via path A. WR 41.9% n=65; 8 post-hoc gamma corrections. Multi-fire variance amplifier observation confirmed live; cap throttled 2→1.
+- [[phase-16b-every-window-mode|Phase 16.B]] — **PAUSED** (router depends on LLM signal; cut from production via Phase F).
+- [[phase-19-llm-async-precompute|Phase 19]] — **SHELVED** (the 12s inline-await latency problem dissolves when LLM exits the fire path per Phase F cut).
+- ~~Phase 17 (sizing modes scaffolding)~~ — **SUPERSEDED by Phase H** (Kelly + multi-fire + BankrollTracker ship as part of v2.1).
+- ~~Phase 18 (Kelly sizing)~~ — **SUPERSEDED by Phase H** (CH5-CH6 in v2.1 ship).
 
 ## Master-plan phases 16-25 (planned)
 

@@ -26,6 +26,7 @@ from polymarket_bot.agents.protocol import (
     AgentContext,
     AgentVote,
     MetaDecision,
+    MetaOutcome,
 )
 
 DEFAULT_MODEL = "claude-sonnet-4-6"
@@ -62,7 +63,17 @@ class MetaDecider:
         )
         self._system = cache_blocks(load_prompt(PROMPT_NAME, prompt_path))
 
-    async def decide(self, ctx: AgentContext, votes: dict[str, AgentVote]) -> MetaDecision | None:
+    async def decide(
+        self, ctx: AgentContext, votes: dict[str, AgentVote]
+    ) -> tuple[MetaDecision | None, MetaOutcome]:
+        """Run the meta-decider. Returns (decision, outcome).
+
+        ``outcome`` is the MetaOutcome tag from the adapter, EXCEPT when
+        the adapter returned a parsed MetaDecision that then failed the
+        post-Pydantic FIRE/ABSTAIN-side invariant — those flip the tag to
+        ``"invariant_violated"`` so the ensemble log can attribute that
+        class separately from API/parse failures.
+        """
         user_payload = {
             "context": ctx.model_dump(),
             "votes": [
@@ -76,7 +87,7 @@ class MetaDecider:
             ],
         }
         user_json = json.dumps(user_payload, sort_keys=True, default=str)
-        result, _usage = await self._adapter.parse(
+        result, _usage, outcome = await self._adapter.parse(
             model=self.model,
             system=self._system,
             user=user_json,
@@ -86,10 +97,10 @@ class MetaDecider:
             max_tokens=self._max_tokens,
         )
         if not isinstance(result, MetaDecision):
-            return None
+            return None, outcome
         # Schema-level invariant the prompt also commits to.
         if result.action == "FIRE" and result.side is None:
-            return None
+            return None, "invariant_violated"
         if result.action == "ABSTAIN" and result.side is not None:
-            return None
-        return result
+            return None, "invariant_violated"
+        return result, "ok"

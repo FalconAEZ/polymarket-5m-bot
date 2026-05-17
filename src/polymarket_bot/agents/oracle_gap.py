@@ -37,7 +37,7 @@ class OracleGapAgent:
 
     async def vote(self, ctx: AgentContext) -> AgentVote | None:
         user_json = ctx.model_dump_json()
-        result, _usage = await self._adapter.parse(
+        result, _usage, _outcome = await self._adapter.parse(
             model=self.model,
             system=self._system,
             user=user_json,

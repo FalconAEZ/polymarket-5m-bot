@@ -21,13 +21,23 @@ import os.path
 import signal
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from polymarket_bot.strategies.every_window import Router
 
 ROOT = Path(__file__).resolve().parent.parent
 SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
+from polymarket_bot._live.auto_halt import (  # noqa: E402
+    JsonlDailyPnlReader,
+    SentinelHaltWriter,
+    auto_halt_watcher,
+)
 from polymarket_bot._live.feeds.oracle import OracleFeed  # noqa: E402
 from polymarket_bot._live.feeds.polymarket import GammaClient, PolymarketFeed  # noqa: E402
 from polymarket_bot._live.feeds.spot_binance import BinanceTradeFeed  # noqa: E402
@@ -43,10 +53,19 @@ from polymarket_bot.strategies.deterministic import (  # noqa: E402
     DEFAULT_THRESHOLD_PCT,
     DeterministicStrategy,
 )
+from polymarket_bot.strategies.path_a_wr_metrics import (  # noqa: E402
+    PathAMetrics,
+    compute_path_a_metrics,
+)
 from polymarket_bot.strategies.protocol import Strategy  # noqa: E402
+from polymarket_bot.strategies.regime_detector import RegimeDetector  # noqa: E402
 from polymarket_bot.strategies.spot_aware import SpotAwareStrategy  # noqa: E402
 from polymarket_bot.strategies.spot_aware_priors import load_priors  # noqa: E402
 from polymarket_bot.strategies.spot_aware_v2 import SpotAwareStrategyV2  # noqa: E402
+from polymarket_bot.strategies.surv_canary_metrics import (  # noqa: E402
+    SurvCanaryMetrics,
+    compute_surv_canary_metrics,
+)
 
 LOG = logging.getLogger("polymarket_bot.scripts.run_paper")
 WARM_LOOKAHEAD_WINDOWS = 12  # ~1 hour of windows pre-resolved
@@ -54,11 +73,22 @@ WARMER_INTERVAL_S = 60.0
 HALT_SENTINEL_PATH = Path("state/halt.sentinel")
 HALT_POLL_INTERVAL_S = 1.0
 
-# Strategy selection (Phase 11.A: spot_aware deployed solo per
-# design/spot_aware_strategy.md §"Concurrency + state isolation"). Override
-# via STRATEGY env var = "deterministic" | "spot_aware". Default = spot_aware
-# now that phase-5-pass is in.
-DEFAULT_STRATEGY_NAME = "spot_aware"
+# Strategy selection. Default promoted spot_aware → spot_aware_v3 per
+# phase-prompts/phase-F-final-stage-architecture-audit-2026-05-13.txt:
+# the 5-day truth-corrected audit showed spot_aware family (May 9-10)
+# beat ensemble+wide_fire (May 11-12) on both WR (52% vs 38-44%) and
+# per-trade PnL (+$0.17/+$0.25 vs -$0.40/-$0.96). v3 = v2 + regime
+# detector gate (runbooks/gate-evidence/regime-classifier-validation.txt:
+# trending WR 70.59% vs chop 47.40%). Override via STRATEGY env var =
+# "deterministic" | "spot_aware" | "spot_aware_v2" | "spot_aware_v3" |
+# "spot_aware_v2_1" | "ensemble". Ensemble + wide_fire stay in the
+# dispatch as research artifacts — re-enable via env flip only.
+# spot_aware_v2_1: v2 + Kelly + multi-fire + cell-exploitation filters.
+# Spec: pdfs/PHASE_H_V2_1_FINAL_IMPLEMENTATION_SPEC.pdf; design lock at
+# design/spot_aware_v2_1.md. Requires KELLY_MULT, MULTI_FIRE_CAP,
+# PMB_STARTING_BANKROLL env vars; defaults match Phase H operator
+# sign-off (0.10x Kelly, cap=2, $1000 start).
+DEFAULT_STRATEGY_NAME = "spot_aware_v3"
 
 
 def _configure_logging() -> None:
@@ -160,6 +190,84 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return raw in ("1", "true", "yes", "on")
 
 
+def _env_csv(name: str) -> tuple[str, ...]:
+    """Read a comma-separated env var into a tuple of trimmed strings.
+    Empty string -> empty tuple; whitespace-only items dropped."""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return ()
+    return tuple(p.strip() for p in raw.split(",") if p.strip())
+
+
+def _env_csv_dict_float(name: str) -> dict[str, float] | None:
+    """Read a 'key:value,key:value' env var into dict[str, float].
+    Returns None on unset; raises ValueError on malformed entries."""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return None
+    out: dict[str, float] = {}
+    for pair in raw.split(","):
+        pair = pair.strip()
+        if not pair:
+            continue
+        if ":" not in pair:
+            raise ValueError(f"env var {name}: expected 'key:value', got {pair!r}")
+        key, val = pair.split(":", 1)
+        out[key.strip()] = float(val.strip())
+    return out
+
+
+def _build_router_from_env() -> Router:
+    """Build a Phase 16.B Router from `EVERY_WINDOW_*` env vars.
+
+    Defaults match `design/phase-16b-every-window-mode.md` §4. Any
+    unset env var leaves the RouterConfig field at its locked default.
+    """
+    from polymarket_bot.strategies.every_window import Router, RouterConfig
+    from polymarket_bot.strategies.every_window.config import (
+        DEFAULT_REGIME_SCORE,
+        DEFAULT_TAKER_FALLBACK_TIERS,
+        DEFAULT_TIER_PER_TRADE_CAP_USD,
+        DEFAULT_TIER_SCORE,
+    )
+
+    size_floor = _env_float("EVERY_WINDOW_SIZE_FLOOR_USD", 5.0) or 5.0
+    size_cap = _env_float("EVERY_WINDOW_SIZE_CAP_USD", 30.0) or 30.0
+    kink = _env_float("EVERY_WINDOW_CONFIDENCE_KINK", 0.30) or 0.30
+    kelly_frac = _env_float("EVERY_WINDOW_KELLY_FRACTION", 0.5) or 0.5
+    kelly_cap = _env_float("EVERY_WINDOW_KELLY_MAX_PCT", 0.03) or 0.03
+    bankroll = _env_float("EVERY_WINDOW_BANKROLL_USD", 1000.0) or 1000.0
+    w_det = _env_float("EVERY_WINDOW_W_DET", 0.25) or 0.25
+    w_reg = _env_float("EVERY_WINDOW_W_REG", 0.20) or 0.20
+    w_tier = _env_float("EVERY_WINDOW_W_TIER", 0.15) or 0.15
+    w_llm = _env_float("EVERY_WINDOW_W_LLM", 0.25) or 0.25
+    w_kelly = _env_float("EVERY_WINDOW_W_KELLY", 0.15) or 0.15
+
+    taker_fb = _env_csv("EVERY_WINDOW_TAKER_FALLBACK_TIERS") or DEFAULT_TAKER_FALLBACK_TIERS
+    tier_caps = _env_csv_dict_float("EVERY_WINDOW_TIER_PER_TRADE_CAP_USD") or dict(
+        DEFAULT_TIER_PER_TRADE_CAP_USD
+    )
+
+    config = RouterConfig(
+        w_det=w_det,
+        w_reg=w_reg,
+        w_tier=w_tier,
+        w_llm=w_llm,
+        w_kelly=w_kelly,
+        size_floor_usd=size_floor,
+        size_cap_usd=size_cap,
+        confidence_kink=kink,
+        kelly_fraction=kelly_frac,
+        kelly_max_pct=kelly_cap,
+        bankroll_usd=bankroll,
+        regime_score=dict(DEFAULT_REGIME_SCORE),
+        tier_score=dict(DEFAULT_TIER_SCORE),
+        tier_per_trade_cap_usd=tier_caps,
+        taker_fallback_tiers=taker_fb,
+    )
+    return Router(config=config)
+
+
 def _build_strategy(name: str) -> Strategy:
     if name == "deterministic":
         return DeterministicStrategy(threshold_pct=DEFAULT_THRESHOLD_PCT)
@@ -241,7 +349,6 @@ def _build_strategy(name: str) -> Strategy:
             DEFAULT_TRENDING_THRESHOLD,
             DEFAULT_WINDOW_5M_S,
             DEFAULT_WINDOW_10M_S,
-            RegimeDetector,
         )
         from polymarket_bot.strategies.spot_aware_v3 import SpotAwareStrategyV3
 
@@ -282,6 +389,328 @@ def _build_strategy(name: str) -> Strategy:
             chop_th_v,
         )
         return SpotAwareStrategyV3(priors=load_priors(), regime_detector=regime, **v3_kwargs)
+    if name == "spot_aware_v2_1":
+        # Phase H — v2 + Kelly + multi-fire + cell-exploitation filters.
+        # Locked spec: design/spot_aware_v2_1.md +
+        # pdfs/PHASE_H_V2_1_FINAL_IMPLEMENTATION_SPEC.pdf. Reads three
+        # env vars (defaults match operator sign-off Q3=2, Q4=0.10x):
+        #   KELLY_MULT — fractional Kelly multiplier (default 0.10)
+        #   KELLY_MAX_BET_ABS — absolute bet cap in USD (default 500)
+        #   MULTI_FIRE_CAP — max fires per window (default 2)
+        # bankroll_getter is rebound in main() after PaperRunner builds
+        # its BankrollTracker. Placeholder lambda here keeps the
+        # construction-time signature satisfied.
+        from polymarket_bot.strategies.kelly_config import KellyConfig
+        from polymarket_bot.strategies.spot_aware_v2_1 import SpotAwareStrategyV2_1
+
+        v21_kwargs: dict[str, float] = {}
+        d_min = _env_float("SPOT_AWARE_DELTA_MIN_BPS", None)
+        if d_min is not None:
+            v21_kwargs["delta_min_bps"] = d_min
+        d_max = _env_float("SPOT_AWARE_DELTA_MAX_BPS", None)
+        if d_max is not None:
+            v21_kwargs["delta_max_bps"] = d_max
+        ev_min = _env_float("SPOT_AWARE_EV_MIN_DOLLARS", None)
+        if ev_min is not None:
+            v21_kwargs["ev_min_dollars_per_share"] = ev_min
+        limit_buf = _env_float("SPOT_AWARE_LIMIT_BUFFER_USD", None)
+        if limit_buf is not None:
+            v21_kwargs["limit_buffer_usd"] = limit_buf
+        oracle_gap = _env_float("ORACLE_GAP_MIN_BPS", None)
+        if oracle_gap is not None and oracle_gap > 0:
+            v21_kwargs["oracle_gap_min_bps"] = oracle_gap
+
+        kelly_mult = _env_float("KELLY_MULT", 0.10) or 0.10
+        kelly_max_bet_abs = _env_float("KELLY_MAX_BET_ABS", 500.0) or 500.0
+        kelly = KellyConfig(kelly_mult=kelly_mult, max_bet_abs=kelly_max_bet_abs)
+        multi_fire_cap_raw = _env_float("MULTI_FIRE_CAP", 2.0) or 2.0
+        multi_fire_cap = max(1, int(multi_fire_cap_raw))
+        # CH3 priors-fallback (PG §5.1: 48.1% historical for 30-50% x
+        # |Δ|<5). Default 0.48 = conservative below the 58.2% backtest
+        # projection (H.1 §1). A value outside (0, 1) disables the
+        # fallback entirely (v2.1 then behaves spec-literal: won't fire
+        # on the cell until the priors data ships a [1, 5] bucket).
+        fallback_raw = _env_float("SPOT_AWARE_TIER_RELAX_P_WIN_FALLBACK", 0.48)
+        fallback_val: float | None
+        if fallback_raw is None or fallback_raw <= 0.0 or fallback_raw >= 1.0:
+            fallback_val = None
+        else:
+            fallback_val = fallback_raw
+        # H.2.12 path A — per-tier side-direction block. Env-only, defaults
+        # to empty (no blocking). Operator sets e.g.
+        # SPOT_AWARE_BLOCK_UP_IN_TIERS="70-85%" after Phase-G-data
+        # follow-up found UP fires in tier 70-85% net -$5/trade. Comma-
+        # separated tier labels; tier labels are the canonical TIER_LABELS
+        # set ('<15%' / '15-30%' / '30-50%' / '50-70%' / '70-85%' /
+        # '85-100%'). Unknown labels pass through but never match (no-op).
+        block_up = _env_csv("SPOT_AWARE_BLOCK_UP_IN_TIERS")
+        block_down = _env_csv("SPOT_AWARE_BLOCK_DOWN_IN_TIERS")
+        # Phase J.1 — CH3 price floor in tier_relax cells. H.3 audit
+        # 2026-05-13 measured n=111 fires: BELOW 0.42 lose -$5.70/tr
+        # (n=51), ABOVE 0.42 win +$1.77/tr (n=60). Set to 0.0 to disable.
+        # Default 0.42 = data-optimal; 0.40 conservative; 0.43 aggressive.
+        price_floor_raw = _env_float("SPOT_AWARE_TIER_RELAX_PRICE_FLOOR", 0.42)
+        price_floor_val = price_floor_raw if price_floor_raw is not None else 0.42
+        # Phase J.2 — hour-of-day blocklist (UTC). Both env vars default
+        # empty (no blocking). Operator sets e.g.
+        # SPOT_AWARE_HOUR_BLOCKLIST_UTC="22,23,0" +
+        # SPOT_AWARE_HOUR_BLOCKLIST_TIERS="70-85%" per H.3 audit finding.
+        # Validation: hours must be in [0, 23]; tiers must be non-empty
+        # if hours are. Strategy init raises if mis-configured.
+        hour_blocklist_raw = _env_csv("SPOT_AWARE_HOUR_BLOCKLIST_UTC")
+        hour_blocklist_utc: tuple[int, ...] = ()
+        if hour_blocklist_raw:
+            try:
+                hour_blocklist_utc = tuple(int(h) for h in hour_blocklist_raw)
+            except ValueError:
+                LOG.error(
+                    "SPOT_AWARE_HOUR_BLOCKLIST_UTC=%r contains non-integer; " "treating as empty",
+                    hour_blocklist_raw,
+                )
+                hour_blocklist_utc = ()
+        hour_blocklist_tiers = _env_csv("SPOT_AWARE_HOUR_BLOCKLIST_TIERS")
+        LOG.warning(
+            "spot_aware_v2_1: kelly_mult=%.2f max_bet_abs=$%.0f "
+            "multi_fire_cap=%d tier_relax_p_win_fallback=%s "
+            "tier_relax_price_floor=%.3f "
+            "block_up_in_tiers=%s block_down_in_tiers=%s "
+            "hour_blocklist_utc=%s hour_blocklist_tiers=%s "
+            "overrides=%s",
+            kelly_mult,
+            kelly_max_bet_abs,
+            multi_fire_cap,
+            fallback_val,
+            price_floor_val,
+            block_up,
+            block_down,
+            hour_blocklist_utc,
+            hour_blocklist_tiers,
+            v21_kwargs,
+        )
+        # M.1a v0 — SHADOW-LOG regime classifier. Wires the existing
+        # RegimeDetector into v2.1's tick pipeline; every fire's rationale
+        # gains ` regime=<label>`. No firing change. Promote to active
+        # gate (M.1a v1) only after 3-5 days of shadow data shows chop
+        # is empirically a drag on Phase J.1.6 firing pattern.
+        # design/M.1a-flat-vs-trend-shadow-log.md.
+        v21_regime_detector: RegimeDetector | None = None
+        v21_regime_shadow_enabled = _env_bool("REGIME_CLASSIFIER_V2_SHADOW_ENABLED", False)
+        if v21_regime_shadow_enabled:
+            v21_regime_detector = RegimeDetector()
+            LOG.info(
+                "M.1a v0 shadow ENABLED — RegimeDetector wired into spot_aware_v2_1 "
+                "(thresholds trending>%.2f chop<%.2f); rationale annotated with regime=<label>",
+                v21_regime_detector._trending_threshold,
+                v21_regime_detector._chop_threshold,
+            )
+        else:
+            LOG.info("M.1a v0 shadow DISABLED (REGIME_CLASSIFIER_V2_SHADOW_ENABLED=false)")
+        # M.1a v1 — ACTIVE abstain. Requires _SHADOW_ENABLED=true. CSV of
+        # regime labels to abstain on. design/M.1a-v1-active-abstain.md.
+        v21_regime_v1_enabled = _env_bool("REGIME_M1A_V1_ENABLED", False)
+        v21_regime_abstain: frozenset[str] = frozenset()
+        if v21_regime_v1_enabled:
+            if not v21_regime_shadow_enabled:
+                raise SystemExit(
+                    "REGIME_M1A_V1_ENABLED=true requires REGIME_CLASSIFIER_V2_SHADOW_ENABLED=true. "
+                    "Refusing to start — fix .envrc and retry."
+                )
+            v21_regime_abstain_csv = os.environ.get("REGIME_M1A_ABSTAIN_LABELS", "chop,unknown")
+            v21_regime_abstain = frozenset(
+                label.strip() for label in v21_regime_abstain_csv.split(",") if label.strip()
+            )
+            LOG.warning(
+                "M.1a v1 ACTIVE — abstain labels=%s. Fires with classifier label in this set "
+                "will be REJECTED (return None). 5-day audit (n=52) predicted +$71 uplift vs "
+                "baseline. See design/M.1a-v1-active-abstain.md.",
+                sorted(v21_regime_abstain),
+            )
+        else:
+            LOG.info("M.1a v1 DISABLED (REGIME_M1A_V1_ENABLED=false) — v0 shadow-log if enabled")
+        # M.5 — Path A regime-aware wrapper. DARK ship: default false.
+        # When enabled, builds a 60s-cached getter that reads decisions
+        # logs and computes (rolling_wr, mean_price) over the last N=30
+        # Path A fires. design/M.5-path-a-regime-wrapper.md.
+        v21_path_a_wr_getter: Callable[[], PathAMetrics] | None = None
+        v21_path_a_min_samples = int(_env_float("REGIME_M5_MIN_SAMPLES", 20.0) or 20)
+        v21_path_a_margin = _env_float("REGIME_M5_BREAK_EVEN_MARGIN", 0.02) or 0.02
+        if _env_bool("REGIME_M5_PATH_A_GATE_ENABLED", False):
+            v21_path_a_lookback_n = int(_env_float("REGIME_M5_LOOKBACK_N", 30.0) or 30)
+            _m5_cache: dict[str, object] = {"metrics": None, "ts_ns": 0}
+            _M5_CACHE_TTL_NS = 60_000_000_000
+
+            def _build_m5_getter() -> Callable[[], PathAMetrics]:
+                def _getter() -> PathAMetrics:
+                    now = time.time_ns()
+                    last_ts = _m5_cache["ts_ns"]
+                    assert isinstance(last_ts, int)
+                    cached = _m5_cache["metrics"]
+                    if cached is None or (now - last_ts) > _M5_CACHE_TTL_NS:
+                        try:
+                            fresh = compute_path_a_metrics(
+                                decisions_root=Path("state/decisions"),
+                                lookback_n=v21_path_a_lookback_n,
+                                min_samples=v21_path_a_min_samples,
+                                now_ns=now,
+                            )
+                        except Exception:
+                            LOG.exception("M.5: compute_path_a_metrics raised; using empty metrics")
+                            fresh = PathAMetrics(
+                                rolling_wr=None,
+                                mean_price=None,
+                                n_settled=0,
+                                n_total_in_buffer=0,
+                            )
+                        _m5_cache["metrics"] = fresh
+                        _m5_cache["ts_ns"] = now
+                        return fresh
+                    assert isinstance(cached, PathAMetrics)
+                    return cached
+
+                return _getter
+
+            v21_path_a_wr_getter = _build_m5_getter()
+            LOG.warning(
+                "M.5 ACTIVE — Path A regime gate enabled (lookback_n=%d, min_samples=%d, "
+                "margin=%.3f). tier 70-85%% x DOWN fires will be ABSTAINED when "
+                "rolling_wr < mean_price + margin. design/M.5-path-a-regime-wrapper.md.",
+                v21_path_a_lookback_n,
+                v21_path_a_min_samples,
+                v21_path_a_margin,
+            )
+        else:
+            LOG.info("M.5 DISABLED (REGIME_M5_PATH_A_GATE_ENABLED=false)")
+        # O.1 — SURV-cell shift canary. Phase O Session 1 ship. Default
+        # off. When enabled, builds a 60s-cached getter that computes
+        # rolling WR + mean price over the last N=30 SURV-slice fires
+        # (tier 30-50% x |Δbps|≥5). Tier 30-50% fires are ABSTAINED when
+        # rolling_wr < mean_price + margin. First-trip log goes to
+        # WARNING so systemd/journal forwarding catches it.
+        # design/O.1-surv-cell-shift-canary.md.
+        v21_surv_canary_getter: Callable[[], SurvCanaryMetrics] | None = None
+        v21_surv_canary_min_samples = int(_env_float("SURV_CANARY_MIN_SAMPLES", 10.0) or 10)
+        v21_surv_canary_margin = _env_float("SURV_CANARY_BREAK_EVEN_MARGIN", -0.01)
+        if v21_surv_canary_margin is None:
+            v21_surv_canary_margin = -0.01
+        if _env_bool("SURV_CANARY_ENABLED", False):
+            v21_surv_canary_lookback_n = int(_env_float("SURV_CANARY_LOOKBACK_N", 15.0) or 15)
+            v21_surv_canary_min_abs_delta = _env_float("SURV_CANARY_MIN_ABS_DELTA_BPS", 5.0) or 5.0
+            _surv_cache: dict[str, object] = {"metrics": None, "ts_ns": 0, "tripped": False}
+            _SURV_CACHE_TTL_NS = 60_000_000_000
+
+            def _build_surv_getter() -> Callable[[], SurvCanaryMetrics]:
+                def _getter() -> SurvCanaryMetrics:
+                    now = time.time_ns()
+                    last_ts = _surv_cache["ts_ns"]
+                    assert isinstance(last_ts, int)
+                    cached = _surv_cache["metrics"]
+                    if cached is None or (now - last_ts) > _SURV_CACHE_TTL_NS:
+                        try:
+                            fresh = compute_surv_canary_metrics(
+                                decisions_root=Path("state/decisions"),
+                                lookback_n=v21_surv_canary_lookback_n,
+                                min_samples=v21_surv_canary_min_samples,
+                                min_abs_delta_bps=v21_surv_canary_min_abs_delta,
+                                now_ns=now,
+                            )
+                        except Exception:
+                            LOG.exception(
+                                "SURV canary: compute_surv_canary_metrics raised; "
+                                "using empty metrics"
+                            )
+                            fresh = SurvCanaryMetrics(
+                                rolling_wr=None,
+                                mean_price=None,
+                                n_settled=0,
+                                n_total_in_buffer=0,
+                            )
+                        _surv_cache["metrics"] = fresh
+                        _surv_cache["ts_ns"] = now
+                        # Detect state transition: first trip emits WARN.
+                        already_tripped = _surv_cache["tripped"]
+                        is_tripped = (
+                            fresh.rolling_wr is not None
+                            and fresh.mean_price is not None
+                            and fresh.n_settled >= v21_surv_canary_min_samples
+                            and fresh.rolling_wr < fresh.mean_price + v21_surv_canary_margin
+                        )
+                        if is_tripped and not already_tripped:
+                            LOG.warning(
+                                "[SURV-CANARY] TRIPPED — rolling_wr=%.1f%% < "
+                                "mean_price=%.1f%% + margin=%.1f%% (n=%d). "
+                                "Tier 30-50%% fires will be ABSTAINED until WR recovers.",
+                                (fresh.rolling_wr or 0.0) * 100,
+                                (fresh.mean_price or 0.0) * 100,
+                                v21_surv_canary_margin * 100,
+                                fresh.n_settled,
+                            )
+                            _surv_cache["tripped"] = True
+                        elif not is_tripped and already_tripped:
+                            LOG.warning(
+                                "[SURV-CANARY] RECOVERED — rolling_wr=%.1f%% "
+                                ">= threshold. Tier 30-50%% fires resume.",
+                                (fresh.rolling_wr or 0.0) * 100,
+                            )
+                            _surv_cache["tripped"] = False
+                        return fresh
+                    assert isinstance(cached, SurvCanaryMetrics)
+                    return cached
+
+                return _getter
+
+            v21_surv_canary_getter = _build_surv_getter()
+            LOG.warning(
+                "O.1 SURV CANARY ACTIVE — tier 30-50%% shift detector enabled "
+                "(lookback_n=%d, min_samples=%d, margin=%.3f, min_|Δbps|=%.1f). "
+                "Tier 30-50%% fires ABSTAINED when rolling_wr < mean_price + margin. "
+                "design/O.1-surv-cell-shift-canary.md.",
+                v21_surv_canary_lookback_n,
+                v21_surv_canary_min_samples,
+                v21_surv_canary_margin,
+                v21_surv_canary_min_abs_delta,
+            )
+        else:
+            LOG.info("O.1 SURV CANARY DISABLED (SURV_CANARY_ENABLED=false)")
+        # M.2 v0 — orderbook imbalance shadow log. DARK ship; default off.
+        # design/M.2-orderbook-imbalance-shadow.md.
+        v21_imbalance_shadow = _env_bool("ORDERBOOK_IMBALANCE_SHADOW_ENABLED", False)
+        v21_imbalance_threshold = _env_float("ORDERBOOK_IMBALANCE_THRESHOLD", 2.0) or 2.0
+        v21_imbalance_min_top_size_usd = _env_float("ORDERBOOK_MIN_TOP_SIZE_USD", 50.0) or 50.0
+        if v21_imbalance_shadow:
+            LOG.warning(
+                "M.2 v0 ACTIVE (shadow) — orderbook imbalance annotation enabled "
+                "(threshold=%.2f, min_top_size_usd=%.0f). Fires gain "
+                "imbalance=<bullish|bearish|balanced|too_thin|no_ask|no_book>.",
+                v21_imbalance_threshold,
+                v21_imbalance_min_top_size_usd,
+            )
+        else:
+            LOG.info("M.2 v0 DISABLED (ORDERBOOK_IMBALANCE_SHADOW_ENABLED=false)")
+        return SpotAwareStrategyV2_1(
+            priors=load_priors(),
+            bankroll_getter=lambda: 1000.0,  # placeholder; rebound in main()
+            kelly=kelly,
+            multi_fire_cap=multi_fire_cap,
+            tier_relax_p_win_fallback=fallback_val,
+            block_up_in_tiers=block_up,
+            block_down_in_tiers=block_down,
+            tier_relax_price_floor=price_floor_val,
+            hour_blocklist_utc=hour_blocklist_utc,
+            hour_blocklist_tiers=hour_blocklist_tiers,
+            regime_detector=v21_regime_detector,
+            regime_shadow_enabled=v21_regime_shadow_enabled,
+            regime_abstain_labels=v21_regime_abstain,
+            path_a_wr_getter=v21_path_a_wr_getter,
+            path_a_wr_min_samples=v21_path_a_min_samples,
+            path_a_wr_break_even_margin=v21_path_a_margin,
+            surv_canary_getter=v21_surv_canary_getter,
+            surv_canary_min_samples=v21_surv_canary_min_samples,
+            surv_canary_break_even_margin=v21_surv_canary_margin,
+            imbalance_shadow_enabled=v21_imbalance_shadow,
+            imbalance_threshold=v21_imbalance_threshold,
+            imbalance_min_top_size_usd=v21_imbalance_min_top_size_usd,
+            **v21_kwargs,
+        )
     if name == "ensemble":
         # Phase 5: LLM ensemble wrapping a base strategy. Per
         # design/phase-5-llm-ensemble.md. Reuses the already-built agents
@@ -389,6 +818,54 @@ def _build_strategy(name: str) -> Strategy:
             )
         elif tier_gate_enabled:
             LOG.info("TIER_GATE_ENABLED=true but blocklist empty; gate is a no-op")
+        # Phase 15: optional regime classifier gate. Same dark-ship
+        # pattern as tier gate: defaults to false/empty so the live
+        # wrapper has zero-overhead pass-through. When enabled, the
+        # wrapper instantiates a separate RegimeDetector (NOT shared with
+        # spot_aware_v3 — strategies are runtime-exclusive, but the
+        # detector is logically per-strategy state) and consults
+        # abstain_regimes on every candidate. Validation against the
+        # canonical regime labels happens inside EnsembleWrapper
+        # (mirrors tier gate); unknown labels raise at startup.
+        regime_gate_enabled = _env_bool("REGIME_GATE_ENABLED", False)
+        regime_abstain_raw = os.environ.get("REGIME_GATE_ABSTAIN_REGIMES", "").strip()
+        regime_abstain: tuple[str, ...] = ()
+        regime_detector: RegimeDetector | None = None
+        if regime_gate_enabled:
+            regime_detector = RegimeDetector()
+            if regime_abstain_raw:
+                regime_abstain = tuple(
+                    label.strip() for label in regime_abstain_raw.split(",") if label.strip()
+                )
+                LOG.warning(
+                    "REGIME_GATE_ENABLED=true with abstain_regimes=%s — refused "
+                    "fires will emit kind=regime_abstained to state/ensemble/<date>.jsonl",
+                    regime_abstain,
+                )
+            else:
+                LOG.info(
+                    "REGIME_GATE_ENABLED=true but abstain_regimes empty; "
+                    "detector observes spot ticks but gate is a no-op"
+                )
+        # Phase 16.B.4 — every-window router env wiring. Defaults OFF;
+        # when EVERY_WINDOW_MODE=true the router takes over the wrapper's
+        # FIRE/ABSTAIN dispatch (design/phase-16b-every-window-mode.md
+        # §4). Build the Router unconditionally so SHADOW mode can use
+        # it for 24h audit even when MASTER is off.
+        every_window_mode = _env_bool("EVERY_WINDOW_MODE", False)
+        every_window_shadow = _env_bool("EVERY_WINDOW_SHADOW", False)
+        router = _build_router_from_env() if (every_window_mode or every_window_shadow) else None
+        router_log_root: Path | None = None
+        if router is not None:
+            router_log_root = Path(os.environ.get("PMB_DASH_STATE_DIR", "state")) / "router"
+            LOG.warning(
+                "EVERY_WINDOW_MODE=%s SHADOW=%s — router=%s log_root=%s",
+                every_window_mode,
+                every_window_shadow,
+                "WIRED" if router is not None else "OFF",
+                router_log_root,
+            )
+
         if mode != "off":
             adapter = AnthropicAdapter(budget=budget, api_key=api_key)
             specialists = [
@@ -411,6 +888,12 @@ def _build_strategy(name: str) -> Strategy:
                 mode=mode,
                 log_root=log_root,
                 tier_blocklist=tier_blocklist,
+                regime_detector=regime_detector,
+                abstain_regimes=regime_abstain,
+                router=router,
+                every_window_mode=every_window_mode,
+                every_window_shadow=every_window_shadow,
+                router_log_root=router_log_root,
             )
         if tier_blocklist:
             LOG.warning(
@@ -418,11 +901,18 @@ def _build_strategy(name: str) -> Strategy:
                 "the wrapper entirely. Set ENSEMBLE_MODE=shadow|gate to enable.",
                 tier_blocklist,
             )
+        if regime_abstain:
+            LOG.warning(
+                "REGIME_GATE_ABSTAIN_REGIMES=%s ignored — ENSEMBLE_MODE=off "
+                "bypasses the wrapper entirely. Set ENSEMBLE_MODE=shadow|gate to enable.",
+                regime_abstain,
+            )
         LOG.info("STRATEGY=ensemble but ENSEMBLE_MODE=off; running base only")
         return base
     raise ValueError(
         f"unknown STRATEGY env value {name!r}; "
-        "pick deterministic | spot_aware | spot_aware_v2 | spot_aware_v3 | ensemble"
+        "pick deterministic | spot_aware | spot_aware_v2 | spot_aware_v3 | "
+        "spot_aware_v2_1 | ensemble"
     )
 
 
@@ -538,6 +1028,22 @@ async def main() -> int:
         _env_float("POST_HOC_GAMMA_RETRY_MAX_ATTEMPTS", float(_DEF_POSTHOC_ATTEMPTS))
         or _DEF_POSTHOC_ATTEMPTS
     )
+    # Phase H — v2.1 BankrollTracker wiring. Default $1000 (locked
+    # decision #10); operator overrides via PMB_STARTING_BANKROLL when
+    # redeploying onto a non-empty bankroll snapshot. Replay walks
+    # state/decisions/<UTC-date>.jsonl on startup so the compound clock
+    # survives a restart; default ON when STRATEGY=spot_aware_v2_1, off
+    # otherwise (non-compounding strategies don't need it). Operator
+    # kill-switch is BANKROLL_REPLAY_ENABLED=0. Runner multi-fire cap
+    # mirrors the strategy's cap for v2.1; stays at 1 (Phase-3 invariant)
+    # for v1/v2/v3/wide_fire/ensemble.
+    from polymarket_bot.strategies.spot_aware_v2_1 import SpotAwareStrategyV2_1 as _V2_1
+
+    starting_bankroll = _env_float("PMB_STARTING_BANKROLL", 1000.0) or 1000.0
+    is_v2_1 = isinstance(strategy, _V2_1)
+    bankroll_replay_enabled = _env_bool("BANKROLL_REPLAY_ENABLED", default=is_v2_1)
+    runner_multi_fire_cap = strategy.multi_fire_cap if is_v2_1 else 1
+
     needs_gamma_client = instant_settle_enabled or orphan_recovery_enabled or post_hoc_retry_enabled
     gamma_client_for_settle = _httpx.Client() if needs_gamma_client else None
     if instant_settle_enabled:
@@ -579,7 +1085,29 @@ async def main() -> int:
         post_hoc_retry_max_attempts=post_hoc_retry_max_attempts,
         periodic_orphan_recovery_enabled=periodic_orphan_recovery_enabled,
         periodic_orphan_recovery_interval_s=periodic_orphan_recovery_interval_s,
+        bankroll_starting_usd=starting_bankroll,
+        bankroll_replay_on_start=bankroll_replay_enabled,
+        multi_fire_cap=runner_multi_fire_cap,
     )
+
+    # Phase H — rebind v2.1's bankroll_getter to the live runner tracker
+    # after construction. A closure on `runner.bankroll` re-resolves on
+    # each call so a replay-time tracker swap (in PaperRunner.run) still
+    # reads the right object. Spec §11.
+    if is_v2_1:
+
+        def _live_bankroll_getter() -> float:
+            return runner.bankroll.current()
+
+        # The cast is safe because we narrowed via isinstance(_V2_1) above.
+        assert isinstance(strategy, _V2_1)
+        strategy.set_bankroll_getter(_live_bankroll_getter)
+        LOG.info(
+            "spot_aware_v2_1: bankroll_getter wired (start=$%.2f, replay=%s, cap=%d)",
+            starting_bankroll,
+            bankroll_replay_enabled,
+            runner_multi_fire_cap,
+        )
 
     stop_event = asyncio.Event()
     loop = asyncio.get_running_loop()
@@ -591,12 +1119,44 @@ async def main() -> int:
     runner_task = asyncio.create_task(runner.run(stop=stop_event), name="paper-runner")
     halt_task = asyncio.create_task(_halt_watcher(stop_event), name="halt-watcher")
 
+    # L.5 — daily-PnL auto-halt. DARK ship: env-default OFF. When enabled, runs
+    # alongside the operator /halt watcher and writes the same sentinel at UTC
+    # close if the day's realized PnL falls at-or-below DAILY_PNL_GATE_USD.
+    auto_halt_task: asyncio.Task[None] | None = None
+    if _env_bool("DAILY_PNL_AUTO_HALT_ENABLED", False):
+        gate_threshold = _env_float("DAILY_PNL_GATE_USD", -30.0) or -30.0
+        check_hour = int(os.environ.get("DAILY_PNL_CHECK_HOUR_UTC", "23"))
+        check_minute = int(os.environ.get("DAILY_PNL_CHECK_MINUTE_UTC", "50"))
+        LOG.info(
+            "L.5 auto-halt ENABLED: gate=$%.2f, check=%02d:%02d UTC",
+            gate_threshold,
+            check_hour,
+            check_minute,
+        )
+        auto_halt_task = asyncio.create_task(
+            auto_halt_watcher(
+                pnl_reader=JsonlDailyPnlReader(),
+                halt_writer=SentinelHaltWriter(),
+                alerts=alert_sink,
+                threshold_usd=gate_threshold,
+                check_hour_utc=check_hour,
+                check_minute_utc=check_minute,
+                stop=stop_event,
+            ),
+            name="auto-halt-watcher",
+        )
+    else:
+        LOG.info("L.5 auto-halt DISABLED (DAILY_PNL_AUTO_HALT_ENABLED=false)")
+
     LOG.info("paper-mode runtime up; waiting for SIGTERM/SIGINT or halt sentinel")
     try:
         await stop_event.wait()
         LOG.info("shutdown signal received")
         runner.stop()
-        await asyncio.gather(runner_task, warmer_task, halt_task, return_exceptions=True)
+        tasks_to_drain: list[asyncio.Task[None]] = [runner_task, warmer_task, halt_task]
+        if auto_halt_task is not None:
+            tasks_to_drain.append(auto_halt_task)
+        await asyncio.gather(*tasks_to_drain, return_exceptions=True)
     finally:
         # Always close the gamma httpx.Client to avoid FD leaks across
         # restarts -- audit 2026-05-10 found this as a CRITICAL deploy-blocker.

@@ -29,12 +29,13 @@ async def test_meta_uses_sonnet_with_effort_no_adaptive_thinking_by_default() ->
     meta = MetaDecider(adapter)
     assert meta.model == "claude-sonnet-4-6"
 
-    decision = await meta.decide(
+    decision, outcome = await meta.decide(
         sample_context(),
         {"orderbook": sample_vote("UP", 0.7), "oracle_gap": sample_vote("UP", 0.8)},
     )
 
     assert isinstance(decision, MetaDecision)
+    assert outcome == "ok"
     call = adapter.calls[0]
     assert call.model == "claude-sonnet-4-6"
     assert call.thinking is None
@@ -73,36 +74,61 @@ async def test_meta_serialises_votes_with_agent_names() -> None:
 
 async def test_meta_rejects_fire_without_side() -> None:
     """Pydantic accepts MetaDecision(FIRE, side=None) but the agent layer
-    enforces the invariant that FIRE must have a side."""
+    enforces the invariant that FIRE must have a side.
+
+    Phase 18B: the rejection tags outcome="invariant_violated" so the
+    ensemble log can separate this class from API/parse failures.
+    """
     bad = MetaDecision(action="FIRE", side=None, confidence=0.7, rationale="oops")
     adapter = FakeAdapter(responses=[(bad, TokenUsage())])
     meta = MetaDecider(adapter)
-    decision = await meta.decide(
+    decision, outcome = await meta.decide(
         sample_context(),
         {"orderbook": sample_vote(), "oracle_gap": sample_vote()},
     )
-    assert decision is None  # invariant rejected
+    assert decision is None
+    assert outcome == "invariant_violated"
 
 
 async def test_meta_rejects_abstain_with_side() -> None:
     bad = MetaDecision(action="ABSTAIN", side="UP", confidence=0.5, rationale="oops")
     adapter = FakeAdapter(responses=[(bad, TokenUsage())])
     meta = MetaDecider(adapter)
-    decision = await meta.decide(
+    decision, outcome = await meta.decide(
         sample_context(),
         {"orderbook": sample_vote(), "oracle_gap": sample_vote()},
     )
     assert decision is None
+    assert outcome == "invariant_violated"
 
 
 async def test_meta_returns_none_on_adapter_failure() -> None:
+    """Phase 18B: meta propagates the adapter's outcome tag verbatim when
+    the adapter returned None. Here the FakeAdapter auto-tags a None
+    response as "validation_failed"; in production the tag could equally
+    be "api_error", "refusal", "no_text"."""
     adapter = FakeAdapter(responses=[(None, TokenUsage())])
     meta = MetaDecider(adapter)
-    decision = await meta.decide(
+    decision, outcome = await meta.decide(
         sample_context(),
         {"orderbook": sample_vote(), "oracle_gap": sample_vote()},
     )
     assert decision is None
+    assert outcome == "validation_failed"
+
+
+async def test_meta_propagates_explicit_api_error_outcome() -> None:
+    """When the adapter returns an explicit `api_error` tag, meta surfaces
+    it unchanged. Regression for Phase 18B: the wrapper's log must see the
+    underlying failure class, not a coarsened "meta=None"."""
+    adapter = FakeAdapter(responses=[(None, TokenUsage(), "api_error")])
+    meta = MetaDecider(adapter)
+    decision, outcome = await meta.decide(
+        sample_context(),
+        {"orderbook": sample_vote(), "oracle_gap": sample_vote()},
+    )
+    assert decision is None
+    assert outcome == "api_error"
 
 
 async def test_meta_can_disable_thinking() -> None:

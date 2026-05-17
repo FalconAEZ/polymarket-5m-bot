@@ -1,0 +1,115 @@
+@import "tailwindcss";
+
+/* Design tokens — Dark Terminal v3
+ * Per design/dashboard-v3.md §7. Tailwind v4 picks these up via the
+ * @theme directive and exposes them as utilities (bg-bg-page,
+ * text-good, border-border-subtle, etc.).
+ */
+@theme {
+  --color-bg-page: #08070a;
+  --color-bg-panel: #0e0d09;
+  --color-bg-panel-hi: #15130c;
+  --color-bg-inset: #050405;
+  --color-bg-overlay: rgba(8, 7, 10, 0.85);
+
+  --color-border-subtle: #221e15;
+  --color-border-strong: #36301f;
+  --color-border-amber: #6b4d18;
+  --color-border-glow: rgba(255, 184, 74, 0.3);
+
+  --color-text-primary: #f5edd6;
+  --color-text-secondary: #a08f6a;
+  --color-text-muted: #5a4f3a;
+  --color-text-disabled: #2c281c;
+
+  --color-good: #6effa1;
+  --color-good-glow: rgba(110, 255, 161, 0.2);
+  --color-bad: #ff5c5c;
+  --color-bad-glow: rgba(255, 92, 92, 0.22);
+  --color-warn: #ffb84a;
+  --color-warn-glow: rgba(255, 184, 74, 0.22);
+  --color-warn-strong: #ff9420;
+
+  --color-accent-cyan: #58e1ff;
+  --color-accent-magenta: #ff6ec7;
+
+  --font-sans:
+    "Inter Display", "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI",
+    sans-serif;
+  --font-mono:
+    "JetBrains Mono", "SF Mono", "Menlo", ui-monospace, monospace;
+
+  --radius-sm: 2px;
+  --radius-md: 4px;
+}
+
+@layer base {
+  html, body, #root {
+    height: 100%;
+    width: 100%;
+    background: var(--color-bg-page);
+    color: var(--color-text-primary);
+    font-family: var(--font-mono);
+    font-feature-settings: "tnum";
+    -webkit-font-smoothing: antialiased;
+  }
+  body {
+    background:
+      radial-gradient(1200px 600px at 10% -10%, rgba(255, 184, 74, 0.04), transparent 60%),
+      radial-gradient(900px 500px at 110% 0%, rgba(110, 255, 161, 0.03), transparent 55%),
+      var(--color-bg-page);
+    margin: 0;
+  }
+  ::selection {
+    background: rgba(255, 184, 74, 0.18);
+    color: var(--color-text-primary);
+  }
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  ::-webkit-scrollbar-track {
+    background: var(--color-bg-inset);
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--color-border-strong);
+    border-radius: 4px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--color-border-amber);
+  }
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url("https://fonts.gstatic.com/s/jetbrainsmono/v24/tDbY2o-flEEny0FZhsfKu5WU4zr3E_BX0PnT8RD8yKxTMlOFsZuhAj4mE2WI3w.woff2") format("woff2");
+}
+
+@keyframes pmb-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%      { opacity: 0.5; transform: scale(1.4); }
+}
+@keyframes pmb-tape-scroll {
+  from { transform: translateX(0); }
+  to   { transform: translateX(-50%); }
+}
+@keyframes pmb-glow {
+  0%, 100% { box-shadow: 0 0 0 0 transparent; }
+  50%      { box-shadow: 0 0 16px 2px var(--color-warn-glow); }
+}
+@keyframes pmb-fade-in {
+  from { opacity: 0; transform: translateY(-2px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.pmb-fade-in { animation: pmb-fade-in 280ms ease-out; }
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 80ms !important;
+    transition-duration: 80ms !important;
+  }
+}

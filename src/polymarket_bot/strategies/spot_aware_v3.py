@@ -20,9 +20,25 @@ unlocks (Phase 5/6).
 
 from __future__ import annotations
 
+import re
+from dataclasses import replace as dc_replace
+
 from polymarket_bot.backtest.types import Decision, MarketEvent, SpotTick
 from polymarket_bot.strategies.regime_detector import RegimeDetector
 from polymarket_bot.strategies.spot_aware_v2 import SpotAwareStrategyV2
+
+# Pre-compiled regexes for rewriting v2's rationale string to self-tag as v3.
+# Why: v2 builds the rationale inside its own _maybe_fire path; v3 calls
+# super().on_event(event) which returns v2's Decision unchanged. Without
+# this rewrite, every v3 fire's rationale reads `strategy=spot_aware_v2
+# mode=tier_restricted ...`, which (a) misleads anyone reading the log
+# and (b) breaks downstream tooling that attributes strategy by parsing
+# the rationale tag (scripts/four_day_audit.py, scripts/watch_first_v3_fire.py
+# both had to be patched 2026-05-12 to compensate via --since-ts-ns and
+# --strategy-override). This rewrite removes the workaround need going
+# forward — fires self-tag correctly at the source.
+_RE_STRATEGY = re.compile(r"\bstrategy=spot_aware_v2\b")
+_RE_MODE = re.compile(r"\bmode=tier_restricted\b")
 
 
 class SpotAwareStrategyV3(SpotAwareStrategyV2):
@@ -74,4 +90,13 @@ class SpotAwareStrategyV3(SpotAwareStrategyV2):
             self._fired_for_window = None
             return None
 
-        return decision
+        # Rewrite the rationale so this fire self-tags as v3 (see module-
+        # level note on _RE_STRATEGY for the why). Word-boundary regex so
+        # we don't accidentally rewrite a v2 substring that appears inside
+        # some other token in the future. If v2's format ever changes and
+        # the patterns no longer match, the rewrite becomes a no-op and we
+        # fall back to v2's tag — graceful degradation, not a hard fail.
+        new_rationale = _RE_STRATEGY.sub("strategy=spot_aware_v3", decision.rationale)
+        new_rationale = _RE_MODE.sub("mode=trending_only", new_rationale)
+        new_rationale = f"{new_rationale} regime=trending"
+        return dc_replace(decision, rationale=new_rationale)

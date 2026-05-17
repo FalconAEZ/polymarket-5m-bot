@@ -26,6 +26,7 @@ guaranteed-loss: 50% baseline WR with fees + simulator impact.
 
 from __future__ import annotations
 
+from polymarket_bot.backtest.fills import DEFAULT_FLOOR_BEST_ASK
 from polymarket_bot.backtest.types import (
     BookUpdate,
     Decision,
@@ -78,7 +79,15 @@ class WideFireStrategy:
         self._window_open_spot: float | None = None
         self._fired_for_window: int | None = None
         self._token_for_side: dict[Side, str] = {}
-        self._best_ask_for_side: dict[Side, float] = {}
+        # Per-asset_id book snapshot — replaces the per-side caches that
+        # got polluted by the warmer's forward-window BookUpdates (audit
+        # 2026-05-12 found a phantom-zone fire emitted on window
+        # 1778583000 because _ask_size_for_side["UP"] was last-written
+        # by a DIFFERENT UP-side asset_id's depth-only update). Keys are
+        # asset_ids; values track (best_ask, ask_size_top) with best_ask
+        # sticky (don't overwrite with None — Polymarket emits some
+        # depth-only update payloads where best_ask is absent).
+        self._book_by_token: dict[str, dict[str, float | None]] = {}
 
     def reset(self) -> None:
         self._spot_now = None
@@ -86,7 +95,7 @@ class WideFireStrategy:
         self._window_open_spot = None
         self._fired_for_window = None
         self._token_for_side = {}
-        self._best_ask_for_side = {}
+        self._book_by_token = {}
 
     async def on_event(self, event: MarketEvent) -> Decision | None:
         if isinstance(event, SpotTick):
@@ -96,8 +105,23 @@ class WideFireStrategy:
             return self._maybe_fire(event.ts_utc_ns)
         if isinstance(event, BookUpdate):
             self._token_for_side[event.side] = event.asset_id
+            # Per-asset_id book snapshot (replaces the polluted per-side
+            # caches). best_ask is sticky — Polymarket emits depth-only
+            # update payloads where best_ask is None; preserve the prior
+            # known best_ask for that token. ask_size_top is always
+            # written so the absence-of-depth signal propagates fast.
+            prev = self._book_by_token.get(event.asset_id)
+            new_best_ask: float | None
             if event.best_ask is not None:
-                self._best_ask_for_side[event.side] = event.best_ask
+                new_best_ask = event.best_ask
+            elif prev is not None:
+                new_best_ask = prev.get("best_ask")
+            else:
+                new_best_ask = None
+            self._book_by_token[event.asset_id] = {
+                "best_ask": new_best_ask,
+                "ask_size_top": event.ask_size_top,
+            }
             return self._maybe_fire(event.ts_utc_ns)
         if isinstance(event, OracleUpdate):
             return None
@@ -126,8 +150,29 @@ class WideFireStrategy:
         asset_id = self._token_for_side.get(side)
         if asset_id is None:
             return None
-        ask = self._best_ask_for_side.get(side)
+        # Look up the book state for THIS specific asset_id — not the
+        # per-side cache (which the 2026-05-12 audit found polluted by
+        # the warmer's forward-window BookUpdates). The runner's
+        # _shadow.latest(asset_id) uses the same per-token lookup; this
+        # keeps the strategy in lockstep with the simulator's view.
+        book = self._book_by_token.get(asset_id)
+        if book is None:
+            return None
+        ask = book.get("best_ask")
         if ask is None:
+            return None
+
+        # Phantom-fill defense alignment (audit 2026-05-11 + 2026-05-12).
+        # FillSimulator refuses fills when ask_size_top is None AND
+        # fill_price <= DEFAULT_FLOOR_BEST_ASK ($0.05). Mirror that
+        # threshold here so we don't emit a "fired" record for a
+        # decision the simulator will immediately refuse — wastes a
+        # decision-log slot, burns an LLM round-trip when ensemble-
+        # wrapped, and clouds the audit numbers. 33/35 unfilled fires
+        # on 2026-05-11 matched this pattern; 2026-05-12 audit caught
+        # the per-side-pollution bypass and tightened to per-asset_id.
+        ask_size = book.get("ask_size_top")
+        if ask_size is None and ask <= DEFAULT_FLOOR_BEST_ASK:
             return None
 
         # No tier rejection. No priors lookup. No EV gate. Just fire.

@@ -20,7 +20,9 @@ import contextlib
 import logging
 import time
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from datetime import UTC, date, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -169,6 +171,22 @@ class PaperRunner:
         # (default true) in run_paper.py.
         periodic_orphan_recovery_enabled: bool = False,
         periodic_orphan_recovery_interval_s: float = DEFAULT_PERIODIC_ORPHAN_RECOVERY_INTERVAL_S,
+        # BankrollTracker — Kelly feedback loop for v2.1+. The tracker
+        # always exists (default $1000 from locked decision #10) so any
+        # strategy can read it via runner._bankroll.current. Replay-on-
+        # startup walks recent state/decisions/*.jsonl files and replays
+        # settled + settled_correction records into the tracker so a
+        # restart doesn't reset the compound clock. Default off to
+        # preserve legacy behaviour; production wires both flags via
+        # PMB_STARTING_BANKROLL + BANKROLL_REPLAY_ENABLED env vars in
+        # run_paper.py. Spec §5.2-5.3 / design/spot_aware_v2_1.md.
+        bankroll_starting_usd: float = 1000.0,
+        bankroll_replay_on_start: bool = False,
+        bankroll_replay_lookback_days: int = 14,
+        # H.2.3 multi-fire cap. Default 1 preserves Phase-3 single-fire-
+        # per-window invariant for v1/v2/v3/wide_fire. v2.1 wires 2 from
+        # the MULTI_FIRE_CAP env var via run_paper.py. Spec §6.2.
+        multi_fire_cap: int = 1,
     ) -> None:
         if not feeds:
             raise ValueError("PaperRunner requires at least one Feed")
@@ -181,7 +199,9 @@ class PaperRunner:
         self._queue_size = queue_size
         self._stop = asyncio.Event()
         self._dropped = 0
-        self._state = _RunState()
+        if multi_fire_cap < 1:
+            raise ValueError(f"multi_fire_cap must be >= 1; got {multi_fire_cap}")
+        self._state = _RunState(multi_fire_cap=multi_fire_cap)
         self._alerts: AlertSink = alert_sink if alert_sink is not None else NullAlertSink()
         self._alert_source = alert_source
         self._instant_settle_enabled = instant_settle_enabled
@@ -208,6 +228,9 @@ class PaperRunner:
         self._periodic_orphan_recovery_interval_s = max(30.0, periodic_orphan_recovery_interval_s)
         # Tracks the periodic-recovery task so shutdown can cancel + await it.
         self._periodic_orphan_task: asyncio.Task[None] | None = None
+        self._bankroll = BankrollTracker(starting_usd=bankroll_starting_usd)
+        self._bankroll_replay_on_start = bankroll_replay_on_start
+        self._bankroll_replay_lookback_days = bankroll_replay_lookback_days
 
     def _alert(self, level: Level, message: str, **fields: str | int | float) -> None:
         try:
@@ -229,12 +252,41 @@ class PaperRunner:
     def dropped_records_total(self) -> int:
         return self._dropped
 
+    @property
+    def bankroll(self) -> BankrollTracker:
+        """Live bankroll tracker — read via ``.current()`` for compounding strategies."""
+        return self._bankroll
+
     def stop(self) -> None:
         self._stop.set()
         for feed in self._feeds:
             feed.stop()
 
     async def run(self, *, stop: asyncio.Event | None = None) -> None:
+        # BankrollTracker startup replay — walks state/decisions/<UTC-date>.jsonl
+        # over the lookback window and re-applies settled + settled_correction
+        # records so the compound clock survives restarts. Opt-in via env;
+        # default off to preserve legacy behaviour. Spec §5.3.
+        if self._bankroll_replay_on_start:
+            try:
+                replayed = replay_bankroll_from_log(
+                    log_root=self._log.root,
+                    starting_usd=self._bankroll.starting_usd,
+                    lookback_days=self._bankroll_replay_lookback_days,
+                )
+                self._bankroll = replayed
+                LOG.info(
+                    "bankroll replay: starting=$%.2f current=$%.2f",
+                    self._bankroll.starting_usd,
+                    self._bankroll.current(),
+                )
+            except Exception as exc:
+                LOG.exception("bankroll replay raised; continuing with starting bankroll")
+                self._alert(
+                    Level.WARN,
+                    f"bankroll replay raised: {exc}",
+                )
+
         # Orphan-fire recovery — runs once at startup, BEFORE the main
         # event loop. Fires that lost their close-side settle (e.g.,
         # because the bot was restarted between fire and window-close)
@@ -416,15 +468,15 @@ class PaperRunner:
                 kind="close",
             )
         )
-        # Snapshot state for the closing window BEFORE start_window resets
-        # it for the next window, then fire-and-forget the settle. The main
-        # loop returns to processing records immediately while gamma polls.
+        # H.2.3 multi-fire: snapshot each pending decision BEFORE
+        # start_window clears the list, then fire-and-forget one settle
+        # task per snapshot. The main loop returns to processing records
+        # immediately while gamma polls each task in parallel.
         # Per runbooks/incidents/2026-05-09-instant-settle-queue-overflow.md.
-        snap = self._snapshot_for_settle()
-        if snap is not None:
+        for snap in self._snapshots_for_settle():
             task = asyncio.create_task(
                 self._settle_window_background(snap),
-                name=f"settle-{snap.window_ts}",
+                name=f"settle-{snap.window_ts}-{snap.decision_id[:8]}",
             )
             self._pending_settles.add(task)
             task.add_done_callback(self._pending_settles.discard)
@@ -438,23 +490,34 @@ class PaperRunner:
         )
 
     def _on_decision(self, decision: Decision) -> None:
-        # Phase-3 strategy invariant: at most one Decision per window.
-        # Defensive guard: if a strategy ever fires twice, the second is
-        # dropped with a log line.
+        # H.2.3 multi-fire refactor: the per-window cap is configurable.
+        # For v1/v2/v3/wide_fire (cap=1) the guard preserves the Phase-3
+        # invariant exactly; for v2.1 (cap=2 by default) the second fire
+        # is admitted, the third dropped. Counted by list length so the
+        # cap is unambiguous regardless of which decision filled when.
         if self._state.window_ts is None:
             LOG.warning("decision arrived before window boundary; dropping")
             self._alert(Level.WARN, "decision arrived before window boundary; dropped")
             return
-        if self._state.pending_decision is not None or self._state.settled_fill is not None:
-            LOG.warning(
-                "second decision in window %s; dropping",
-                self._state.window_ts,
-            )
-            self._alert(
-                Level.WARN,
-                f"second decision in window {self._state.window_ts}; dropped",
-                window_ts=self._state.window_ts,
-            )
+        cap = self._state.multi_fire_cap
+        if len(self._state.pending_decisions) >= cap:
+            if cap == 1:
+                LOG.warning(
+                    "second decision in window %s; dropping",
+                    self._state.window_ts,
+                )
+                self._alert(
+                    Level.WARN,
+                    f"second decision in window {self._state.window_ts}; dropped",
+                    window_ts=self._state.window_ts,
+                )
+            else:
+                LOG.info(
+                    "fire %d would exceed multi_fire_cap=%d in window %s; dropping",
+                    len(self._state.pending_decisions) + 1,
+                    cap,
+                    self._state.window_ts,
+                )
             return
         side = _side_from_rationale(decision.rationale)
         if side is None:
@@ -499,18 +562,22 @@ class PaperRunner:
         self._state.record_decision(decision, side, decision_id, fill)
 
     def _try_fill_pending(self, now_ts_ns: int) -> None:
-        pending = self._state.pending_decision
-        if pending is None:
-            return
-        # Maker path — our limit is resting; an incoming seller crosses the
-        # spread to hit it. Fill at our limit (price-improvement to maker),
-        # NOT at the new (potentially much lower) ask. See fills.py docstring
-        # for the simulator-bug postmortem this guards against.
-        fill = self._shadow.attempt_fill(pending, now_ts_ns, is_taker=False)
-        if fill is None:
-            return
-        self._state.settled_fill = fill
-        self._state.pending_decision = None
+        # H.2.3 multi-fire: iterate every still-unfilled pending decision
+        # and try a maker fill on each. Each decision keys to its own
+        # asset_id (carried on the Decision) so the shadow book picks the
+        # correct side. Order is insertion order — first-fired gets first
+        # crack at the new book, which mirrors single-fire semantics for
+        # cap=1.
+        for pd in self._state.pending_decisions:
+            if pd.settled_fill is not None:
+                continue
+            # Maker path — our limit is resting; an incoming seller crosses the
+            # spread to hit it. Fill at our limit (price-improvement to maker),
+            # NOT at the new (potentially much lower) ask. See fills.py docstring
+            # for the simulator-bug postmortem this guards against.
+            fill = self._shadow.attempt_fill(pd.decision, now_ts_ns, is_taker=False)
+            if fill is not None:
+                pd.settled_fill = fill
 
     async def _recover_orphan_fires(self) -> None:
         # Scan today's + the previous N UTC-day decision-log files for
@@ -731,34 +798,49 @@ class PaperRunner:
             LOG.warning("could not reconstruct pending decision for prime: %s", exc)
             return
 
+        # H.2.3 multi-fire: prime the pending_decisions list directly.
+        # For cap=1 this restores the singular-pending pre-refactor
+        # state exactly; for cap>=2 it leaves room for the strategy to
+        # add up to (cap-1) more decisions in the same window.
         self._state.window_ts = current_window
-        self._state.decision_id = decision_id
-        self._state.side = side
-        self._state.pending_decision = stub
-        # Also set settled_fill if the original fire had an immediate
-        # taker fill — that way both branches of the duplicate-guard
-        # are armed.
         fill_dict = most_recent.get("fill")
         fill = _fill_from_dict(fill_dict)
-        if fill is not None:
-            self._state.settled_fill = fill
+        self._state.pending_decisions.append(
+            _PendingDecision(
+                decision=stub,
+                decision_id=decision_id,
+                side=side,
+                settled_fill=fill,
+            )
+        )
+
+    def _snapshots_for_settle(self) -> list[_SettleSnapshot]:
+        # H.2.3 multi-fire: one snapshot per pending decision. Capture
+        # everything the settle path needs BEFORE start_window clears
+        # the list for the next window. Snapshots are the only state
+        # the fire-and-forget settle tasks read, so they're decoupled
+        # from any future _RunState mutation.
+        s = self._state
+        if s.window_ts is None or not s.pending_decisions:
+            return []
+        return [
+            _SettleSnapshot(
+                window_ts=s.window_ts,
+                decision_id=pd.decision_id,
+                open_oracle=s.open_oracle,
+                close_oracle=s.close_oracle,
+                side=pd.side,
+                settled_fill=pd.settled_fill,
+            )
+            for pd in s.pending_decisions
+        ]
 
     def _snapshot_for_settle(self) -> _SettleSnapshot | None:
-        # Capture everything the settle path needs for the closing window
-        # BEFORE start_window resets self._state for the next window. The
-        # snapshot is the only state the background task reads, so settle
-        # is decoupled from any future mutation.
-        s = self._state
-        if s.window_ts is None or s.decision_id is None:
-            return None
-        return _SettleSnapshot(
-            window_ts=s.window_ts,
-            decision_id=s.decision_id,
-            open_oracle=s.open_oracle,
-            close_oracle=s.close_oracle,
-            side=s.side,
-            settled_fill=s.settled_fill,
-        )
+        """Backward-compat shim: first pending decision's snapshot or
+        None. Existing v2/v3/wide_fire callers keep their semantics for
+        cap=1; v2.1 invokes ``_snapshots_for_settle`` directly."""
+        snaps = self._snapshots_for_settle()
+        return snaps[0] if snaps else None
 
     async def _settle_window_background(self, snap: _SettleSnapshot) -> None:
         # Top-level guard: a settle failure (gamma raise, log raise, etc.)
@@ -856,6 +938,10 @@ class PaperRunner:
                 window_ts=snap.window_ts,
             )
             return
+        # Update the live BankrollTracker for compounding strategies (v2.1+).
+        # Only counted AFTER the disk write succeeds so a write failure
+        # doesn't poison the tracker. Spec §5.2 / design CH6.
+        self._bankroll.apply_settle(pnl)
 
         # Schedule a post-hoc gamma re-resolution if we fell back to
         # chainlink-local. Per audit 2026-05-10: chainlink and gamma
@@ -963,6 +1049,13 @@ class PaperRunner:
                         )
                         return
                     self._post_hoc_corrections_total += 1
+                    # Apply the bankroll overlay (Phase 15.5). The original
+                    # settled record already updated the tracker; this delta
+                    # net-replaces that contribution with the corrected pnl.
+                    self._bankroll.apply_correction(
+                        original_pnl_usd=original_pnl_usd,
+                        corrected_pnl_usd=corrected_pnl,
+                    )
                     LOG.info(
                         "post-hoc gamma correction for window %s: %s -> %s " "(pnl %.4f -> %.4f)",
                         snap.window_ts,
@@ -1029,9 +1122,121 @@ class _SettleSnapshot:
     settled_fill: Fill | None
 
 
+@dataclass(slots=True)
+class BankrollTracker:
+    """Tracks live bankroll for compounding-aware strategies (v2.1+).
+
+    Starting bankroll is set at construction time (locked decision #10
+    default = $1000). Realized P&L accumulates on every settled record
+    via ``apply_settle`` and is overlaid by Phase 15.5
+    ``settled_correction`` records via ``apply_correction``. The single
+    public read is ``current()`` — the strategy's ``bankroll_getter``
+    callback invokes this at every fire.
+
+    Thread-safety note: PaperRunner runs a single asyncio event loop;
+    apply_settle / apply_correction are called from awaited background
+    tasks but never concurrently with the main strategy fire path (the
+    settle path is awaited at shutdown, and Kelly bet sizing happens on
+    the main loop). No locking required.
+    """
+
+    starting_usd: float = 1000.0
+    realized_pnl_usd: float = 0.0
+
+    def current(self) -> float:
+        return self.starting_usd + self.realized_pnl_usd
+
+    def apply_settle(self, pnl_usd: float) -> None:
+        self.realized_pnl_usd += pnl_usd
+
+    def apply_correction(self, *, original_pnl_usd: float, corrected_pnl_usd: float) -> None:
+        # The original `settled` record already contributed
+        # ``original_pnl_usd`` to ``realized_pnl_usd``. The correction
+        # overlay replaces the per-decision pnl with ``corrected_pnl_usd``
+        # so the delta we apply is the difference. Phantom-fill
+        # neutralization (corrected_pnl_usd == 0.0) lands correctly:
+        # the delta becomes -original_pnl_usd.
+        self.realized_pnl_usd += corrected_pnl_usd - original_pnl_usd
+
+
+def replay_bankroll_from_log(
+    *,
+    log_root: Path,
+    starting_usd: float = 1000.0,
+    today: date | None = None,
+    lookback_days: int = 14,
+) -> BankrollTracker:
+    """Walk recent decision-log JSONL files; replay settled + settled_correction
+    records into a fresh ``BankrollTracker``.
+
+    Mirrors the orphan-fire-recovery pattern in PaperRunner (read
+    state/decisions/<UTC-date>.jsonl, look back N days). Recovers
+    cross-restart bankroll without depending on the dashboard's
+    derivation. Records are walked oldest → newest so the correction
+    overlay applies after its parent settled record in time order.
+
+    ``today`` defaults to UTC today; tests pin it to a deterministic
+    date. ``lookback_days`` defaults to 14 (covers a typical operator
+    redeploy gap + a margin for offline soaks).
+    """
+    tracker = BankrollTracker(starting_usd=starting_usd)
+    root = Path(log_root)
+    if not root.exists():
+        return tracker
+    base_date = today if today is not None else datetime.now(tz=UTC).date()
+    dates = [base_date - timedelta(days=i) for i in range(lookback_days + 1)]
+    for d in sorted(dates):  # ascending — proper time order
+        path = root / f"{d.strftime('%Y-%m-%d')}.jsonl"
+        if not path.exists():
+            continue
+        for rec in read_jsonl(path):
+            kind = rec.get("kind")
+            if kind == "settled":
+                pnl = rec.get("pnl_usd")
+                if isinstance(pnl, int | float):
+                    tracker.apply_settle(float(pnl))
+            elif kind == "settled_correction":
+                orig = rec.get("original_pnl_usd")
+                corr = rec.get("corrected_pnl_usd")
+                if isinstance(orig, int | float) and isinstance(corr, int | float):
+                    tracker.apply_correction(
+                        original_pnl_usd=float(orig),
+                        corrected_pnl_usd=float(corr),
+                    )
+    return tracker
+
+
+@dataclass(slots=True)
+class _PendingDecision:
+    """One fired decision per window; v2.1 may have up to ``multi_fire_cap``.
+
+    Each ``_PendingDecision`` carries its own decision_id, side, and
+    settled_fill — they do NOT share state. ``settled_fill is None``
+    means we're still awaiting a maker fill on this decision's limit;
+    once a fill arrives (taker at fire time OR maker later) ``settled_fill``
+    is populated and the window-close settle path computes pnl against
+    it. Multi-fire counter lives on ``_RunState``, keyed by ``window_ts``
+    so per-side state pollution (see project_per_side_state_pollution_pattern)
+    can't corrupt it.
+    """
+
+    decision: Decision
+    decision_id: str
+    side: Side
+    settled_fill: Fill | None = None
+
+
 @dataclass
 class _RunState:
-    """Per-window scratch state for the runner. Not part of the public API."""
+    """Per-window scratch state for the runner. Not part of the public API.
+
+    H.2.3 multi-fire refactor: ``pending_decision`` (singular) became
+    ``pending_decisions: list[_PendingDecision]`` to admit v2.1's
+    multi-fire pattern (up to ``multi_fire_cap`` decisions per window).
+    Backward-compat properties (``pending_decision``, ``decision_id``,
+    ``side``, ``settled_fill``) preserve READ access for existing call
+    sites — for cap=1 they return the first/only entry in the list.
+    """
 
     window_ts: int | None = None
     open_oracle: float | None = None
@@ -1039,10 +1244,41 @@ class _RunState:
     last_oracle: float | None = None
     last_spot: float | None = None
     window_open_spot: float | None = None
-    pending_decision: Decision | None = None
-    decision_id: str | None = None
-    side: Side | None = None
-    settled_fill: Fill | None = None
+    pending_decisions: list[_PendingDecision] = field(default_factory=list)
+    multi_fire_cap: int = 1
+
+    @property
+    def pending_decision(self) -> Decision | None:
+        """Backward-compat: first pending decision still awaiting maker
+        fill, or None. Tests and probes that read this continue to work
+        unchanged — for cap=1 (v1/v2/v3 default) the list has at most
+        one entry; for cap>=2 (v2.1) the first un-filled wins."""
+        for pd in self.pending_decisions:
+            if pd.settled_fill is None:
+                return pd.decision
+        return None
+
+    @property
+    def decision_id(self) -> str | None:
+        """Backward-compat: first pending decision_id (or None)."""
+        return self.pending_decisions[0].decision_id if self.pending_decisions else None
+
+    @property
+    def side(self) -> Side | None:
+        """Backward-compat: first pending decision's side (or None)."""
+        return self.pending_decisions[0].side if self.pending_decisions else None
+
+    @property
+    def settled_fill(self) -> Fill | None:
+        """Backward-compat: the first pending decision's fill (or None).
+
+        For cap=1, equivalent to the pre-refactor singular field — the
+        sole pending decision's fill, or None if not yet filled. For
+        cap>=2 it returns the FIRST decision's fill specifically (not
+        "any filled decision") so cap-1 callers see consistent
+        semantics.
+        """
+        return self.pending_decisions[0].settled_fill if self.pending_decisions else None
 
     def start_window(self, window_ts: int) -> None:
         # Carry last_oracle / last_spot forward as the open values; clear
@@ -1051,10 +1287,7 @@ class _RunState:
         self.open_oracle = self.last_oracle
         self.close_oracle = None
         self.window_open_spot = self.last_spot
-        self.pending_decision = None
-        self.decision_id = None
-        self.side = None
-        self.settled_fill = None
+        self.pending_decisions.clear()
 
     def observe_oracle(self, event: OracleUpdate) -> None:
         self.last_oracle = event.price
@@ -1079,13 +1312,18 @@ class _RunState:
         decision_id: str,
         immediate_fill: Fill | None,
     ) -> None:
-        self.side = side
-        self.decision_id = decision_id
-        if immediate_fill is not None:
-            self.settled_fill = immediate_fill
-            self.pending_decision = None
-        else:
-            self.pending_decision = decision
+        # Append a new pending decision. If the taker leg filled
+        # immediately, settled_fill carries that fill (the window-close
+        # settle path treats it as already-filled); otherwise None means
+        # we wait for a maker fill on subsequent BookUpdates within ttl.
+        self.pending_decisions.append(
+            _PendingDecision(
+                decision=decision,
+                decision_id=decision_id,
+                side=side,
+                settled_fill=immediate_fill,
+            )
+        )
 
 
 def _side_from_rationale(rationale: str) -> Side | None:
