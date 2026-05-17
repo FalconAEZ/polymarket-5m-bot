@@ -53,6 +53,7 @@ from dataclasses import replace as dc_replace
 
 from polymarket_bot.backtest.types import Decision, MarketEvent, Side, SpotTick, WindowBoundary
 from polymarket_bot.strategies.kelly_config import KellyConfig
+from polymarket_bot.strategies.path_a_wr_metrics import PathAMetrics
 from polymarket_bot.strategies.regime_detector import RegimeDetector
 from polymarket_bot.strategies.spot_aware import delta_bps
 from polymarket_bot.strategies.spot_aware_priors import SpotAwarePriors
@@ -252,6 +253,14 @@ class SpotAwareStrategyV2_1(SpotAwareStrategyV2):
         # ABSTAINED (return None). Default empty = v0 behavior preserved.
         # design/M.1a-v1-active-abstain.md.
         regime_abstain_labels: frozenset[str] | None = None,
+        # M.5 — Path A regime-aware wrapper. Callback returning current
+        # rolling Path A metrics (WR + mean price = break-even). When
+        # rolling_wr < mean_price + break_even_margin, Path A fires
+        # (tier 70-85% x DOWN side) are ABSTAINED. Cold-start (n<min)
+        # passes through. design/M.5-path-a-regime-wrapper.md.
+        path_a_wr_getter: Callable[[], PathAMetrics] | None = None,
+        path_a_wr_min_samples: int = 20,
+        path_a_wr_break_even_margin: float = 0.02,
         **v2_kwargs: object,
     ) -> None:
         super().__init__(priors=priors, **v2_kwargs)  # type: ignore[arg-type]
@@ -297,6 +306,10 @@ class SpotAwareStrategyV2_1(SpotAwareStrategyV2):
         self._regime_abstain_labels: frozenset[str] = (
             frozenset(regime_abstain_labels) if regime_abstain_labels is not None else frozenset()
         )
+        # M.5 — Path A regime-aware wrapper.
+        self._path_a_wr_getter = path_a_wr_getter
+        self._path_a_wr_min_samples = path_a_wr_min_samples
+        self._path_a_wr_break_even_margin = path_a_wr_break_even_margin
         self._fires_this_window: int = 0
 
     @property
@@ -383,6 +396,24 @@ class SpotAwareStrategyV2_1(SpotAwareStrategyV2):
             return None
         if side_guess == "DOWN" and tier in self._block_down_in_tiers:
             return None
+
+        # M.5 — Path A regime-aware wrapper. If this candidate is Path A
+        # (tier 70-85% x DOWN), consult the rolling-metrics getter. When
+        # rolling WR is below the dynamic break-even (mean price) + margin,
+        # ABSTAIN. Cold-start (n < min_samples) passes through (getter
+        # returns rolling_wr=None then). design/M.5-path-a-regime-wrapper.md.
+        if self._path_a_wr_getter is not None and tier == "70-85%" and side_guess == "DOWN":
+            metrics = self._path_a_wr_getter()
+            if (
+                metrics.rolling_wr is not None
+                and metrics.mean_price is not None
+                and metrics.n_settled >= self._path_a_wr_min_samples
+                and metrics.rolling_wr < metrics.mean_price + self._path_a_wr_break_even_margin
+            ):
+                # Below dynamic break-even — abstain. No need to reset
+                # `_fired_for_window` because v2 hasn't set it yet (this
+                # check runs BEFORE v2's super()._maybe_fire call below).
+                return None
 
         # v2's `_maybe_fire` reads `self._delta_min` and `self._priors`
         # directly. We swap both for this fire only (single-threaded

@@ -989,3 +989,284 @@ async def test_m1a_v1_abstain_does_not_burn_multi_fire_slot() -> None:
     assert decision is None
     # internal multi-fire counter should still read 0 (the abstain didn't burn a slot)
     assert strat._fires_this_window == 0
+
+
+# ---------- M.5 (Path A regime-aware wrapper) ----------
+# design/M.5-path-a-regime-wrapper.md §6.
+
+
+from datetime import UTC, datetime  # noqa: E402
+
+from polymarket_bot.strategies.path_a_wr_metrics import PathAMetrics  # noqa: E402
+
+
+def _path_a_getter(rolling_wr: float | None, mean_price: float | None, n_settled: int = 25):
+    """Helper: returns a callable yielding a fixed PathAMetrics."""
+    metrics = PathAMetrics(
+        rolling_wr=rolling_wr,
+        mean_price=mean_price,
+        n_settled=n_settled,
+        n_total_in_buffer=max(n_settled, 0),
+    )
+    return lambda: metrics
+
+
+async def test_m5_path_a_gate_disabled_no_change() -> None:
+    """No getter → tier 70-85% x DOWN fires unchanged (baseline behavior)."""
+    strat = SpotAwareStrategyV2_1(
+        priors=_StubPriors(p_win=0.85),
+        bankroll_getter=_bankroll(1000.0),
+        path_a_wr_getter=None,
+    )
+    # Drive a Path A fire: spot moves UP (so side=DOWN by spot-aware logic) on tier 70-85%.
+    decision = await _drive_simple_window(
+        strat, open_spot=80_000.0, end_spot=79_920.0, ask_down=0.72
+    )
+    assert decision is not None, "no getter = baseline; Path A should fire as before"
+
+
+async def test_m5_path_a_gate_above_break_even_fires() -> None:
+    """rolling_wr (0.85) > mean_price (0.74) + margin (0.02) → fires."""
+    strat = SpotAwareStrategyV2_1(
+        priors=_StubPriors(p_win=0.85),
+        bankroll_getter=_bankroll(1000.0),
+        path_a_wr_getter=_path_a_getter(rolling_wr=0.85, mean_price=0.74, n_settled=25),
+    )
+    decision = await _drive_simple_window(
+        strat, open_spot=80_000.0, end_spot=79_920.0, ask_down=0.72
+    )
+    assert decision is not None
+    assert "side=DOWN" in decision.rationale
+
+
+async def test_m5_path_a_gate_below_break_even_abstains() -> None:
+    """rolling_wr (0.70) < mean_price (0.74) + margin → abstains."""
+    strat = SpotAwareStrategyV2_1(
+        priors=_StubPriors(p_win=0.85),
+        bankroll_getter=_bankroll(1000.0),
+        path_a_wr_getter=_path_a_getter(rolling_wr=0.70, mean_price=0.74, n_settled=25),
+    )
+    decision = await _drive_simple_window(
+        strat, open_spot=80_000.0, end_spot=79_920.0, ask_down=0.72
+    )
+    assert decision is None, "Path A below dynamic break-even must abstain"
+
+
+async def test_m5_path_a_gate_cold_start_passes_through() -> None:
+    """getter returns (None, None, 5) → n < min_samples → no gate."""
+    strat = SpotAwareStrategyV2_1(
+        priors=_StubPriors(p_win=0.85),
+        bankroll_getter=_bankroll(1000.0),
+        path_a_wr_getter=_path_a_getter(rolling_wr=None, mean_price=None, n_settled=5),
+        path_a_wr_min_samples=20,
+    )
+    decision = await _drive_simple_window(
+        strat, open_spot=80_000.0, end_spot=79_920.0, ask_down=0.72
+    )
+    assert decision is not None, "cold-start n=5 < min=20 must pass through"
+
+
+async def test_m5_path_a_gate_does_not_apply_to_30_50() -> None:
+    """Tier 30-50% fires never consult the M.5 getter, even if it would abstain."""
+    # If M.5 were applied, this would abstain (WR<break-even). But tier 30-50% must pass.
+    bad_getter = _path_a_getter(rolling_wr=0.30, mean_price=0.80, n_settled=25)
+    strat = SpotAwareStrategyV2_1(
+        priors=_StubPriors(p_win=0.55),
+        bankroll_getter=_bankroll(1000.0),
+        path_a_wr_getter=bad_getter,
+    )
+    # Tier 30-50% with the usual fire conditions.
+    decision = await _drive_simple_window(strat, open_spot=80_000.0, end_spot=80_080.0, ask_up=0.40)
+    assert decision is not None, "tier 30-50% must not be gated by M.5"
+
+
+async def test_m5_path_a_gate_does_not_apply_to_up_side() -> None:
+    """Tier 70-85% x UP side (already blocked by block_up; defense-in-depth check)."""
+    # With block_up_in_tiers including 70-85%, UP fire is blocked. M.5 must not interfere.
+    strat = SpotAwareStrategyV2_1(
+        priors=_StubPriors(p_win=0.85),
+        bankroll_getter=_bankroll(1000.0),
+        block_up_in_tiers=("70-85%",),
+        # Deliberately set abusive getter; UP fires should never reach this check anyway.
+        path_a_wr_getter=_path_a_getter(rolling_wr=0.95, mean_price=0.74, n_settled=25),
+    )
+    # Drive an UP-side fire: spot moves UP, ask 0.78 on UP token tier 70-85%.
+    decision = await _drive_simple_window(strat, open_spot=80_000.0, end_spot=80_080.0, ask_up=0.78)
+    assert decision is None, "block_up + tier 70-85% UP must abstain via block_up (not M.5)"
+
+
+async def test_m5_path_a_gate_margin_is_respected() -> None:
+    """rolling_wr 0.75, mean_price 0.74, margin 0.02 → 0.75 < 0.74+0.02=0.76 → abstain."""
+    strat = SpotAwareStrategyV2_1(
+        priors=_StubPriors(p_win=0.85),
+        bankroll_getter=_bankroll(1000.0),
+        path_a_wr_getter=_path_a_getter(rolling_wr=0.75, mean_price=0.74, n_settled=25),
+        path_a_wr_break_even_margin=0.02,
+    )
+    decision = await _drive_simple_window(
+        strat, open_spot=80_000.0, end_spot=79_920.0, ask_down=0.72
+    )
+    assert decision is None, "WR within margin of break-even must still abstain"
+
+
+async def test_m5_path_a_gate_margin_zero_strict_breakeven() -> None:
+    """margin=0 → rolling_wr=mean_price is NOT < mean_price + 0 → fires (boundary)."""
+    strat = SpotAwareStrategyV2_1(
+        priors=_StubPriors(p_win=0.85),
+        bankroll_getter=_bankroll(1000.0),
+        path_a_wr_getter=_path_a_getter(rolling_wr=0.74, mean_price=0.74, n_settled=25),
+        path_a_wr_break_even_margin=0.0,
+    )
+    decision = await _drive_simple_window(
+        strat, open_spot=80_000.0, end_spot=79_920.0, ask_down=0.72
+    )
+    # 0.74 < 0.74 + 0.0 is False → fires.
+    assert decision is not None
+
+
+# ---------- M.5 path_a_wr_metrics module ----------
+
+
+def test_compute_path_a_metrics_empty_root(tmp_path):
+    """Missing decisions root → empty PathAMetrics."""
+    from polymarket_bot.strategies.path_a_wr_metrics import compute_path_a_metrics
+
+    metrics = compute_path_a_metrics(
+        decisions_root=tmp_path / "decisions",
+        lookback_n=30,
+        min_samples=20,
+        now_ns=1_778_976_000_000_000_000,
+    )
+    assert metrics.rolling_wr is None
+    assert metrics.mean_price is None
+    assert metrics.n_settled == 0
+    assert metrics.n_total_in_buffer == 0
+
+
+def test_compute_path_a_metrics_filters_to_path_a_only(tmp_path):
+    """Non-Path-A fires (wrong tier or side) are ignored."""
+    import json
+
+    from polymarket_bot.strategies.path_a_wr_metrics import compute_path_a_metrics
+
+    decisions_root = tmp_path / "decisions"
+    decisions_root.mkdir()
+    today = datetime.fromtimestamp(1_778_976_000_000_000_000 / 1e9, UTC).strftime("%Y-%m-%d")
+    f = decisions_root / f"{today}.jsonl"
+    f.write_text(
+        "\n".join(
+            [
+                # Path A fire (tier 70-85% DOWN at price 0.75)
+                json.dumps(
+                    {
+                        "kind": "fired",
+                        "decision_id": "a",
+                        "decision_ts_ns": 1_778_975_000_000_000_000,
+                        "side": "DOWN",
+                        "price_limit": 0.75,
+                    }
+                ),
+                json.dumps(
+                    {"kind": "settled", "decision_id": "a", "resolution": "DOWN", "pnl_usd": 25.0}
+                ),
+                # NOT Path A: tier 70-85% but UP side
+                json.dumps(
+                    {
+                        "kind": "fired",
+                        "decision_id": "b",
+                        "decision_ts_ns": 1_778_975_100_000_000_000,
+                        "side": "UP",
+                        "price_limit": 0.78,
+                    }
+                ),
+                json.dumps(
+                    {"kind": "settled", "decision_id": "b", "resolution": "UP", "pnl_usd": 22.0}
+                ),
+                # NOT Path A: tier 30-50% DOWN
+                json.dumps(
+                    {
+                        "kind": "fired",
+                        "decision_id": "c",
+                        "decision_ts_ns": 1_778_975_200_000_000_000,
+                        "side": "DOWN",
+                        "price_limit": 0.40,
+                    }
+                ),
+                json.dumps(
+                    {"kind": "settled", "decision_id": "c", "resolution": "UP", "pnl_usd": -40.0}
+                ),
+            ]
+        )
+    )
+    metrics = compute_path_a_metrics(
+        decisions_root=decisions_root,
+        lookback_n=30,
+        min_samples=1,
+        now_ns=1_778_976_000_000_000_000,
+    )
+    # Only the 1 Path A fire should count.
+    assert metrics.n_settled == 1
+    assert metrics.n_total_in_buffer == 1
+    assert metrics.mean_price == pytest.approx(0.75)
+    assert metrics.rolling_wr == 1.0  # 1/1 won
+
+
+def test_compute_path_a_metrics_applies_corrections(tmp_path):
+    """settled_correction overrides settled (truth priority)."""
+    import json
+
+    from polymarket_bot.strategies.path_a_wr_metrics import compute_path_a_metrics
+
+    decisions_root = tmp_path / "decisions"
+    decisions_root.mkdir()
+    today = datetime.fromtimestamp(1_778_976_000_000_000_000 / 1e9, UTC).strftime("%Y-%m-%d")
+    f = decisions_root / f"{today}.jsonl"
+    f.write_text(
+        "\n".join(
+            [
+                # Path A fire, settled as DOWN (win), but corrected to UP (loss).
+                json.dumps(
+                    {
+                        "kind": "fired",
+                        "decision_id": "a",
+                        "decision_ts_ns": 1_778_975_000_000_000_000,
+                        "side": "DOWN",
+                        "price_limit": 0.75,
+                    }
+                ),
+                json.dumps(
+                    {"kind": "settled", "decision_id": "a", "resolution": "DOWN", "pnl_usd": 25.0}
+                ),
+                json.dumps(
+                    {
+                        "kind": "settled_correction",
+                        "decision_id": "a",
+                        "corrected_resolution": "UP",
+                        "corrected_pnl_usd": -75.0,
+                    }
+                ),
+                # Another Path A fire that stays settled.
+                json.dumps(
+                    {
+                        "kind": "fired",
+                        "decision_id": "b",
+                        "decision_ts_ns": 1_778_975_100_000_000_000,
+                        "side": "DOWN",
+                        "price_limit": 0.75,
+                    }
+                ),
+                json.dumps(
+                    {"kind": "settled", "decision_id": "b", "resolution": "DOWN", "pnl_usd": 25.0}
+                ),
+            ]
+        )
+    )
+    metrics = compute_path_a_metrics(
+        decisions_root=decisions_root,
+        lookback_n=30,
+        min_samples=1,
+        now_ns=1_778_976_000_000_000_000,
+    )
+    assert metrics.n_settled == 2
+    # 'a' is a loss (correction), 'b' is a win → 1/2 = 0.5 rolling WR.
+    assert metrics.rolling_wr == 0.5

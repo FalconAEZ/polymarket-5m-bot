@@ -21,6 +21,7 @@ import os.path
 import signal
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -51,6 +52,10 @@ from polymarket_bot.resolver import WINDOW_SECONDS, active_window_ts  # noqa: E4
 from polymarket_bot.strategies.deterministic import (  # noqa: E402
     DEFAULT_THRESHOLD_PCT,
     DeterministicStrategy,
+)
+from polymarket_bot.strategies.path_a_wr_metrics import (  # noqa: E402
+    PathAMetrics,
+    compute_path_a_metrics,
 )
 from polymarket_bot.strategies.protocol import Strategy  # noqa: E402
 from polymarket_bot.strategies.regime_detector import RegimeDetector  # noqa: E402
@@ -518,6 +523,59 @@ def _build_strategy(name: str) -> Strategy:
             )
         else:
             LOG.info("M.1a v1 DISABLED (REGIME_M1A_V1_ENABLED=false) — v0 shadow-log if enabled")
+        # M.5 — Path A regime-aware wrapper. DARK ship: default false.
+        # When enabled, builds a 60s-cached getter that reads decisions
+        # logs and computes (rolling_wr, mean_price) over the last N=30
+        # Path A fires. design/M.5-path-a-regime-wrapper.md.
+        v21_path_a_wr_getter: Callable[[], PathAMetrics] | None = None
+        v21_path_a_min_samples = int(_env_float("REGIME_M5_MIN_SAMPLES", 20.0) or 20)
+        v21_path_a_margin = _env_float("REGIME_M5_BREAK_EVEN_MARGIN", 0.02) or 0.02
+        if _env_bool("REGIME_M5_PATH_A_GATE_ENABLED", False):
+            v21_path_a_lookback_n = int(_env_float("REGIME_M5_LOOKBACK_N", 30.0) or 30)
+            _m5_cache: dict[str, object] = {"metrics": None, "ts_ns": 0}
+            _M5_CACHE_TTL_NS = 60_000_000_000
+
+            def _build_m5_getter() -> Callable[[], PathAMetrics]:
+                def _getter() -> PathAMetrics:
+                    now = time.time_ns()
+                    last_ts = _m5_cache["ts_ns"]
+                    assert isinstance(last_ts, int)
+                    cached = _m5_cache["metrics"]
+                    if cached is None or (now - last_ts) > _M5_CACHE_TTL_NS:
+                        try:
+                            fresh = compute_path_a_metrics(
+                                decisions_root=Path("state/decisions"),
+                                lookback_n=v21_path_a_lookback_n,
+                                min_samples=v21_path_a_min_samples,
+                                now_ns=now,
+                            )
+                        except Exception:
+                            LOG.exception("M.5: compute_path_a_metrics raised; using empty metrics")
+                            fresh = PathAMetrics(
+                                rolling_wr=None,
+                                mean_price=None,
+                                n_settled=0,
+                                n_total_in_buffer=0,
+                            )
+                        _m5_cache["metrics"] = fresh
+                        _m5_cache["ts_ns"] = now
+                        return fresh
+                    assert isinstance(cached, PathAMetrics)
+                    return cached
+
+                return _getter
+
+            v21_path_a_wr_getter = _build_m5_getter()
+            LOG.warning(
+                "M.5 ACTIVE — Path A regime gate enabled (lookback_n=%d, min_samples=%d, "
+                "margin=%.3f). tier 70-85%% x DOWN fires will be ABSTAINED when "
+                "rolling_wr < mean_price + margin. design/M.5-path-a-regime-wrapper.md.",
+                v21_path_a_lookback_n,
+                v21_path_a_min_samples,
+                v21_path_a_margin,
+            )
+        else:
+            LOG.info("M.5 DISABLED (REGIME_M5_PATH_A_GATE_ENABLED=false)")
         return SpotAwareStrategyV2_1(
             priors=load_priors(),
             bankroll_getter=lambda: 1000.0,  # placeholder; rebound in main()
@@ -532,6 +590,9 @@ def _build_strategy(name: str) -> Strategy:
             regime_detector=v21_regime_detector,
             regime_shadow_enabled=v21_regime_shadow_enabled,
             regime_abstain_labels=v21_regime_abstain,
+            path_a_wr_getter=v21_path_a_wr_getter,
+            path_a_wr_min_samples=v21_path_a_min_samples,
+            path_a_wr_break_even_margin=v21_path_a_margin,
             **v21_kwargs,
         )
     if name == "ensemble":
