@@ -130,12 +130,85 @@ as the Session 3 ship. Bot stayed LIVE on J.1.6 baseline through Session 2
 - [x] Bot still LIVE on J.1.6 baseline; zero env flips; zero src/ ships
 - [x] Vault: session note + memory checkpoint + commit + push
 
-## Session 3 — MMD shadow-ship + 5-day re-soak — PENDING
+## Session 3 — MMD shadow-ship + 5-day observation OPENED — CLOSED 2026-05-17 22:45 UTC
 
-Outcome target: chosen MMD ships to bot in SHADOW mode (rationale
-annotation only, no firing change). 5-day observation window opens.
+Outcome: MarketModeDetector + MmdBinanceKlinePoller shipped and LIVE on
+VPS in SHADOW mode. First post-restart fire (window 1779057900 = 2026-05-17
+22:45 UTC) carries the canonical annotation:
+`bankroll=790.15 fire_n=1/1 mmd=MIXED mmd_conf=0.50`. 5-day observation
+window OPENED.
 
-Trigger: operator GO after Session 2 PDF review.
+### What landed
+
+1. **Module** at `src/polymarket_bot/strategies/market_mode_detector.py`
+   (~327 LOC) per design/P.1 lock. `MarketModeDetector` (4-state rule-based
+   ADX+BB-width+momentum) + `MmdReading` (frozen dataclass) +
+   `MmdBinanceKlinePoller` (asyncio background poller, 30s interval, 60-bar
+   rolling buffer, survives individual poll failures).
+2. **Plumbing** in `src/polymarket_bot/strategies/spot_aware_v2_1.py`:
+   constructor gains `mmd_getter` / `mmd_mode` / `mmd_labels_to_abstain`.
+   `_maybe_fire` reads MMD reading; annotates rationale with
+   `mmd=<label> mmd_conf=<conf>`; in gate mode (only) abstains if label
+   ∈ abstain set AND label != UNKNOWN. `set_mmd_getter` rebinds post-construct.
+3. **Plumbing** in `scripts/run_paper.py`: `_build_strategy` reads
+   `MMD_MODE` + `MMD_LABELS_TO_ABSTAIN` from env at construction time.
+   `main()` creates the detector + poller and binds the getter when
+   `MMD_ENABLED=true`. mmd_task included in shutdown gather.
+4. **Tests**: `tests/strategies/test_market_mode_detector.py` (+29 tests:
+   init/validation/buffer/labels/poller/strategy-wire). All 667 tests green.
+5. **Deps**: `ta>=0.11.0` added to `pyproject.toml` runtime deps; `uv.lock`
+   updated. `ta` is import-fail-tolerant.
+6. **Pre-deploy gates ALL GREEN**: pytest 667 / mypy --strict 84 src files
+   clean / ruff clean / import-linter 3 contracts kept / pre-commit hooks
+   all passed.
+7. **Commit**: `fd56b61` on `claude/phase-P-hard-reset` (945 insertions(+)).
+8. **VPS deploy** (2026-05-17 22:41:25 UTC):
+   - `git pull --ff-only` to `fd56b61`
+   - `systemctl restart bot-staging.service` — systemd unit's `uv run`
+     rebuilt + installed ta==0.11.0 automatically
+   - `.envrc` backed up to `.envrc.bak.phase-P-session-3-pre-mmd`, then
+     appended `MMD_ENABLED=true MMD_MODE=shadow` (all other MMD_* defaults)
+   - MainPID=1023320 ActiveState=active SubState=running
+9. **Day-0 verification**: startup log emits canonical
+   `MMD ENABLED: lookback_min=60 poll_interval_s=30.0 adx_strong=25.0
+   adx_weak=20.0 bb_compressed_bps=30.0 momentum_bps=10.0`; first Binance
+   kline poll succeeds HTTP 200; first post-restart fire at 22:45:00 UTC
+   carries `mmd=MIXED mmd_conf=0.50`.
+10. **PDF** at `pdfs/PHASE_P_SESSION3_MMD_SHIP.pdf` (9 pp) — builder at
+    `pdfs/build_phase_p_session3_pdf.py`.
+11. **Vault**: this ledger updated, session note at
+    `state/sessions/2026-05-18-phase-P-session-3-mmd-ship.md`, memory
+    checkpoint updated.
+
+### Acceptance — all green
+
+- [x] MMD module shipped at `src/polymarket_bot/strategies/market_mode_detector.py`
+- [x] ≥ 12 new tests pass (shipped 29) + all existing tests pass + mypy + ruff + import-linter
+- [x] Bot redeployed on `claude/phase-P-hard-reset` at `fd56b61`; MMD live in SHADOW
+- [x] First post-restart fire shadow-annotated `mmd=MIXED mmd_conf=0.50`
+- [x] `pdfs/PHASE_P_SESSION3_MMD_SHIP.pdf` rendered (9 pp)
+- [x] Vault + memory + commit + push
+- [x] 5-day observation window OPEN; operator briefed on daily-review process
+
+## 5-day observation window (Day 0 = 2026-05-17 22:41 UTC)
+
+Day-1 audit gate: 2026-05-18 22:41 UTC (≥ ~24h of MMD-annotated fires).
+Day-5 audit gate: 2026-05-22 22:41 UTC (Phase Q decision opens).
+
+Rules:
+- NO env flips during the window
+- NO src/ ships during the window
+- Operator reviews dashboard daily for `mmd=` annotations + UNKNOWN-rate
+- Day-5 audit: extend `scripts/research/phase_p_mmd_backtest.py` to load
+  the new live fires; compare per-label WR/$tr to Session-2 backtest
+- Halt sentinel = the only allowed mid-window intervention
+
+## Phase Q decision matrix (Day 5)
+
+See `design/P.1-market-mode-detector-integration.md` §10 + PDF §6.2.
+Brief: MIXED WR delta ≥ 10pp → PROMOTE shadow → gate (+ reconsider M.5
+reintroduction). 5-10pp → KEEP shadow, iterate params. ≤ 5pp → SHELVE.
+UNKNOWN rate > 5% → DIAGNOSE first.
 
 ## Cross-references
 
