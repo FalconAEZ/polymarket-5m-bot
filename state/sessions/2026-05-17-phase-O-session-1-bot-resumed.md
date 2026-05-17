@@ -82,7 +82,7 @@ auto_halt_watcher started: gate=$-30.00, check=23:50 UTC, poll=30s
 
 No errors, no exceptions.
 
-## Bot state — LIVE
+## Bot state — LIVE (initial resume — pre-bankroll-reset snapshot)
 
 - HEAD `16e8f38` on `claude/jovial-hermann-7e103f`
 - bot-staging.service ACTIVE since 2026-05-17 16:25:24 UTC, MainPID 993820
@@ -91,6 +91,109 @@ No errors, no exceptions.
 - L.5 daily-PnL auto-halt active (gate=−$30, check=23:50 UTC)
 - M.5 Path-A gate active
 - O.1 SURV canary active (will WARN-log on first trip)
+
+## Mid-session pivots — bankroll reset + L.5 scaling + M.5 lookback
+
+After the initial resume above, operator made several further changes
+in the same session:
+
+### Bankroll reset to $3,000 (decision #10 override) — 16:32Z
+
+Operator directive: "reset bankroll to 3,000$ go".
+
+- `.envrc`: `PMB_STARTING_BANKROLL=1000` → `3000`,
+  `BANKROLL_REPLAY_ENABLED=true` → `false`
+- Strict-reset semantics: bot now reads $3,000 directly, ignores JSONL
+  replay for bankroll computation (M.5 + SURV canary still read JSONL
+  for their rolling state).
+- Backup at `.envrc.bak.bankroll-reset-2026-05-17` on VPS.
+- Restart: bot-staging.service MainPID 995787 from 16:32:40Z.
+- Locked decision #10 ($1,000 paper bankroll) is now OVERRIDDEN. See
+  `memory/project_bankroll_reset_2026_05_17.md`.
+- Risk implication flagged to operator: Kelly 0.15× of $3k → bet sizes
+  ~$135-$450/fire (3-3.8× larger than at $1k). L.5 at −$30 → single
+  losing fire blows the gate.
+
+### L.5 scaling: −$30 → −$90 — 16:34Z
+
+Operator directive: "yes scale L.5".
+
+- `.envrc`: `DAILY_PNL_GATE_USD=-30.0` → `-90.0` (3× scaling preserves
+  the original 3%-of-bankroll posture).
+- Restart: MainPID 996239 from 16:34:04Z.
+- Trade-off documented: L.5 still trips tonight at 23:50Z because
+  today's pre-halt PnL of −$354.91 is locked in the JSONL and far
+  exceeds the new −$90 gate.
+
+### Dashboard env passthrough fix — 16:51Z (commit `98940b1`)
+
+Discovered the dashboard hero row showed `$785.74` (JSONL replay
+from $1k anchor) while the bot ran at `$3,000`. Operator-visible
+divergence. Fixed:
+
+- `src/polymarket_bot/dashboard/bankroll.py::load_bankroll`: add
+  `replay_enabled` kwarg; when False, `current = starting`.
+- `src/polymarket_bot/dashboard_server/state.py`: read
+  `PMB_STARTING_BANKROLL` + `BANKROLL_REPLAY_ENABLED` from env with
+  defaults that preserve historical $1k/replay-on behavior.
+- VPS systemd drop-in
+  `/etc/systemd/system/dashboard-server.service.d/bankroll.conf` adds
+  `Environment=PMB_STARTING_BANKROLL=3000` +
+  `Environment=BANKROLL_REPLAY_ENABLED=false`.
+- Commit `98940b1`. 697 tests + mypy strict + ruff all green.
+- Verified post-deploy: `/api/state` reports
+  `bankroll.starting_usd=$3,000`, `current_usd=$3,000`, `delta=$0`.
+
+### M.5 lookback tuning: 30 → 15 — 17:00Z
+
+Operator directive after my "stuck-state" pushback. Recent Path-A WR
+on last 15 fires was 66.7% (vs 53.3% on last 30) — recent regime is
+improving, faster lookback responds to it.
+
+- `.envrc`: `REGIME_M5_LOOKBACK_N=30` → `15`,
+  `REGIME_M5_MIN_SAMPLES=20` → `10` (2/3 ratio preserved).
+- Restart: MainPID 1002001 from 17:00:22Z.
+- M.5 + SURV canary now share identical lookback shape
+  (15-fire / 10-sample). At restart the gate still abstained
+  (rolling 66.7% < threshold 75.5%) but the gap narrowed to 8.8pp.
+
+## Post-restart observation (17:00Z → 19:33Z, ~2.5h)
+
+| metric | value |
+|---|---|
+| New fires | **1** |
+| Expected at ~4.5/hr | ~11 (M.5 closes Path A → 30% suppression baseline) |
+| Effective rate | ~0.4/hr (signal-quiet stretch dominated) |
+| 17:39:36Z fire | tier 30-50% × DOWN @ $0.45, bet $163.64, kelly_f=0.364, p_win=0.65, ev=+0.195 |
+| Settle outcome | resolution=UP (LOSS), pnl=−$163.67 |
+| settled_correction | applied at 17:46Z (chainlink-vs-polymarket reconciliation) |
+| Today PnL change | −$354.91 → −$518.58 |
+| Streak | ▼ 4 |
+
+Net Session-1 picture at 19:33Z observation:
+- M.5 has held Path A closed (zero new tier 70-85% fires)
+- SURV canary stayed open — did not block the 17:39Z tier-30-50% fire
+  (canary rolling WR was above threshold at fire-time)
+- L.5 trip at 23:50Z UTC is locked in (today PnL −$518.58 ≪ −$90 gate)
+- Bot will auto-resume tomorrow morning via the `l5_auto_resume.sh`
+  cron at 23:53Z UTC (sentinel reason will be `auto-halt-daily-pnl`,
+  not `operator-cooldown` → cron condition passes)
+
+## Bot state — LIVE (final Session 1 snapshot @ 19:33Z)
+
+- HEAD `16e8f38` (code) + `d3ed2a8` (vault docs) + `98940b1` (dashboard fix)
+- bot-staging.service ACTIVE since 17:00:22Z, MainPID 1002001
+- bankroll $3,000.00 anchor, replay=false
+- today PnL −$518.58 (will trigger L.5 at 23:50Z)
+- M.5 Path-A gate active (lookback=15, min=10, margin=0.02)
+- O.1 SURV canary active (lookback=15, min=10, margin=−0.01)
+- M.1a v0 shadow active; M.1a v1 DISABLED
+- M.2 v0 shadow active
+- L.5 daily-PnL auto-halt active (gate=−$90, check=23:50Z UTC)
+- J.2 hour-blocklist active (22, 23, 0 UTC × tier 70-85%)
+- H.2.12 block_up active (tier 70-85% × UP fires rejected)
+- Kelly 0.15× + multi-fire cap=1
+- Phase J.1.5 CH3 fold preserved (tier_relax_p_win_fallback=0.0)
 
 ## What we did NOT ship this session (deferred to Session 2)
 
@@ -114,7 +217,26 @@ No errors, no exceptions.
 That trip is INTENDED (it's the daily reset point) — operator clears
 sentinel on 2026-05-18 to start fresh.
 
-## Files written this session
+## Files written / commits this session
 
-- All 16 files committed in `16e8f38`
-- `state/sessions/2026-05-17-phase-O-session-1-bot-resumed.md` (this file)
+- `16e8f38` — Phase N forensic PDF + O.1 SURV canary impl + tests + backtest
+- `d3ed2a8` — Phase O vault docs (initial session note + ledger)
+- `98940b1` — dashboard bankroll env-honoring fix
+- (this file extended in-place with mid-session pivots)
+
+## Open items for Session 2 (next UTC day)
+
+1. J.2 hour-blocklist EXTENSION to tier 30-50% bleed-hours
+   {05, 06, 17, 21, 23, 00} UTC. Requires per-tier-hour env-flag
+   redesign (current cross-product would block winner cell hour 22 ×
+   tier 30-50%).
+2. SURV canary observability — operator asked about a "decisions tape"
+   showing every window evaluation including abstains/no-signal. Not
+   shipped this session. Would need: bot writes `abstained` records to
+   JSONL, dashboard loader + tape renders kind="abstained". ~1h work
+   (backend) plus React frontend changes.
+3. Day-1 re-soak observation (2026-05-18 UTC) — see
+   `2026-05-18-phase-O-session-2-prep.md`.
+4. N.5 regime classifier validity test (deferred from Phase N PDF §6).
+5. (Conditional) Kelly demotion or further M.5 / SURV canary tuning
+   based on Day-1 + Day-2 data.
