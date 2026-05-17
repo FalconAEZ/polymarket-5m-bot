@@ -496,6 +496,28 @@ def _build_strategy(name: str) -> Strategy:
             )
         else:
             LOG.info("M.1a v0 shadow DISABLED (REGIME_CLASSIFIER_V2_SHADOW_ENABLED=false)")
+        # M.1a v1 — ACTIVE abstain. Requires _SHADOW_ENABLED=true. CSV of
+        # regime labels to abstain on. design/M.1a-v1-active-abstain.md.
+        v21_regime_v1_enabled = _env_bool("REGIME_M1A_V1_ENABLED", False)
+        v21_regime_abstain: frozenset[str] = frozenset()
+        if v21_regime_v1_enabled:
+            if not v21_regime_shadow_enabled:
+                raise SystemExit(
+                    "REGIME_M1A_V1_ENABLED=true requires REGIME_CLASSIFIER_V2_SHADOW_ENABLED=true. "
+                    "Refusing to start — fix .envrc and retry."
+                )
+            v21_regime_abstain_csv = os.environ.get("REGIME_M1A_ABSTAIN_LABELS", "chop,unknown")
+            v21_regime_abstain = frozenset(
+                label.strip() for label in v21_regime_abstain_csv.split(",") if label.strip()
+            )
+            LOG.warning(
+                "M.1a v1 ACTIVE — abstain labels=%s. Fires with classifier label in this set "
+                "will be REJECTED (return None). 5-day audit (n=52) predicted +$71 uplift vs "
+                "baseline. See design/M.1a-v1-active-abstain.md.",
+                sorted(v21_regime_abstain),
+            )
+        else:
+            LOG.info("M.1a v1 DISABLED (REGIME_M1A_V1_ENABLED=false) — v0 shadow-log if enabled")
         return SpotAwareStrategyV2_1(
             priors=load_priors(),
             bankroll_getter=lambda: 1000.0,  # placeholder; rebound in main()
@@ -509,6 +531,7 @@ def _build_strategy(name: str) -> Strategy:
             hour_blocklist_tiers=hour_blocklist_tiers,
             regime_detector=v21_regime_detector,
             regime_shadow_enabled=v21_regime_shadow_enabled,
+            regime_abstain_labels=v21_regime_abstain,
             **v21_kwargs,
         )
     if name == "ensemble":

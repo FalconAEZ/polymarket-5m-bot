@@ -885,3 +885,107 @@ async def test_m1a_real_regime_detector_unknown_at_cold_start() -> None:
     decision = await _drive_simple_window(strat, open_spot=80_000.0, end_spot=80_080.0, ask_up=0.40)
     assert decision is not None
     assert decision.rationale.endswith(" regime=unknown")
+
+
+# ---------- M.1a v1 (ACTIVE abstain) ----------
+# design/M.1a-v1-active-abstain.md §4.
+
+
+async def test_m1a_v1_chop_abstain_returns_none() -> None:
+    """v1 — abstain set {'chop'} + detector returns 'chop' → fire is None."""
+    strat = SpotAwareStrategyV2_1(
+        priors=_StubPriors(p_win=0.55),
+        bankroll_getter=_bankroll(1000.0),
+        regime_detector=_FakeRegimeDetector("chop"),  # type: ignore[arg-type]
+        regime_shadow_enabled=True,
+        regime_abstain_labels=frozenset({"chop"}),
+    )
+    decision = await _drive_simple_window(strat, open_spot=80_000.0, end_spot=80_080.0, ask_up=0.40)
+    assert decision is None, "chop label in abstain set must reject the fire"
+
+
+async def test_m1a_v1_mixed_passes_through_with_annotation() -> None:
+    """v1 — abstain set {'chop'} + detector returns 'mixed' → Decision fires + annotated."""
+    strat = SpotAwareStrategyV2_1(
+        priors=_StubPriors(p_win=0.55),
+        bankroll_getter=_bankroll(1000.0),
+        regime_detector=_FakeRegimeDetector("mixed"),  # type: ignore[arg-type]
+        regime_shadow_enabled=True,
+        regime_abstain_labels=frozenset({"chop"}),
+    )
+    decision = await _drive_simple_window(strat, open_spot=80_000.0, end_spot=80_080.0, ask_up=0.40)
+    assert decision is not None
+    assert decision.rationale.endswith(" regime=mixed")
+
+
+async def test_m1a_v1_trending_passes_through_with_annotation() -> None:
+    """v1 — abstain set {'chop','unknown'} + detector returns 'trending' → fires + annotated."""
+    strat = SpotAwareStrategyV2_1(
+        priors=_StubPriors(p_win=0.55),
+        bankroll_getter=_bankroll(1000.0),
+        regime_detector=_FakeRegimeDetector("trending"),  # type: ignore[arg-type]
+        regime_shadow_enabled=True,
+        regime_abstain_labels=frozenset({"chop", "unknown"}),
+    )
+    decision = await _drive_simple_window(strat, open_spot=80_000.0, end_spot=80_080.0, ask_up=0.40)
+    assert decision is not None
+    assert decision.rationale.endswith(" regime=trending")
+
+
+async def test_m1a_v1_unknown_abstain_at_cold_start() -> None:
+    """v1 — abstain set {'chop','unknown'} + real RegimeDetector (cold) → returns None."""
+    from polymarket_bot.strategies.regime_detector import RegimeDetector
+
+    strat = SpotAwareStrategyV2_1(
+        priors=_StubPriors(p_win=0.55),
+        bankroll_getter=_bankroll(1000.0),
+        regime_detector=RegimeDetector(min_samples=10),
+        regime_shadow_enabled=True,
+        regime_abstain_labels=frozenset({"chop", "unknown"}),
+    )
+    # _drive_simple_window feeds 2 ticks → detector unknown → abstain.
+    decision = await _drive_simple_window(strat, open_spot=80_000.0, end_spot=80_080.0, ask_up=0.40)
+    assert decision is None, "cold-start unknown must abstain when 'unknown' is in abstain set"
+
+
+async def test_m1a_v1_empty_abstain_set_behaves_as_v0() -> None:
+    """v1 — empty abstain set + shadow=True → byte-identical to v0 (every fire passes)."""
+    strat_v0 = SpotAwareStrategyV2_1(
+        priors=_StubPriors(p_win=0.55),
+        bankroll_getter=_bankroll(1000.0),
+        regime_detector=_FakeRegimeDetector("chop"),  # type: ignore[arg-type]
+        regime_shadow_enabled=True,
+    )
+    strat_v1_empty = SpotAwareStrategyV2_1(
+        priors=_StubPriors(p_win=0.55),
+        bankroll_getter=_bankroll(1000.0),
+        regime_detector=_FakeRegimeDetector("chop"),  # type: ignore[arg-type]
+        regime_shadow_enabled=True,
+        regime_abstain_labels=frozenset(),
+    )
+    d_v0 = await _drive_simple_window(strat_v0, open_spot=80_000.0, end_spot=80_080.0, ask_up=0.40)
+    d_v1 = await _drive_simple_window(
+        strat_v1_empty, open_spot=80_000.0, end_spot=80_080.0, ask_up=0.40
+    )
+    assert d_v0 is not None
+    assert d_v1 is not None
+    assert d_v0.rationale == d_v1.rationale
+    assert d_v0.size_usd == d_v1.size_usd
+
+
+async def test_m1a_v1_abstain_does_not_burn_multi_fire_slot() -> None:
+    """v1 — abstained chop fire must NOT consume a multi-fire slot.
+    Fires counter stays at 0 after abstain; the strategy is free to fire
+    again in the same window if a later tick yields a non-abstain label."""
+    strat = SpotAwareStrategyV2_1(
+        priors=_StubPriors(p_win=0.55),
+        bankroll_getter=_bankroll(1000.0),
+        regime_detector=_FakeRegimeDetector("chop"),  # type: ignore[arg-type]
+        regime_shadow_enabled=True,
+        regime_abstain_labels=frozenset({"chop"}),
+        multi_fire_cap=2,
+    )
+    decision = await _drive_simple_window(strat, open_spot=80_000.0, end_spot=80_080.0, ask_up=0.40)
+    assert decision is None
+    # internal multi-fire counter should still read 0 (the abstain didn't burn a slot)
+    assert strat._fires_this_window == 0

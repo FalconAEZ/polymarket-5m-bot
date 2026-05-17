@@ -247,6 +247,11 @@ class SpotAwareStrategyV2_1(SpotAwareStrategyV2):
         # behavior is UNCHANGED. design/M.1a-flat-vs-trend-shadow-log.md.
         regime_detector: RegimeDetector | None = None,
         regime_shadow_enabled: bool = False,
+        # M.1a v1 — ACTIVE abstain. When non-empty AND shadow is enabled,
+        # fires where the classifier returns a label in this set are
+        # ABSTAINED (return None). Default empty = v0 behavior preserved.
+        # design/M.1a-v1-active-abstain.md.
+        regime_abstain_labels: frozenset[str] | None = None,
         **v2_kwargs: object,
     ) -> None:
         super().__init__(priors=priors, **v2_kwargs)  # type: ignore[arg-type]
@@ -288,6 +293,10 @@ class SpotAwareStrategyV2_1(SpotAwareStrategyV2):
         # without detector is a no-op rather than a crash).
         self._regime_detector = regime_detector
         self._regime_shadow_enabled = regime_shadow_enabled
+        # M.1a v1 — abstain set (empty = v0 behavior).
+        self._regime_abstain_labels: frozenset[str] = (
+            frozenset(regime_abstain_labels) if regime_abstain_labels is not None else frozenset()
+        )
         self._fires_this_window: int = 0
 
     @property
@@ -458,16 +467,25 @@ class SpotAwareStrategyV2_1(SpotAwareStrategyV2):
             fire_n=self._fires_this_window,
             cap=self._multi_fire_cap,
         )
-        # M.1a v0 — SHADOW LOG: annotate rationale with regime label. Never
-        # alters the fire decision itself; this is observability only. The
-        # detector is fed in `on_event` below; here we just classify with
-        # the current ts.
+        # M.1a v0 — SHADOW LOG: annotate rationale with regime label.
+        # M.1a v1 — ACTIVE: if label is in `_regime_abstain_labels`, abstain
+        # (return None + reset per-window fire-flag so a later tick can
+        # re-evaluate when the regime shifts). v0 behavior preserved when
+        # abstain set is empty.
         if self._regime_shadow_enabled:
             regime_label = (
                 self._regime_detector.classify(now_ts_utc_ns)
                 if self._regime_detector is not None
                 else "shadow_off"
             )
+            if regime_label in self._regime_abstain_labels:
+                # CH4-style abstain reset (mirrors v3's regime-gate pattern):
+                # let the next qualifying tick in this window re-evaluate.
+                self._fired_for_window = None
+                # Decrement the multi-fire counter we just ticked so the
+                # abstain doesn't burn a slot.
+                self._fires_this_window -= 1
+                return None
             new_rationale = f"{new_rationale} regime={regime_label}"
         if self._fires_this_window < self._multi_fire_cap:
             self._fired_for_window = None
