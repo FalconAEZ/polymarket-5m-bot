@@ -240,6 +240,17 @@ class SpotAwareStrategyV2_1(SpotAwareStrategyV2):
         tier_relax_price_floor: float = DEFAULT_TIER_RELAX_PRICE_FLOOR,
         hour_blocklist_utc: tuple[int, ...] = DEFAULT_HOUR_BLOCKLIST_UTC,
         hour_blocklist_tiers: tuple[str, ...] = DEFAULT_HOUR_BLOCKLIST_TIERS,
+        # Phase P Session 3 — Market Mode Detector (MMD) wiring.
+        # design/P.1-market-mode-detector-integration.md. When mmd_getter
+        # is set, every fire decision gains `mmd=<label> mmd_conf=<conf>`
+        # in the rationale. If mmd_mode=="gate" AND the label is in
+        # mmd_labels_to_abstain (and not "UNKNOWN" — UNKNOWN is always
+        # pass-through), the fire is dropped. Session 3 ships SHADOW
+        # only — operator promotes shadow→gate at Phase Q after Day-5
+        # re-soak data.
+        mmd_getter: Callable[[], object] | None = None,
+        mmd_mode: str = "shadow",
+        mmd_labels_to_abstain: tuple[str, ...] = (),
         **v2_kwargs: object,
     ) -> None:
         super().__init__(priors=priors, **v2_kwargs)  # type: ignore[arg-type]
@@ -266,6 +277,8 @@ class SpotAwareStrategyV2_1(SpotAwareStrategyV2):
                 "is non-empty (no-tier-scope = block-all is not supported; "
                 "set both to empty tuples to disable)"
             )
+        if mmd_mode not in ("shadow", "gate"):
+            raise ValueError(f"mmd_mode must be one of 'shadow'|'gate'; got {mmd_mode!r}")
         self._bankroll_getter = bankroll_getter
         self._kelly = kelly if kelly is not None else KellyConfig()
         self._multi_fire_cap = multi_fire_cap
@@ -277,6 +290,9 @@ class SpotAwareStrategyV2_1(SpotAwareStrategyV2):
         self._tier_relax_price_floor = tier_relax_price_floor
         self._hour_blocklist_utc = frozenset(hour_blocklist_utc)
         self._hour_blocklist_tiers = frozenset(hour_blocklist_tiers)
+        self._mmd_getter = mmd_getter
+        self._mmd_mode = mmd_mode
+        self._mmd_labels_to_abstain = frozenset(mmd_labels_to_abstain)
         self._fires_this_window: int = 0
 
     @property
@@ -298,6 +314,15 @@ class SpotAwareStrategyV2_1(SpotAwareStrategyV2):
         dispatch doesn't reach into ``_bankroll_getter`` directly.
         """
         self._bankroll_getter = getter
+
+    def set_mmd_getter(self, getter: Callable[[], object] | None) -> None:
+        """Rebind the MMD-getter callback after construction (Phase P S3).
+
+        The MMD's poller task is created in ``main()`` after the strategy
+        already exists. Public so run_paper.py can wire the live getter
+        without reaching into ``_mmd_getter`` directly.
+        """
+        self._mmd_getter = getter
 
     def reset(self) -> None:
         super().reset()
@@ -435,6 +460,35 @@ class SpotAwareStrategyV2_1(SpotAwareStrategyV2):
             self._fired_for_window = None
             return None
 
+        # Phase P Session 3 — MMD annotation + (optional) gate. Read the
+        # current MMD label, append `mmd=<label> mmd_conf=<conf>` to the
+        # rationale, and (in gate mode only) abstain if the label is in
+        # the operator-configured abstain set. UNKNOWN is ALWAYS pass-
+        # through (no abstain), even in gate mode — that's the
+        # design §6 failure-mode contract: a degraded MMD never blocks
+        # firing. Any exception in the getter is treated as UNKNOWN.
+        mmd_label = "UNKNOWN"
+        mmd_conf = 0.0
+        if self._mmd_getter is not None:
+            try:
+                reading = self._mmd_getter()
+                # Duck-typed — strategy doesn't import MmdReading to keep
+                # the dependency one-way (strategies → typing only).
+                mmd_label = str(getattr(reading, "label", "UNKNOWN")) or "UNKNOWN"
+                mmd_conf = float(getattr(reading, "confidence", 0.0))
+            except Exception:
+                mmd_label = "UNKNOWN"
+                mmd_conf = 0.0
+            if (
+                self._mmd_mode == "gate"
+                and mmd_label != "UNKNOWN"
+                and mmd_label in self._mmd_labels_to_abstain
+            ):
+                # Reset per-window flag so a later tick in the same window
+                # can re-evaluate. Do not tick the multi-fire counter.
+                self._fired_for_window = None
+                return None
+
         # Successful fire. Build the v2.1 rationale, tick the counter,
         # and clear `_fired_for_window` if there's still cap headroom
         # so the next qualifying tick in this same window can also fire.
@@ -447,6 +501,12 @@ class SpotAwareStrategyV2_1(SpotAwareStrategyV2):
             fire_n=self._fires_this_window,
             cap=self._multi_fire_cap,
         )
+        # Append MMD annotation when the getter is wired (any label,
+        # incl. UNKNOWN — Phase N audit needs to bucket fires by
+        # "MMD-available" vs "MMD-unavailable" to compute the
+        # promote-to-gate counterfactual).
+        if self._mmd_getter is not None:
+            new_rationale = f"{new_rationale} mmd={mmd_label} mmd_conf={mmd_conf:.2f}"
         if self._fires_this_window < self._multi_fire_cap:
             self._fired_for_window = None
         return dc_replace(base_decision, size_usd=bet, rationale=new_rationale)

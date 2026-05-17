@@ -16,6 +16,7 @@ dependencies = [
     "pyarrow>=24.0.0",
     "pydantic>=2.13.3",
     "redis>=5.0.0",
+    "ta>=0.11.0",
     "uvicorn>=0.30.0",
     "websockets>=16.0",
 ]

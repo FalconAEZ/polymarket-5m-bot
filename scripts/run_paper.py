@@ -455,12 +455,22 @@ def _build_strategy(name: str) -> Strategy:
                 )
                 hour_blocklist_utc = ()
         hour_blocklist_tiers = _env_csv("SPOT_AWARE_HOUR_BLOCKLIST_TIERS")
+        # Phase P Session 3 — MMD gate-config env read. The MMD getter
+        # itself is bound in main() (after the poller exists); here we
+        # only validate the operator-facing mode + abstain set so any
+        # config error fails loud at startup, not at first fire.
+        mmd_mode_env = (os.environ.get("MMD_MODE", "shadow") or "shadow").strip().lower()
+        if mmd_mode_env not in ("shadow", "gate"):
+            LOG.warning("MMD_MODE=%r invalid; falling back to 'shadow'", mmd_mode_env)
+            mmd_mode_env = "shadow"
+        mmd_labels_to_abstain = _env_csv("MMD_LABELS_TO_ABSTAIN")
         LOG.warning(
             "spot_aware_v2_1: kelly_mult=%.2f max_bet_abs=$%.0f "
             "multi_fire_cap=%d tier_relax_p_win_fallback=%s "
             "tier_relax_price_floor=%.3f "
             "block_up_in_tiers=%s block_down_in_tiers=%s "
             "hour_blocklist_utc=%s hour_blocklist_tiers=%s "
+            "mmd_mode=%s mmd_labels_to_abstain=%s "
             "overrides=%s",
             kelly_mult,
             kelly_max_bet_abs,
@@ -471,6 +481,8 @@ def _build_strategy(name: str) -> Strategy:
             block_down,
             hour_blocklist_utc,
             hour_blocklist_tiers,
+            mmd_mode_env,
+            mmd_labels_to_abstain,
             v21_kwargs,
         )
         return SpotAwareStrategyV2_1(
@@ -484,6 +496,8 @@ def _build_strategy(name: str) -> Strategy:
             tier_relax_price_floor=price_floor_val,
             hour_blocklist_utc=hour_blocklist_utc,
             hour_blocklist_tiers=hour_blocklist_tiers,
+            mmd_mode=mmd_mode_env,
+            mmd_labels_to_abstain=mmd_labels_to_abstain,
             **v21_kwargs,
         )
     if name == "ensemble":
@@ -894,12 +908,62 @@ async def main() -> int:
     runner_task = asyncio.create_task(runner.run(stop=stop_event), name="paper-runner")
     halt_task = asyncio.create_task(_halt_watcher(stop_event), name="halt-watcher")
 
+    # Phase P Session 3 — Market Mode Detector (MMD) poller. Strategy's
+    # mmd_mode + mmd_labels_to_abstain were read by _build_strategy from
+    # MMD_MODE / MMD_LABELS_TO_ABSTAIN env vars. Here we only create the
+    # Binance kline poller + bind the getter on the strategy when
+    # MMD_ENABLED=true. Default DISABLED — operator flips after deploy +
+    # 5-day re-soak. design/P.1-market-mode-detector-integration.md.
+    mmd_task: asyncio.Task[None] | None = None
+    if is_v2_1 and _env_bool("MMD_ENABLED", False):
+        try:
+            from polymarket_bot.strategies.market_mode_detector import (
+                MarketModeDetector,
+                MmdBinanceKlinePoller,
+            )
+
+            mmd_lookback_s = int(_env_float("MMD_LOOKBACK_S", 3600.0) or 3600.0)
+            mmd_lookback_min = max(30, mmd_lookback_s // 60)
+            mmd_poll_interval_s = _env_float("MMD_POLL_INTERVAL_S", 30.0) or 30.0
+            adx_strong = _env_float("MMD_ADX_STRONG_THRESHOLD", 25.0) or 25.0
+            adx_weak = _env_float("MMD_ADX_WEAK_THRESHOLD", 20.0) or 20.0
+            bb_compressed_bps = _env_float("MMD_BB_COMPRESSED_BPS", 30.0) or 30.0
+            momentum_bps = _env_float("MMD_MOMENTUM_THRESHOLD_BPS", 10.0) or 10.0
+            mmd = MarketModeDetector(
+                lookback_min=int(mmd_lookback_min),
+                adx_strong_threshold=adx_strong,
+                adx_weak_threshold=adx_weak,
+                bb_compressed_bps=bb_compressed_bps,
+                momentum_threshold_bps=momentum_bps,
+            )
+            poller = MmdBinanceKlinePoller(mmd, poll_interval_s=mmd_poll_interval_s)
+            assert isinstance(strategy, _V2_1)
+            strategy.set_mmd_getter(mmd.latest)
+            mmd_task = asyncio.create_task(poller.run(stop=stop_event), name="mmd-binance-poller")
+            LOG.info(
+                "MMD ENABLED: lookback_min=%d poll_interval_s=%.1f "
+                "adx_strong=%.1f adx_weak=%.1f bb_compressed_bps=%.1f "
+                "momentum_bps=%.1f",
+                int(mmd_lookback_min),
+                mmd_poll_interval_s,
+                adx_strong,
+                adx_weak,
+                bb_compressed_bps,
+                momentum_bps,
+            )
+        except Exception:
+            LOG.exception("MMD wiring failed at startup; running without MMD")
+            mmd_task = None
+
     LOG.info("paper-mode runtime up; waiting for SIGTERM/SIGINT or halt sentinel")
     try:
         await stop_event.wait()
         LOG.info("shutdown signal received")
         runner.stop()
-        await asyncio.gather(runner_task, warmer_task, halt_task, return_exceptions=True)
+        tasks_to_wait: list[asyncio.Task[object]] = [runner_task, warmer_task, halt_task]
+        if mmd_task is not None:
+            tasks_to_wait.append(mmd_task)
+        await asyncio.gather(*tasks_to_wait, return_exceptions=True)
     finally:
         # Always close the gamma httpx.Client to avoid FD leaks across
         # restarts -- audit 2026-05-10 found this as a CRITICAL deploy-blocker.
