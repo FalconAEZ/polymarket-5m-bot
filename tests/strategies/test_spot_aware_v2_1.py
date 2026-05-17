@@ -1270,3 +1270,130 @@ def test_compute_path_a_metrics_applies_corrections(tmp_path):
     assert metrics.n_settled == 2
     # 'a' is a loss (correction), 'b' is a win → 1/2 = 0.5 rolling WR.
     assert metrics.rolling_wr == 0.5
+
+
+# ---------- M.2 v0 (orderbook imbalance shadow-log) ----------
+# design/M.2-orderbook-imbalance-shadow.md §6.
+
+
+from polymarket_bot.strategies.spot_aware_v2_1 import _compute_imbalance_label  # noqa: E402
+
+
+def _book_with_sizes(
+    side: str,
+    asset_id: str,
+    *,
+    ask: float,
+    bid_size: float,
+    ask_size: float,
+    best_bid: float | None = None,
+    ts_offset_s: int = 30,
+) -> BookUpdate:
+    return BookUpdate(
+        ts_utc_ns=WINDOW_OPEN_NS + ts_offset_s * 1_000_000_000,
+        asset_id=asset_id,
+        side=side,  # type: ignore[arg-type]
+        best_bid=best_bid if best_bid is not None else max(0.01, ask - 0.02),
+        best_ask=ask,
+        bid_size_top=bid_size,
+        ask_size_top=ask_size,
+    )
+
+
+def test_m2_compute_imbalance_no_book() -> None:
+    assert _compute_imbalance_label(None, threshold=2.0, min_top_size_usd=50.0) == "no_book"
+
+
+def test_m2_compute_imbalance_too_thin() -> None:
+    book = _book_with_sizes("UP", TOKEN_UP, ask=0.40, bid_size=10.0, ask_size=10.0)
+    assert _compute_imbalance_label(book, threshold=2.0, min_top_size_usd=50.0) == "too_thin"
+
+
+def test_m2_compute_imbalance_no_ask() -> None:
+    book = _book_with_sizes("UP", TOKEN_UP, ask=0.40, bid_size=500.0, ask_size=0.0)
+    assert _compute_imbalance_label(book, threshold=2.0, min_top_size_usd=50.0) == "no_ask"
+
+
+def test_m2_compute_imbalance_bullish() -> None:
+    book = _book_with_sizes("UP", TOKEN_UP, ask=0.40, bid_size=300.0, ask_size=100.0)
+    assert _compute_imbalance_label(book, threshold=2.0, min_top_size_usd=50.0) == "bullish"
+
+
+def test_m2_compute_imbalance_bearish() -> None:
+    book = _book_with_sizes("UP", TOKEN_UP, ask=0.40, bid_size=100.0, ask_size=300.0)
+    assert _compute_imbalance_label(book, threshold=2.0, min_top_size_usd=50.0) == "bearish"
+
+
+def test_m2_compute_imbalance_balanced() -> None:
+    book = _book_with_sizes("UP", TOKEN_UP, ask=0.40, bid_size=120.0, ask_size=100.0)
+    assert _compute_imbalance_label(book, threshold=2.0, min_top_size_usd=50.0) == "balanced"
+
+
+async def test_m2_shadow_disabled_no_imbalance_in_rationale() -> None:
+    strat = SpotAwareStrategyV2_1(priors=_StubPriors(p_win=0.55), bankroll_getter=_bankroll(1000.0))
+    decision = await _drive_simple_window(strat, open_spot=80_000.0, end_spot=80_080.0, ask_up=0.40)
+    assert decision is not None
+    assert " imbalance=" not in decision.rationale
+
+
+async def test_m2_shadow_annotates_bullish() -> None:
+    strat = SpotAwareStrategyV2_1(
+        priors=_StubPriors(p_win=0.55),
+        bankroll_getter=_bankroll(1000.0),
+        imbalance_shadow_enabled=True,
+        imbalance_threshold=2.0,
+    )
+    await strat.on_event(_open())
+    await strat.on_event(_spot(80_000.0, ts_offset_s=1))
+    await strat.on_event(
+        _book_with_sizes("UP", TOKEN_UP, ask=0.40, bid_size=400.0, ask_size=100.0, ts_offset_s=2)
+    )
+    await strat.on_event(
+        _book_with_sizes(
+            "DOWN", TOKEN_DOWN, ask=0.62, bid_size=100.0, ask_size=100.0, ts_offset_s=2
+        )
+    )
+    decision = await strat.on_event(_spot(80_080.0, ts_offset_s=30))
+    assert decision is not None
+    assert "imbalance=bullish" in decision.rationale
+
+
+async def test_m2_shadow_annotates_bearish() -> None:
+    strat = SpotAwareStrategyV2_1(
+        priors=_StubPriors(p_win=0.55),
+        bankroll_getter=_bankroll(1000.0),
+        imbalance_shadow_enabled=True,
+        imbalance_threshold=2.0,
+    )
+    await strat.on_event(_open())
+    await strat.on_event(_spot(80_000.0, ts_offset_s=1))
+    await strat.on_event(
+        _book_with_sizes("UP", TOKEN_UP, ask=0.40, bid_size=100.0, ask_size=400.0, ts_offset_s=2)
+    )
+    await strat.on_event(
+        _book_with_sizes(
+            "DOWN", TOKEN_DOWN, ask=0.62, bid_size=100.0, ask_size=100.0, ts_offset_s=2
+        )
+    )
+    decision = await strat.on_event(_spot(80_080.0, ts_offset_s=30))
+    assert decision is not None
+    assert "imbalance=bearish" in decision.rationale
+
+
+async def test_m2_shadow_does_not_change_fire_decision() -> None:
+    """v0 contract — fire size_usd identical with shadow on/off; only rationale differs."""
+    base = SpotAwareStrategyV2_1(priors=_StubPriors(p_win=0.55), bankroll_getter=_bankroll(1000.0))
+    shadow = SpotAwareStrategyV2_1(
+        priors=_StubPriors(p_win=0.55),
+        bankroll_getter=_bankroll(1000.0),
+        imbalance_shadow_enabled=True,
+    )
+    base_dec = await _drive_simple_window(base, open_spot=80_000.0, end_spot=80_080.0, ask_up=0.40)
+    shadow_dec = await _drive_simple_window(
+        shadow, open_spot=80_000.0, end_spot=80_080.0, ask_up=0.40
+    )
+    assert base_dec is not None
+    assert shadow_dec is not None
+    assert base_dec.size_usd == shadow_dec.size_usd
+    assert shadow_dec.rationale.startswith(base_dec.rationale)
+    assert "imbalance=" in shadow_dec.rationale

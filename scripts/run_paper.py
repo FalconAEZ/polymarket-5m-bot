@@ -576,6 +576,21 @@ def _build_strategy(name: str) -> Strategy:
             )
         else:
             LOG.info("M.5 DISABLED (REGIME_M5_PATH_A_GATE_ENABLED=false)")
+        # M.2 v0 — orderbook imbalance shadow log. DARK ship; default off.
+        # design/M.2-orderbook-imbalance-shadow.md.
+        v21_imbalance_shadow = _env_bool("ORDERBOOK_IMBALANCE_SHADOW_ENABLED", False)
+        v21_imbalance_threshold = _env_float("ORDERBOOK_IMBALANCE_THRESHOLD", 2.0) or 2.0
+        v21_imbalance_min_top_size_usd = _env_float("ORDERBOOK_MIN_TOP_SIZE_USD", 50.0) or 50.0
+        if v21_imbalance_shadow:
+            LOG.warning(
+                "M.2 v0 ACTIVE (shadow) — orderbook imbalance annotation enabled "
+                "(threshold=%.2f, min_top_size_usd=%.0f). Fires gain "
+                "imbalance=<bullish|bearish|balanced|too_thin|no_ask|no_book>.",
+                v21_imbalance_threshold,
+                v21_imbalance_min_top_size_usd,
+            )
+        else:
+            LOG.info("M.2 v0 DISABLED (ORDERBOOK_IMBALANCE_SHADOW_ENABLED=false)")
         return SpotAwareStrategyV2_1(
             priors=load_priors(),
             bankroll_getter=lambda: 1000.0,  # placeholder; rebound in main()
@@ -593,6 +608,9 @@ def _build_strategy(name: str) -> Strategy:
             path_a_wr_getter=v21_path_a_wr_getter,
             path_a_wr_min_samples=v21_path_a_min_samples,
             path_a_wr_break_even_margin=v21_path_a_margin,
+            imbalance_shadow_enabled=v21_imbalance_shadow,
+            imbalance_threshold=v21_imbalance_threshold,
+            imbalance_min_top_size_usd=v21_imbalance_min_top_size_usd,
             **v21_kwargs,
         )
     if name == "ensemble":

@@ -51,7 +51,14 @@ import re
 from collections.abc import Callable
 from dataclasses import replace as dc_replace
 
-from polymarket_bot.backtest.types import Decision, MarketEvent, Side, SpotTick, WindowBoundary
+from polymarket_bot.backtest.types import (
+    BookUpdate,
+    Decision,
+    MarketEvent,
+    Side,
+    SpotTick,
+    WindowBoundary,
+)
 from polymarket_bot.strategies.kelly_config import KellyConfig
 from polymarket_bot.strategies.path_a_wr_metrics import PathAMetrics
 from polymarket_bot.strategies.regime_detector import RegimeDetector
@@ -190,6 +197,36 @@ def _parse_p_win(rationale: str) -> float | None:
         return None
 
 
+def _compute_imbalance_label(
+    book: BookUpdate | None,
+    *,
+    threshold: float,
+    min_top_size_usd: float,
+) -> str:
+    """M.2 v0 — classify the bot's-side top-of-book by bid/ask size imbalance.
+
+    Returns one of: 'bullish', 'bearish', 'balanced', 'too_thin', 'no_ask',
+    'no_book'. Defensive — never raises. See
+    design/M.2-orderbook-imbalance-shadow.md §2.
+    """
+    if book is None:
+        return "no_book"
+    bid_size = book.bid_size_top or 0.0
+    ask_size = book.ask_size_top or 0.0
+    ask_price = book.best_ask or 0.0
+    # Top-of-book USD (approximate; bid+ask shares x ask price).
+    if (bid_size + ask_size) * ask_price < min_top_size_usd:
+        return "too_thin"
+    if ask_size <= 0:
+        return "no_ask"
+    ratio = bid_size / ask_size
+    if ratio > threshold:
+        return "bullish"
+    if ratio > 0 and (1.0 / ratio) > threshold:
+        return "bearish"
+    return "balanced"
+
+
 def _rewrite_rationale_v2_1(
     rationale: str,
     *,
@@ -261,6 +298,13 @@ class SpotAwareStrategyV2_1(SpotAwareStrategyV2):
         path_a_wr_getter: Callable[[], PathAMetrics] | None = None,
         path_a_wr_min_samples: int = 20,
         path_a_wr_break_even_margin: float = 0.02,
+        # M.2 v0 — orderbook imbalance SHADOW-LOG. When enabled, every
+        # fire's rationale is annotated with imbalance=<label> from
+        # bid_size_top/ask_size_top of the bot's side. No firing change.
+        # design/M.2-orderbook-imbalance-shadow.md.
+        imbalance_shadow_enabled: bool = False,
+        imbalance_threshold: float = 2.0,
+        imbalance_min_top_size_usd: float = 50.0,
         **v2_kwargs: object,
     ) -> None:
         super().__init__(priors=priors, **v2_kwargs)  # type: ignore[arg-type]
@@ -310,6 +354,14 @@ class SpotAwareStrategyV2_1(SpotAwareStrategyV2):
         self._path_a_wr_getter = path_a_wr_getter
         self._path_a_wr_min_samples = path_a_wr_min_samples
         self._path_a_wr_break_even_margin = path_a_wr_break_even_margin
+        # M.2 v0 — orderbook imbalance shadow log.
+        self._imbalance_shadow_enabled = imbalance_shadow_enabled
+        self._imbalance_threshold = imbalance_threshold
+        self._imbalance_min_top_size_usd = imbalance_min_top_size_usd
+        # Parallel book-state tracking for imbalance (keyed by Side per
+        # v2's existing per-side keying — same pollution caveat applies
+        # but irrelevant for shadow log).
+        self._last_book_for_side: dict[Side, BookUpdate] = {}
         self._fires_this_window: int = 0
 
     @property
@@ -498,6 +550,18 @@ class SpotAwareStrategyV2_1(SpotAwareStrategyV2):
             fire_n=self._fires_this_window,
             cap=self._multi_fire_cap,
         )
+        # M.2 v0 — imbalance shadow log. Computed BEFORE the regime
+        # annotation so the rationale order is stable: regime first,
+        # imbalance after. Captured into a local that we append at the
+        # bottom; doesn't gate firing.
+        imbalance_label: str | None = None
+        if self._imbalance_shadow_enabled:
+            imbalance_label = _compute_imbalance_label(
+                self._last_book_for_side.get(side_guess),
+                threshold=self._imbalance_threshold,
+                min_top_size_usd=self._imbalance_min_top_size_usd,
+            )
+
         # M.1a v0 — SHADOW LOG: annotate rationale with regime label.
         # M.1a v1 — ACTIVE: if label is in `_regime_abstain_labels`, abstain
         # (return None + reset per-window fire-flag so a later tick can
@@ -518,6 +582,9 @@ class SpotAwareStrategyV2_1(SpotAwareStrategyV2):
                 self._fires_this_window -= 1
                 return None
             new_rationale = f"{new_rationale} regime={regime_label}"
+        # M.2 v0 — annotate rationale with imbalance label (after regime).
+        if imbalance_label is not None:
+            new_rationale = f"{new_rationale} imbalance={imbalance_label}"
         if self._fires_this_window < self._multi_fire_cap:
             self._fired_for_window = None
         return dc_replace(base_decision, size_usd=bet, rationale=new_rationale)
@@ -533,6 +600,11 @@ class SpotAwareStrategyV2_1(SpotAwareStrategyV2):
             and isinstance(event, SpotTick)
         ):
             self._regime_detector.observe_spot(event.ts_utc_ns, event.price)
+        # M.2 v0 — capture the latest BookUpdate per side for imbalance
+        # annotation at fire-decision time. Mirrors v2's existing
+        # per-side keying. No-op if shadow logging is off.
+        if self._imbalance_shadow_enabled and isinstance(event, BookUpdate):
+            self._last_book_for_side[event.side] = event
         # Inherit v2's dispatch verbatim — no async I/O added in the
         # fire path (defense L3 against the LLM queue-overflow class
         # of incidents).
