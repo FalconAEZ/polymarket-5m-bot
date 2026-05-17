@@ -8,12 +8,13 @@ Per design/dashboard-v3.md §4.2.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
 
-from polymarket_bot.dashboard.bankroll import load_bankroll
+from polymarket_bot.dashboard.bankroll import DEFAULT_STARTING_USD, load_bankroll
 from polymarket_bot.dashboard.loaders import (
     DecisionRow,
     HealthSnapshot,
@@ -330,7 +331,19 @@ def snapshot(
     # resolver_loop's gamma re-resolve doesn't see. Idempotent + cheap.
     rows = apply_settled_corrections(rows, state_dir / DECISIONS_SUBDIR, since_utc_date=since)
 
-    bankroll = load_bankroll(rows)
+    # Phase O Session 1 (2026-05-17): honor the bot's PMB_STARTING_BANKROLL +
+    # BANKROLL_REPLAY_ENABLED env vars so the dashboard hero bankroll matches
+    # what the runtime Kelly sizer reads at fire time. Defaults preserve the
+    # historical $1k locked-decision-#10 behavior + replay-on semantics for
+    # operators who haven't set the env vars.
+    starting_env = os.environ.get("PMB_STARTING_BANKROLL", "").strip()
+    try:
+        starting_usd = float(starting_env) if starting_env else DEFAULT_STARTING_USD
+    except ValueError:
+        starting_usd = DEFAULT_STARTING_USD
+    replay_env = os.environ.get("BANKROLL_REPLAY_ENABLED", "").strip().lower()
+    replay_enabled = replay_env not in ("0", "false", "no", "off")
+    bankroll = load_bankroll(rows, starting_usd=starting_usd, replay_enabled=replay_enabled)
     # Phase 16: project realised PnL onto alternative starting bankrolls.
     # Display-only — locked decision #10 ($1k paper) is unchanged. Stake is
     # fixed (locked decision #9) so the absolute PnL is the same across all
