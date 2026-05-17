@@ -1,0 +1,271 @@
+================================================================================
+PHASE N — FORENSIC AUDIT (Session 1)
+  generated: 2026-05-17 14:54:29Z
+  data:      /tmp/phaseN_data/state
+================================================================================
+
+================================================================================
+N.0 — DATASET INVENTORY
+================================================================================
+  Record kinds: {'fired': 755, 'settled': 756, 'settled_correction': 127}
+  Fires total:            755
+  Fires settled (truth):  755
+  Fires settled & filled: 614  (zero-pnl skipped)
+  Orphan fires (no settle): 0
+  Window: 2026-05-13 08:00:01Z  →  2026-05-17 12:38:36Z
+  Strategy mix: {'spot_aware_v2_1': 755}
+  Mode mix:     {'kelly_multi': 755}
+  Annotated with regime=:    83 / 755
+  Annotated with imbalance=: 3 / 755
+    Regime label mix: {'mixed': 58, 'chop': 23, 'trending': 2}
+    Imbalance label mix: {'too_thin': 3}
+
+================================================================================
+N.1 — PEAK-TO-FLOOR FORENSIC
+================================================================================
+  PEAK    cum-PnL = +1235.41 at 2026-05-15 15:40:00Z (fire #445 of 755)
+  FLOOR   cum-PnL =  -326.79 at 2026-05-17 12:38:36Z (fire #755)
+  FINAL   cum-PnL =  -326.79 at 2026-05-17 12:38:36Z
+  Peak→final swing: -1562.20
+
+  Peak fire detail:
+    decision_id   = 2a0941e6043b4b0e81cc306e4d5b5913
+    side          = DOWN
+    price_limit   = 0.499
+    tier          = 30-50%
+    delta_bps     = -5.17
+    bet_usd       = 92.58
+    bankroll(pre) = 2047.72
+    pnl_usd       = +92.93
+    rationale     = strategy=spot_aware_v2_1 mode=kelly_multi delta_bps=-5.17 p_win=0.650 ev=+0.1460 ttl=30s side=DOWN kelly_f=0.301 bet_usd=92.58 bankroll=2047.72 fire_n=1/1
+
+  FIRST POST-PEAK LOSS  (#1 after peak)
+    ts            = 2026-05-15 15:45:15Z
+    side / tier   = DOWN / 70-85%
+    delta_bps     = -7.24   p_win = 0.8   ev = 0.075
+    bet_usd       = 91.74     pnl = -91.76
+    rationale     = strategy=spot_aware_v2_1 mode=kelly_multi delta_bps=-7.24 p_win=0.800 ev=+0.0750 ttl=30s side=DOWN kelly_f=0.286 bet_usd=91.74 bankroll=2140.64 fire_n=1/1
+  Wins between peak and first loss: 0
+
+  Per 30-min rollup post-peak (6h forward):
+    window-end UTC          n   WR    $/tr     PnL    cumPnL
+    05-15 16:10    5   40.0%  -39.08  -195.40  +1040.02
+    05-15 16:40    2   50.0%  +14.85   +29.70  +1069.72
+    05-15 17:10    3   66.7%  -22.89   -68.67  +1001.05
+    05-15 17:40    4   50.0%  -20.61   -82.43   +918.62
+    05-15 18:10    3   33.3%  -30.26   -90.78   +827.84
+    05-15 18:40    4   75.0%  +20.86   +83.42   +911.26
+    05-15 19:10    5   40.0%   +2.79   +13.97   +925.23
+    05-15 19:40    6   33.3%   +1.26    +7.53   +932.76
+    05-15 20:10    6   83.3%  +11.30   +67.83  +1000.59
+    05-15 20:40    5   40.0%  -17.28   -86.38   +914.21
+    05-15 21:10    4   50.0%   -1.07    -4.28   +909.93
+    05-15 21:40    4   50.0%  -30.87  -123.47   +786.47
+
+  Pre-peak (6h) vs post-peak (6h) comparison:
+    metric           pre-peak    post-peak
+    n                      42           51
+    WR                  73.8%       51.0%
+    $/tr               +23.64        -8.80
+    PnL               +992.94      -448.95
+    avg |Δbps|           5.70         5.73
+    avg best_ask        0.575        0.547
+    UP-share            21.4%       41.2%
+    tier mix:
+      30-50%            27           39
+      70-85%            15           12
+
+  Daily timeline:
+    UTC date    n  daily-PnL  cumPnL-EOD  WR-day
+    2026-05-13  174   +496.68    +496.68    45.4%
+    2026-05-14  173   +153.41    +650.10    59.5%
+    2026-05-15  170    -34.77    +615.32    60.0%
+    2026-05-16  187   -587.20     +28.12    55.1%
+    2026-05-17   51   -354.91    -326.79    49.0%
+
+================================================================================
+N.2 — TIER 30-50% DEEP DIVE
+================================================================================
+  Total settled fires: 755
+  ALL fires                   n= 755  WR= 54.6%  $/tr= -0.43  PnL= -326.79
+  tier 30-50%                 n= 518  WR= 45.6%  $/tr= +0.08  PnL=  +41.45
+  OTHER tiers (vs 30-50%)     n= 237  WR= 74.3%  $/tr= -1.55  PnL= -368.23
+
+  Per-tier breakdown (all 5 days):
+  tier 30-50%                 n= 518  WR= 45.6%  $/tr= +0.08  PnL=  +41.45
+  tier 70-85%                 n= 237  WR= 74.3%  $/tr= -1.55  PnL= -368.23
+
+  Tier 30-50% per UTC day:
+    2026-05-13                n= 160  WR= 41.2%  $/tr= +2.28  PnL= +365.11
+    2026-05-14                n= 101  WR= 44.6%  $/tr= +1.10  PnL= +111.35
+    2026-05-15                n=  89  WR= 49.4%  $/tr= +1.31  PnL= +116.64
+    2026-05-16                n= 146  WR= 48.6%  $/tr= -3.57  PnL= -521.50
+    2026-05-17                n=  22  WR= 45.5%  $/tr= -1.37  PnL=  -30.15
+
+  Tier 30-50% per side:
+    side=UP                   n= 267  WR= 44.9%  $/tr= -0.55  PnL= -146.81
+    side=DOWN                 n= 251  WR= 46.2%  $/tr= +0.75  PnL= +188.26
+
+  Tier 30-50% per |Δ| bucket:
+    |Δbps| 0-2.5              n=  98  WR= 35.7%  $/tr= -1.45  PnL= -142.59
+    |Δbps| 2.5-5              n=  80  WR= 33.8%  $/tr= -1.07  PnL=  -85.63
+    |Δbps| 5-10               n= 339  WR= 51.3%  $/tr= +1.14  PnL= +386.76
+    |Δbps| 10-20              n=   1  WR=  0.0%  $/tr=-117.09  PnL= -117.09
+
+  CH3 cell (tier 30-50% × |Δ|<5) — Phase G winning cell:
+    CH3 (5 days)              n= 178  WR= 34.8%  $/tr= -1.28  PnL= -228.22
+
+  Surviving winner (tier 30-50% × |Δ|≥5) — Phase L audit:
+    SURV (5 days)             n= 340  WR= 51.2%  $/tr= +0.79  PnL= +269.67
+
+  Tier 30-50% pre-peak vs post-peak:
+    pre-peak                  n= 290  WR= 44.8%  $/tr= +4.15  PnL=+1202.66
+    post-peak                 n= 228  WR= 46.5%  $/tr= -5.09  PnL=-1161.21
+
+  CH3 cell pre/post-peak:
+    CH3 pre-peak              n= 178  WR= 34.8%  $/tr= -1.28  PnL= -228.22
+    CH3 post-peak             n=   0  WR=  0.0%  $/tr= +0.00  PnL=   +0.00
+
+  SURV cell pre/post-peak:
+    SURV pre-peak             n= 112  WR= 60.7%  $/tr=+12.78  PnL=+1430.89
+    SURV post-peak            n= 228  WR= 46.5%  $/tr= -5.09  PnL=-1161.21
+
+  Tier 30-50% per UTC hour:
+    hour 00 UTC               n=  23  WR= 34.8%  $/tr= -7.32  PnL= -168.39
+    hour 01 UTC               n=  19  WR= 42.1%  $/tr= +5.57  PnL= +105.87
+    hour 02 UTC               n=  19  WR= 36.8%  $/tr= +1.95  PnL=  +37.10
+    hour 03 UTC               n=  23  WR= 47.8%  $/tr= -1.81  PnL=  -41.63
+    hour 04 UTC               n=  19  WR= 52.6%  $/tr= +1.92  PnL=  +36.41
+    hour 05 UTC               n=  14  WR= 35.7%  $/tr=-19.00  PnL= -266.05
+    hour 06 UTC               n=  16  WR= 37.5%  $/tr=-15.70  PnL= -251.13
+    hour 07 UTC               n=  16  WR= 50.0%  $/tr= -5.36  PnL=  -85.71
+    hour 08 UTC               n=  27  WR= 51.9%  $/tr= +9.18  PnL= +247.89
+    hour 09 UTC               n=  24  WR= 33.3%  $/tr= -5.75  PnL= -137.88
+    hour 10 UTC               n=  23  WR= 60.9%  $/tr= +8.68  PnL= +199.75
+    hour 11 UTC               n=  14  WR= 50.0%  $/tr= +2.00  PnL=  +27.94
+    hour 12 UTC               n=  23  WR= 34.8%  $/tr=-10.76  PnL= -247.51
+    hour 13 UTC               n=  22  WR= 45.5%  $/tr= +6.72  PnL= +147.89
+    hour 14 UTC               n=  25  WR= 56.0%  $/tr= +7.07  PnL= +176.68
+    hour 15 UTC               n=  26  WR= 65.4%  $/tr=+18.57  PnL= +482.93
+    hour 16 UTC               n=  22  WR= 59.1%  $/tr= +3.77  PnL=  +82.85
+    hour 17 UTC               n=  20  WR= 20.0%  $/tr=-12.96  PnL= -259.29
+    hour 18 UTC               n=  19  WR= 36.8%  $/tr= -0.63  PnL=  -12.02
+    hour 19 UTC               n=  25  WR= 68.0%  $/tr=+27.66  PnL= +691.49
+    hour 20 UTC               n=  22  WR= 50.0%  $/tr=-10.16  PnL= -223.62
+    hour 21 UTC               n=  28  WR= 28.6%  $/tr=-18.42  PnL= -515.67
+    hour 22 UTC               n=  19  WR= 57.9%  $/tr=+15.87  PnL= +301.61
+    hour 23 UTC               n=  30  WR= 33.3%  $/tr= -9.60  PnL= -288.06
+
+================================================================================
+ADDENDUM — PATH-A SLICE (block-up tier 70-85%)
+================================================================================
+  tier 70-85% ALL             n= 237  WR= 74.3%  $/tr= -1.55  PnL= -368.23
+  tier 70-85% UP              n=   0  WR=  0.0%  $/tr= +0.00  PnL=   +0.00
+  tier 70-85% DOWN (path A)   n= 237  WR= 74.3%  $/tr= -1.55  PnL= -368.23
+
+================================================================================
+N.3a — FIRE-STREAM GAP DETECTION (restart proxy)
+================================================================================
+  Gaps > 30 min between consecutive fires (likely bot restarts):
+    ts                       gap-min   notes
+    2026-05-14 10:21:07Z       35.2   (resume after 35-min outage)
+    2026-05-14 16:16:05Z       42.2   (resume after 42-min outage)
+    2026-05-14 21:12:31Z       46.3   (resume after 46-min outage)
+    2026-05-14 23:00:01Z       64.6   (resume after 65-min outage)
+    2026-05-15 00:01:57Z       61.9   (resume after 62-min outage)
+    2026-05-15 01:05:21Z       35.3   (resume after 35-min outage)
+    2026-05-15 03:06:37Z       35.6   (resume after 36-min outage)
+    2026-05-15 10:35:10Z       35.1   (resume after 35-min outage)
+    2026-05-15 12:05:49Z       80.6   (resume after 81-min outage)
+    2026-05-15 16:45:17Z       30.3   (resume after 30-min outage)
+    2026-05-16 11:21:08Z       34.9   (resume after 35-min outage)
+    2026-05-16 11:55:54Z       34.8   (resume after 35-min outage)
+    2026-05-16 18:37:09Z       31.4   (resume after 31-min outage)
+    2026-05-16 23:20:16Z       35.3   (resume after 35-min outage)
+    2026-05-17 02:46:44Z      176.7   (resume after 177-min outage)
+    2026-05-17 04:22:43Z       30.6   (resume after 31-min outage)
+    2026-05-17 06:20:17Z       30.0   (resume after 30-min outage)
+    2026-05-17 07:35:46Z       55.6   (resume after 56-min outage)
+    2026-05-17 08:41:08Z       38.1   (resume after 38-min outage)
+  Total likely restarts (5d): 19
+
+================================================================================
+N.3b — M.5 ACTIVATION SIMULATOR (Path-A regime wrapper)
+================================================================================
+  Path A = tier 70-85% × side=DOWN (H.2.12 block_up enforces UP→0)
+  M.5 spec: needs ≥20 settled Path-A fires to activate;
+            then abstains when rolling_wr < mean_price + 2pp
+
+  --- WITHOUT restart resets (idealized) ---
+    total Path-A fires:         237
+    M.5 active fires:           217
+    M.5 would-abstain fires:    105
+    M.5 first activated at:     2026-05-14 05:55:25Z
+    counterfactual PnL avoided: +352.92
+
+  --- WITH restart resets at >60min gaps (bot-actual) ---
+    total Path-A fires:         237
+    M.5 active fires:           157
+    M.5 would-abstain fires:    59
+    M.5 first activated at:     2026-05-14 05:55:25Z
+    counterfactual PnL avoided: +330.51
+
+  Within M.5's actual live window (Sun 11:45Z → 12:43Z):
+    Path-A fires in window:     1
+    M.5-active fires in window: 1
+    M.5 would-abstain in window:1
+    2026-05-17 11:31:17Z  n=20  wr= 70.0%  thr= 75.8%  ABSTAIN  pnl=-39.34
+
+================================================================================
+N.3c — M.1a v1 INVERSION TEST
+================================================================================
+  Part A — annotated subset (n=83): tier × regime cross-tab
+                  chop                mixed               trending
+    tier           n    WR    PnL      n    WR    PnL      n    WR    PnL
+    30-50%       11   63.6% +101.29   39   41.0%  -78.53    1    0.0%  -63.23
+    70-85%       12   58.3%  -70.72   19   52.6% -217.75    1  100.0%  +23.29
+
+  Tier mix of regime-labeled fires (informs whether chop>mixed is a tier-skew artifact):
+    regime=chop (n=23): {'30-50%': 11, '70-85%': 12}
+    regime=mixed (n=58): {'30-50%': 39, '70-85%': 19}
+    regime=trending (n=2): {'30-50%': 1, '70-85%': 1}
+
+  Part B — |Δbps| proxy regime on ALL n=755 fires:
+    proxy regime         |Δbps| range    n      WR     $/tr      PnL
+    very-flat (chop-like)  [ 0.0,  2.5)    98   35.7%   -1.45   -142.59
+    flat                   [ 2.5,  5.0)    80   33.8%   -1.07    -85.63
+    active                 [ 5.0, 10.0)   570   60.5%   -0.05    -31.28
+    trending-like          [10.0,  inf)     7   71.4%   -9.61    -67.28
+
+  Part C — |Δbps| proxy × tier (does inversion hold per tier?):
+                       tier 30-50%                  tier 70-85%
+    proxy regime       n   WR    $/tr    PnL        n   WR    $/tr    PnL
+    very-flat (chop-li    98  35.7%  -1.45 -142.59     0   0.0%  +0.00   +0.00
+    flat                  80  33.8%  -1.07  -85.63     0   0.0%  +0.00   +0.00
+    active               339  51.3%  +1.14 +386.76   231  74.0%  -1.81 -418.04
+    trending-like          1   0.0% -117.09 -117.09     6  83.3%  +8.30  +49.81
+
+  Verdict construct: the inversion hypothesis ('M.1a v1 abstains winners') is
+  CONFIRMED if low-|Δbps| (chop-proxy) buckets show HIGHER WR than mid-|Δbps|
+  buckets within the same tier. The Part B table answers this empirically.
+
+================================================================================
+N.3d — DAILY PnL × TIER × SIDE BREAKDOWN
+================================================================================
+  UTC day     30-50% UP   30-50% DN   70-85% DN   total
+    2026-05-13     +63.42     +301.69     +131.57    +496.68
+    2026-05-14     -72.08     +183.43      +42.06    +153.41
+    2026-05-15    +137.63      -21.00     -151.41     -34.77
+    2026-05-16    -189.52     -331.97      -65.70    -587.20
+    2026-05-17     -86.26      +56.11     -324.76    -354.91
+
+================================================================================
+ADDENDUM — REGIME + IMBALANCE ANNOTATION PER-LABEL STATS
+================================================================================
+  Per-regime stats (where regime= annotation present):
+    regime=chop               n=  23  WR= 60.9%  $/tr= +1.33  PnL=  +30.57
+    regime=mixed              n=  58  WR= 44.8%  $/tr= -5.11  PnL= -296.28
+    regime=trending           n=   2  WR= 50.0%  $/tr=-19.97  PnL=  -39.94
+
+  Per-imbalance stats (where imbalance= annotation present):
+    imbalance=too_thin        n=   3  WR=  0.0%  $/tr=-45.87  PnL= -137.62

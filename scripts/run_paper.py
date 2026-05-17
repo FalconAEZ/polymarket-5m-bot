@@ -62,6 +62,10 @@ from polymarket_bot.strategies.regime_detector import RegimeDetector  # noqa: E4
 from polymarket_bot.strategies.spot_aware import SpotAwareStrategy  # noqa: E402
 from polymarket_bot.strategies.spot_aware_priors import load_priors  # noqa: E402
 from polymarket_bot.strategies.spot_aware_v2 import SpotAwareStrategyV2  # noqa: E402
+from polymarket_bot.strategies.surv_canary_metrics import (  # noqa: E402
+    SurvCanaryMetrics,
+    compute_surv_canary_metrics,
+)
 
 LOG = logging.getLogger("polymarket_bot.scripts.run_paper")
 WARM_LOOKAHEAD_WINDOWS = 12  # ~1 hour of windows pre-resolved
@@ -576,6 +580,97 @@ def _build_strategy(name: str) -> Strategy:
             )
         else:
             LOG.info("M.5 DISABLED (REGIME_M5_PATH_A_GATE_ENABLED=false)")
+        # O.1 — SURV-cell shift canary. Phase O Session 1 ship. Default
+        # off. When enabled, builds a 60s-cached getter that computes
+        # rolling WR + mean price over the last N=30 SURV-slice fires
+        # (tier 30-50% x |Δbps|≥5). Tier 30-50% fires are ABSTAINED when
+        # rolling_wr < mean_price + margin. First-trip log goes to
+        # WARNING so systemd/journal forwarding catches it.
+        # design/O.1-surv-cell-shift-canary.md.
+        v21_surv_canary_getter: Callable[[], SurvCanaryMetrics] | None = None
+        v21_surv_canary_min_samples = int(_env_float("SURV_CANARY_MIN_SAMPLES", 10.0) or 10)
+        v21_surv_canary_margin = _env_float("SURV_CANARY_BREAK_EVEN_MARGIN", -0.01)
+        if v21_surv_canary_margin is None:
+            v21_surv_canary_margin = -0.01
+        if _env_bool("SURV_CANARY_ENABLED", False):
+            v21_surv_canary_lookback_n = int(_env_float("SURV_CANARY_LOOKBACK_N", 15.0) or 15)
+            v21_surv_canary_min_abs_delta = _env_float("SURV_CANARY_MIN_ABS_DELTA_BPS", 5.0) or 5.0
+            _surv_cache: dict[str, object] = {"metrics": None, "ts_ns": 0, "tripped": False}
+            _SURV_CACHE_TTL_NS = 60_000_000_000
+
+            def _build_surv_getter() -> Callable[[], SurvCanaryMetrics]:
+                def _getter() -> SurvCanaryMetrics:
+                    now = time.time_ns()
+                    last_ts = _surv_cache["ts_ns"]
+                    assert isinstance(last_ts, int)
+                    cached = _surv_cache["metrics"]
+                    if cached is None or (now - last_ts) > _SURV_CACHE_TTL_NS:
+                        try:
+                            fresh = compute_surv_canary_metrics(
+                                decisions_root=Path("state/decisions"),
+                                lookback_n=v21_surv_canary_lookback_n,
+                                min_samples=v21_surv_canary_min_samples,
+                                min_abs_delta_bps=v21_surv_canary_min_abs_delta,
+                                now_ns=now,
+                            )
+                        except Exception:
+                            LOG.exception(
+                                "SURV canary: compute_surv_canary_metrics raised; "
+                                "using empty metrics"
+                            )
+                            fresh = SurvCanaryMetrics(
+                                rolling_wr=None,
+                                mean_price=None,
+                                n_settled=0,
+                                n_total_in_buffer=0,
+                            )
+                        _surv_cache["metrics"] = fresh
+                        _surv_cache["ts_ns"] = now
+                        # Detect state transition: first trip emits WARN.
+                        already_tripped = _surv_cache["tripped"]
+                        is_tripped = (
+                            fresh.rolling_wr is not None
+                            and fresh.mean_price is not None
+                            and fresh.n_settled >= v21_surv_canary_min_samples
+                            and fresh.rolling_wr < fresh.mean_price + v21_surv_canary_margin
+                        )
+                        if is_tripped and not already_tripped:
+                            LOG.warning(
+                                "[SURV-CANARY] TRIPPED — rolling_wr=%.1f%% < "
+                                "mean_price=%.1f%% + margin=%.1f%% (n=%d). "
+                                "Tier 30-50%% fires will be ABSTAINED until WR recovers.",
+                                (fresh.rolling_wr or 0.0) * 100,
+                                (fresh.mean_price or 0.0) * 100,
+                                v21_surv_canary_margin * 100,
+                                fresh.n_settled,
+                            )
+                            _surv_cache["tripped"] = True
+                        elif not is_tripped and already_tripped:
+                            LOG.warning(
+                                "[SURV-CANARY] RECOVERED — rolling_wr=%.1f%% "
+                                ">= threshold. Tier 30-50%% fires resume.",
+                                (fresh.rolling_wr or 0.0) * 100,
+                            )
+                            _surv_cache["tripped"] = False
+                        return fresh
+                    assert isinstance(cached, SurvCanaryMetrics)
+                    return cached
+
+                return _getter
+
+            v21_surv_canary_getter = _build_surv_getter()
+            LOG.warning(
+                "O.1 SURV CANARY ACTIVE — tier 30-50%% shift detector enabled "
+                "(lookback_n=%d, min_samples=%d, margin=%.3f, min_|Δbps|=%.1f). "
+                "Tier 30-50%% fires ABSTAINED when rolling_wr < mean_price + margin. "
+                "design/O.1-surv-cell-shift-canary.md.",
+                v21_surv_canary_lookback_n,
+                v21_surv_canary_min_samples,
+                v21_surv_canary_margin,
+                v21_surv_canary_min_abs_delta,
+            )
+        else:
+            LOG.info("O.1 SURV CANARY DISABLED (SURV_CANARY_ENABLED=false)")
         # M.2 v0 — orderbook imbalance shadow log. DARK ship; default off.
         # design/M.2-orderbook-imbalance-shadow.md.
         v21_imbalance_shadow = _env_bool("ORDERBOOK_IMBALANCE_SHADOW_ENABLED", False)
@@ -608,6 +703,9 @@ def _build_strategy(name: str) -> Strategy:
             path_a_wr_getter=v21_path_a_wr_getter,
             path_a_wr_min_samples=v21_path_a_min_samples,
             path_a_wr_break_even_margin=v21_path_a_margin,
+            surv_canary_getter=v21_surv_canary_getter,
+            surv_canary_min_samples=v21_surv_canary_min_samples,
+            surv_canary_break_even_margin=v21_surv_canary_margin,
             imbalance_shadow_enabled=v21_imbalance_shadow,
             imbalance_threshold=v21_imbalance_threshold,
             imbalance_min_top_size_usd=v21_imbalance_min_top_size_usd,

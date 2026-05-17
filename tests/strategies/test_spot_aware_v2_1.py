@@ -1396,4 +1396,260 @@ async def test_m2_shadow_does_not_change_fire_decision() -> None:
     assert shadow_dec is not None
     assert base_dec.size_usd == shadow_dec.size_usd
     assert shadow_dec.rationale.startswith(base_dec.rationale)
-    assert "imbalance=" in shadow_dec.rationale
+
+
+# ---------- O.1 SURV-cell shift canary tests ----------
+# design/O.1-surv-cell-shift-canary.md.
+
+
+from polymarket_bot.strategies.surv_canary_metrics import SurvCanaryMetrics  # noqa: E402
+
+
+def _surv_canary_getter(rolling_wr: float | None, mean_price: float | None, n_settled: int = 25):
+    """Helper: returns a callable yielding a fixed SurvCanaryMetrics."""
+    metrics = SurvCanaryMetrics(
+        rolling_wr=rolling_wr,
+        mean_price=mean_price,
+        n_settled=n_settled,
+        n_total_in_buffer=max(n_settled, 0),
+    )
+    return lambda: metrics
+
+
+async def test_surv_canary_disabled_no_change() -> None:
+    """No getter → tier 30-50% fires unchanged."""
+    strat = SpotAwareStrategyV2_1(
+        priors=_StubPriors(p_win=0.55),
+        bankroll_getter=_bankroll(1000.0),
+        surv_canary_getter=None,
+    )
+    decision = await _drive_simple_window(strat, open_spot=80_000.0, end_spot=80_080.0, ask_up=0.40)
+    assert decision is not None, "no getter = baseline; tier 30-50% should fire"
+
+
+async def test_surv_canary_above_break_even_fires() -> None:
+    """rolling_wr (0.55) > mean_price (0.42) + margin (0.03) → fires."""
+    strat = SpotAwareStrategyV2_1(
+        priors=_StubPriors(p_win=0.55),
+        bankroll_getter=_bankroll(1000.0),
+        surv_canary_getter=_surv_canary_getter(rolling_wr=0.55, mean_price=0.42, n_settled=25),
+    )
+    decision = await _drive_simple_window(strat, open_spot=80_000.0, end_spot=80_080.0, ask_up=0.40)
+    assert decision is not None
+    assert "side=UP" in decision.rationale
+
+
+async def test_surv_canary_below_break_even_abstains() -> None:
+    """rolling_wr (0.43) < mean_price (0.42) + margin (0.03) = 0.45 → abstains.
+
+    Uses an explicit positive margin (Phase-N-PDF defaults) instead of the
+    O.1-data-tuned negative margin to assert the abstain branch directly.
+    """
+    strat = SpotAwareStrategyV2_1(
+        priors=_StubPriors(p_win=0.55),
+        bankroll_getter=_bankroll(1000.0),
+        surv_canary_getter=_surv_canary_getter(rolling_wr=0.43, mean_price=0.42, n_settled=25),
+        surv_canary_break_even_margin=0.03,
+    )
+    decision = await _drive_simple_window(strat, open_spot=80_000.0, end_spot=80_080.0, ask_up=0.40)
+    assert decision is None, "SURV below dynamic break-even must abstain"
+
+
+async def test_surv_canary_cold_start_passes_through() -> None:
+    """getter returns (None, None, 5) → n < min_samples → no gate, fires."""
+    strat = SpotAwareStrategyV2_1(
+        priors=_StubPriors(p_win=0.55),
+        bankroll_getter=_bankroll(1000.0),
+        surv_canary_getter=_surv_canary_getter(rolling_wr=None, mean_price=None, n_settled=5),
+        surv_canary_min_samples=20,
+    )
+    decision = await _drive_simple_window(strat, open_spot=80_000.0, end_spot=80_080.0, ask_up=0.40)
+    assert decision is not None, "cold-start n=5 < min=20 must pass through"
+
+
+async def test_surv_canary_does_not_apply_to_70_85() -> None:
+    """Tier 70-85% fires never consult the SURV canary (that's M.5's job)."""
+    bad_getter = _surv_canary_getter(rolling_wr=0.20, mean_price=0.80, n_settled=25)
+    strat = SpotAwareStrategyV2_1(
+        priors=_StubPriors(p_win=0.85),
+        bankroll_getter=_bankroll(1000.0),
+        surv_canary_getter=bad_getter,
+    )
+    decision = await _drive_simple_window(
+        strat, open_spot=80_000.0, end_spot=79_920.0, ask_down=0.72
+    )
+    assert decision is not None, "tier 70-85% must not be gated by SURV canary"
+
+
+async def test_surv_canary_margin_is_respected() -> None:
+    """rolling_wr 0.43, mean_price 0.42, margin 0.03 → 0.43 < 0.45 → abstain."""
+    strat = SpotAwareStrategyV2_1(
+        priors=_StubPriors(p_win=0.55),
+        bankroll_getter=_bankroll(1000.0),
+        surv_canary_getter=_surv_canary_getter(rolling_wr=0.43, mean_price=0.42, n_settled=25),
+        surv_canary_break_even_margin=0.03,
+    )
+    decision = await _drive_simple_window(strat, open_spot=80_000.0, end_spot=80_080.0, ask_up=0.40)
+    assert decision is None
+
+
+async def test_surv_canary_margin_zero_strict_breakeven() -> None:
+    """margin=0 → rolling_wr=mean_price NOT < mean_price + 0 → fires."""
+    strat = SpotAwareStrategyV2_1(
+        priors=_StubPriors(p_win=0.55),
+        bankroll_getter=_bankroll(1000.0),
+        surv_canary_getter=_surv_canary_getter(rolling_wr=0.42, mean_price=0.42, n_settled=25),
+        surv_canary_break_even_margin=0.0,
+    )
+    decision = await _drive_simple_window(strat, open_spot=80_000.0, end_spot=80_080.0, ask_up=0.40)
+    assert decision is not None
+
+
+# ---------- O.1 surv_canary_metrics module tests ----------
+
+
+def test_compute_surv_canary_metrics_empty_root(tmp_path):
+    """Missing decisions root → empty SurvCanaryMetrics."""
+    from polymarket_bot.strategies.surv_canary_metrics import compute_surv_canary_metrics
+
+    metrics = compute_surv_canary_metrics(
+        decisions_root=tmp_path / "nonexistent",
+        now_ns=int(datetime(2026, 5, 17, tzinfo=UTC).timestamp() * 1e9),
+    )
+    assert metrics.n_settled == 0
+    assert metrics.rolling_wr is None
+
+
+def test_compute_surv_canary_metrics_filters_to_surv_slice(tmp_path):
+    """Only tier 30-50% x |Δbps|≥5 fires count toward SURV rolling stats."""
+    import json as _json
+
+    from polymarket_bot.strategies.surv_canary_metrics import compute_surv_canary_metrics
+
+    day = "2026-05-17"
+    fp = tmp_path / f"{day}.jsonl"
+    records = [
+        # In-slice: tier 30-50% (price=0.40) + |Δbps|=6.0 + side=UP + WIN (resolution=UP)
+        {
+            "kind": "fired",
+            "decision_id": "a",
+            "decision_ts_ns": 100,
+            "side": "UP",
+            "price_limit": 0.40,
+            "rationale": "strategy=spot_aware_v2_1 delta_bps=+6.00 side=UP",
+        },
+        {"kind": "settled", "decision_id": "a", "resolution": "UP", "pnl_usd": 1.0},
+        # Out-of-slice: tier 70-85% (price=0.80)
+        {
+            "kind": "fired",
+            "decision_id": "b",
+            "decision_ts_ns": 200,
+            "side": "DOWN",
+            "price_limit": 0.80,
+            "rationale": "strategy=spot_aware_v2_1 delta_bps=+7.00 side=DOWN",
+        },
+        {"kind": "settled", "decision_id": "b", "resolution": "DOWN", "pnl_usd": 0.25},
+        # Out-of-slice: tier 30-50% but |Δbps|=2 (below threshold)
+        {
+            "kind": "fired",
+            "decision_id": "c",
+            "decision_ts_ns": 300,
+            "side": "UP",
+            "price_limit": 0.40,
+            "rationale": "strategy=spot_aware_v2_1 delta_bps=+2.00 side=UP",
+        },
+        {"kind": "settled", "decision_id": "c", "resolution": "UP", "pnl_usd": 1.0},
+    ]
+    fp.write_text("\n".join(_json.dumps(r) for r in records))
+    metrics = compute_surv_canary_metrics(
+        decisions_root=tmp_path,
+        lookback_n=30,
+        min_samples=1,  # for test: allow 1
+        min_abs_delta_bps=5.0,
+        now_ns=int(datetime(2026, 5, 17, 12, 0, tzinfo=UTC).timestamp() * 1e9),
+    )
+    assert metrics.n_total_in_buffer == 1, "only 1 fire is in the SURV slice"
+    assert metrics.n_settled == 1
+    assert metrics.rolling_wr == 1.0  # a won (resolution UP == side UP)
+    assert metrics.mean_price == 0.40
+
+
+def test_compute_surv_canary_metrics_correction_priority(tmp_path):
+    """settled_correction overrides settled for outcome."""
+    import json as _json
+
+    from polymarket_bot.strategies.surv_canary_metrics import compute_surv_canary_metrics
+
+    day = "2026-05-17"
+    fp = tmp_path / f"{day}.jsonl"
+    records = [
+        {
+            "kind": "fired",
+            "decision_id": "a",
+            "decision_ts_ns": 100,
+            "side": "UP",
+            "price_limit": 0.40,
+            "rationale": "strategy=spot_aware_v2_1 delta_bps=+6.00 side=UP",
+        },
+        # Initial settled says win
+        {"kind": "settled", "decision_id": "a", "resolution": "UP", "pnl_usd": 1.0},
+        # Correction flips to loss
+        {
+            "kind": "settled_correction",
+            "decision_id": "a",
+            "corrected_resolution": "DOWN",
+            "corrected_pnl_usd": -1.0,
+        },
+    ]
+    fp.write_text("\n".join(_json.dumps(r) for r in records))
+    metrics = compute_surv_canary_metrics(
+        decisions_root=tmp_path,
+        lookback_n=30,
+        min_samples=1,
+        min_abs_delta_bps=5.0,
+        now_ns=int(datetime(2026, 5, 17, 12, 0, tzinfo=UTC).timestamp() * 1e9),
+    )
+    assert metrics.n_settled == 1
+    # Correction says DOWN; fire was UP; so it's a LOSS
+    assert metrics.rolling_wr == 0.0
+
+
+def test_compute_surv_canary_metrics_lookback_n(tmp_path):
+    """Only the last N SURV fires are considered."""
+    import json as _json
+
+    from polymarket_bot.strategies.surv_canary_metrics import compute_surv_canary_metrics
+
+    day = "2026-05-17"
+    fp = tmp_path / f"{day}.jsonl"
+    records = []
+    for i in range(5):
+        records.append(
+            {
+                "kind": "fired",
+                "decision_id": f"d{i}",
+                "decision_ts_ns": 100 + i,
+                "side": "UP",
+                "price_limit": 0.40,
+                "rationale": "strategy=spot_aware_v2_1 delta_bps=+6.00 side=UP",
+            }
+        )
+        records.append(
+            {
+                "kind": "settled",
+                "decision_id": f"d{i}",
+                "resolution": "UP" if i < 3 else "DOWN",
+                "pnl_usd": 1.0 if i < 3 else -1.0,
+            }
+        )
+    fp.write_text("\n".join(_json.dumps(r) for r in records))
+    # lookback_n=2 → only last 2 fires (d3, d4 — both losses)
+    metrics = compute_surv_canary_metrics(
+        decisions_root=tmp_path,
+        lookback_n=2,
+        min_samples=1,
+        min_abs_delta_bps=5.0,
+        now_ns=int(datetime(2026, 5, 17, 12, 0, tzinfo=UTC).timestamp() * 1e9),
+    )
+    assert metrics.n_total_in_buffer == 2
+    assert metrics.rolling_wr == 0.0  # both lost

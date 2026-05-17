@@ -65,6 +65,7 @@ from polymarket_bot.strategies.regime_detector import RegimeDetector
 from polymarket_bot.strategies.spot_aware import delta_bps
 from polymarket_bot.strategies.spot_aware_priors import SpotAwarePriors
 from polymarket_bot.strategies.spot_aware_v2 import SpotAwareStrategyV2
+from polymarket_bot.strategies.surv_canary_metrics import SurvCanaryMetrics
 from polymarket_bot.tiers import tier_label_for_price
 
 # Default tier labels whose delta-floor is relaxed to 0 bps. Phase G
@@ -298,6 +299,16 @@ class SpotAwareStrategyV2_1(SpotAwareStrategyV2):
         path_a_wr_getter: Callable[[], PathAMetrics] | None = None,
         path_a_wr_min_samples: int = 20,
         path_a_wr_break_even_margin: float = 0.02,
+        # O.1 — SURV-cell shift canary. Phase N forensic identified the
+        # tier 30-50% x |Δbps|≥5 slice as the dominant peak-to-floor
+        # bleeder (post-peak WR collapse 60.7% → 46.5%). Mirrors M.5's
+        # design but scoped to tier 30-50%. At fire time we filter on
+        # tier-only (post-J.1.5 fold makes |Δ|<5 a no-op); the getter
+        # filters its rolling-WR history on |Δbps|≥5. Cold-start passes
+        # through. design/O.1-surv-cell-shift-canary.md.
+        surv_canary_getter: Callable[[], SurvCanaryMetrics] | None = None,
+        surv_canary_min_samples: int = 10,
+        surv_canary_break_even_margin: float = -0.01,
         # M.2 v0 — orderbook imbalance SHADOW-LOG. When enabled, every
         # fire's rationale is annotated with imbalance=<label> from
         # bid_size_top/ask_size_top of the bot's side. No firing change.
@@ -354,6 +365,10 @@ class SpotAwareStrategyV2_1(SpotAwareStrategyV2):
         self._path_a_wr_getter = path_a_wr_getter
         self._path_a_wr_min_samples = path_a_wr_min_samples
         self._path_a_wr_break_even_margin = path_a_wr_break_even_margin
+        # O.1 — SURV-cell shift canary.
+        self._surv_canary_getter = surv_canary_getter
+        self._surv_canary_min_samples = surv_canary_min_samples
+        self._surv_canary_break_even_margin = surv_canary_break_even_margin
         # M.2 v0 — orderbook imbalance shadow log.
         self._imbalance_shadow_enabled = imbalance_shadow_enabled
         self._imbalance_threshold = imbalance_threshold
@@ -465,6 +480,25 @@ class SpotAwareStrategyV2_1(SpotAwareStrategyV2):
                 # Below dynamic break-even — abstain. No need to reset
                 # `_fired_for_window` because v2 hasn't set it yet (this
                 # check runs BEFORE v2's super()._maybe_fire call below).
+                return None
+
+        # O.1 — SURV-cell shift canary. The Phase N forensic identified
+        # tier 30-50% x |Δbps|≥5 as the dominant peak-to-floor bleeder
+        # (post-peak WR 60.7% → 46.5% on n=228). When the rolling-WR
+        # over the last N SURV fires drops below mean_price + margin,
+        # ABSTAIN tier 30-50% fires (which post-J.1.5 are all SURV-slice).
+        # design/O.1-surv-cell-shift-canary.md.
+        if self._surv_canary_getter is not None and tier == "30-50%":
+            surv_metrics = self._surv_canary_getter()
+            if (
+                surv_metrics.rolling_wr is not None
+                and surv_metrics.mean_price is not None
+                and surv_metrics.n_settled >= self._surv_canary_min_samples
+                and surv_metrics.rolling_wr
+                < surv_metrics.mean_price + self._surv_canary_break_even_margin
+            ):
+                # Below dynamic break-even — abstain pre-super() so the
+                # multi-fire counter doesn't tick (mirrors M.5 semantics).
                 return None
 
         # v2's `_maybe_fire` reads `self._delta_min` and `self._priors`
