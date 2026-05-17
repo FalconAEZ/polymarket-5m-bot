@@ -73,14 +73,62 @@ new branch + archived on VPS.
 - [x] No Phase M/O bot-runtime code in `src/` on the new branch
 - [x] Forensic data (Phase N PDF + audit script + charts) survives
 
-## Session 2 — MMD research + backtest on n=755 — PENDING
+## Session 2 — MMD research + backtest on n=756 — CLOSED 2026-05-18
 
-Outcome target: top-2 MMD candidates picked and backtested on Phase N
-forensic data. Locked integration design for Session 3 ship. Bot stays
-LIVE on J.1.6 baseline through Session 2 — no env flips, no `src/` ships.
+Outcome: top-2 MMD candidates evaluated + backtested on Phase N forensic
+data (n=756 settled fires). Adapter A (`bukosabino/ta` rule-based) locked
+as the Session 3 ship. Bot stayed LIVE on J.1.6 baseline through Session 2
+— zero env flips, zero src/ ships.
 
-Trigger: operator GO after reviewing PHASE_P_KICKOFF.pdf + daily dashboard
-review of first 24-48h baseline behavior.
+### What landed
+
+1. **Phase N data acquired locally** at `/tmp/phase-P-mmd-data/` via SCP
+   from VPS archive `state/decisions{,-resolved}/archived/phase-P-reset/`.
+   Loader: `scripts/research/phase_n_forensic_audit.py::load_data`.
+   n_settled_with_won = 756.
+2. **Binance 1m klines cached** at `state/research/binance_historical/btcusdt_1m_2026-05-12_to_2026-05-18.parquet`
+   (8,528 bars covering 2026-05-12 → 2026-05-17 22:07Z, includes 24h pre-window
+   lookback buffer). Bulk-fetched from public `/api/v3/klines`.
+3. **Backtest script** at `scripts/research/phase_p_mmd_backtest.py` —
+   loads fires, fits both adapters, classifies each fire by 60-min lookback
+   window, computes per-label WR/$tr/n/mean-conf tables + co-occurrence
+   + WR-gap-vs-gate verdict.
+4. **Adapter A (`bukosabino/ta` rule-based)**: MIXED=271 fires 57.9% WR
+   (+$1.94/tr +$526), DOWN=173 53.8% (-$2.03 -$352), CHOPPY=193 53.9%
+   (-$2.29 -$443), UP=119 48.7% (-$1.86 -$222). Best-worst WR gap +9.2pp
+   (1pp shy of 10pp gate, within ±10.7pp noise CI). Counterfactual
+   abstain-non-MIXED: +$1,018 PnL improvement on actual −$492.
+5. **Adapter B (`hmmlearn` 4-state HMM)**: MIXED=184 60.3% (+$2.40
+   +$441), UP=108 57.4% (-$2.49 -$269), DOWN=264 53.0% (-$0.78 -$206),
+   CHOPPY=200 49.5% (-$2.28 -$457). WR gap +10.8pp PASSES gate.
+   Counterfactual: +$933 PnL improvement (in-sample caveat).
+6. **Cross-validation**: both adapters agree MIXED is the only profitable
+   label. Co-occurrence diagonal strong in CHOPPY (74) and MIXED (68);
+   weaker on UP/DOWN (different definitions of trending).
+7. **Pick locked**: **Adapter A** (operator-confirmed 2026-05-18) for:
+   simpler integration (no training step), deterministic output, lighter
+   dep footprint (~3 MB vs ~25 MB), higher actionable PnL (+$1,018 vs
+   +$933), no in-sample fit caveat. WR-gate miss is not statistically
+   load-bearing.
+8. **Design locked** at `design/P.1-market-mode-detector-integration.md`
+   — module signature, plumbing pattern, bar-feed wiring (Binance REST
+   poll every 30s), 10 env flags (all default off), failure modes (HARD
+   pass-through on UNKNOWN), 12-test minimum for Session 3, rollback
+   procedure, Phase Q decision matrix.
+9. **PDF** at `pdfs/PHASE_P_SESSION2_MMD_RESEARCH.pdf` (11 pp + 4
+   embedded charts) — builder at `pdfs/build_phase_p_session2_pdf.py`.
+10. **Vault**: this ledger updated, session note at
+    `state/sessions/2026-05-18-phase-P-session-2-mmd-research.md`,
+    memory checkpoint updated, commit + push.
+
+### Acceptance — all green
+
+- [x] Top-2 MMD candidates evaluated against P.2.1 criteria + backtested on n=756
+- [x] `runbooks/research/phase-P-mmd-backtest-2026-05-18.md` + 4 charts rendered
+- [x] `design/P.1-market-mode-detector-integration.md` locked
+- [x] `pdfs/PHASE_P_SESSION2_MMD_RESEARCH.pdf` rendered (11 pp)
+- [x] Bot still LIVE on J.1.6 baseline; zero env flips; zero src/ ships
+- [x] Vault: session note + memory checkpoint + commit + push
 
 ## Session 3 — MMD shadow-ship + 5-day re-soak — PENDING
 
