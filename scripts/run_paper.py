@@ -464,13 +464,32 @@ def _build_strategy(name: str) -> Strategy:
             LOG.warning("MMD_MODE=%r invalid; falling back to 'shadow'", mmd_mode_env)
             mmd_mode_env = "shadow"
         mmd_labels_to_abstain = _env_csv("MMD_LABELS_TO_ABSTAIN")
+        # Phase Q aggressive — MMD_ABSTAIN_BY_SIDE=MIXED:UP,DOWN:DOWN format.
+        # Parses csv of label:side pairs into tuple[(label, side), ...].
+        mmd_abstain_by_side_raw = _env_csv("MMD_ABSTAIN_BY_SIDE")
+        mmd_abstain_by_side: list[tuple[str, str]] = []
+        for entry in mmd_abstain_by_side_raw:
+            if ":" not in entry:
+                LOG.warning("MMD_ABSTAIN_BY_SIDE entry %r missing ':' separator; skipping", entry)
+                continue
+            lab, side = entry.split(":", 1)
+            lab = lab.strip().upper()
+            side = side.strip().upper()
+            if side not in ("UP", "DOWN"):
+                LOG.warning(
+                    "MMD_ABSTAIN_BY_SIDE entry %r has invalid side %r; skipping",
+                    entry,
+                    side,
+                )
+                continue
+            mmd_abstain_by_side.append((lab, side))
         LOG.warning(
             "spot_aware_v2_1: kelly_mult=%.2f max_bet_abs=$%.0f "
             "multi_fire_cap=%d tier_relax_p_win_fallback=%s "
             "tier_relax_price_floor=%.3f "
             "block_up_in_tiers=%s block_down_in_tiers=%s "
             "hour_blocklist_utc=%s hour_blocklist_tiers=%s "
-            "mmd_mode=%s mmd_labels_to_abstain=%s "
+            "mmd_mode=%s mmd_labels_to_abstain=%s mmd_abstain_by_side=%s "
             "overrides=%s",
             kelly_mult,
             kelly_max_bet_abs,
@@ -483,6 +502,7 @@ def _build_strategy(name: str) -> Strategy:
             hour_blocklist_tiers,
             mmd_mode_env,
             mmd_labels_to_abstain,
+            tuple(mmd_abstain_by_side),
             v21_kwargs,
         )
         return SpotAwareStrategyV2_1(
@@ -498,6 +518,7 @@ def _build_strategy(name: str) -> Strategy:
             hour_blocklist_tiers=hour_blocklist_tiers,
             mmd_mode=mmd_mode_env,
             mmd_labels_to_abstain=mmd_labels_to_abstain,
+            mmd_abstain_by_side=tuple(mmd_abstain_by_side),
             **v21_kwargs,
         )
     if name == "ensemble":

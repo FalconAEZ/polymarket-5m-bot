@@ -251,6 +251,13 @@ class SpotAwareStrategyV2_1(SpotAwareStrategyV2):
         mmd_getter: Callable[[], object] | None = None,
         mmd_mode: str = "shadow",
         mmd_labels_to_abstain: tuple[str, ...] = (),
+        # Phase Q aggressive: side-specific MMD gate. Tuples of (label, side)
+        # pairs; when the MMD reading matches `label` AND the fire's `side`
+        # matches, the fire is abstained (gate mode only). Targets the
+        # MIXED+side=DOWN killer cell (+$3.16/tr on n=226 across 8 days)
+        # by setting MMD_ABSTAIN_BY_SIDE=MIXED:UP — keep firing DOWN-side
+        # in MIXED regime, abstain UP-side. UNKNOWN remains pass-through.
+        mmd_abstain_by_side: tuple[tuple[str, str], ...] = (),
         **v2_kwargs: object,
     ) -> None:
         super().__init__(priors=priors, **v2_kwargs)  # type: ignore[arg-type]
@@ -279,6 +286,11 @@ class SpotAwareStrategyV2_1(SpotAwareStrategyV2):
             )
         if mmd_mode not in ("shadow", "gate"):
             raise ValueError(f"mmd_mode must be one of 'shadow'|'gate'; got {mmd_mode!r}")
+        for pair in mmd_abstain_by_side:
+            if len(pair) != 2 or pair[1] not in ("UP", "DOWN"):
+                raise ValueError(
+                    f"mmd_abstain_by_side entries must be (label, 'UP'|'DOWN') tuples; got {pair!r}"
+                )
         self._bankroll_getter = bankroll_getter
         self._kelly = kelly if kelly is not None else KellyConfig()
         self._multi_fire_cap = multi_fire_cap
@@ -293,6 +305,7 @@ class SpotAwareStrategyV2_1(SpotAwareStrategyV2):
         self._mmd_getter = mmd_getter
         self._mmd_mode = mmd_mode
         self._mmd_labels_to_abstain = frozenset(mmd_labels_to_abstain)
+        self._mmd_abstain_by_side = frozenset(mmd_abstain_by_side)
         self._fires_this_window: int = 0
 
     @property
@@ -486,6 +499,20 @@ class SpotAwareStrategyV2_1(SpotAwareStrategyV2):
             ):
                 # Reset per-window flag so a later tick in the same window
                 # can re-evaluate. Do not tick the multi-fire counter.
+                self._fired_for_window = None
+                return None
+            # Phase Q aggressive side-specific gate: (label, bet-side) pairs.
+            # `bet-side` is the UP/DOWN bet direction (from `side_guess`),
+            # NOT Decision.side which is BUY/SELL (order direction).
+            # E.g., MMD_ABSTAIN_BY_SIDE=MIXED:UP abstains UP-side fires in
+            # MIXED regime while keeping DOWN-side firing — targets the
+            # MIXED+DOWN cell (+$3.16/tr on n=226). UNKNOWN remains
+            # pass-through here too.
+            if (
+                self._mmd_mode == "gate"
+                and mmd_label != "UNKNOWN"
+                and (mmd_label, side_guess) in self._mmd_abstain_by_side
+            ):
                 self._fired_for_window = None
                 return None
 

@@ -464,6 +464,111 @@ async def test_strategy_set_mmd_getter_rebinds() -> None:
     assert "mmd=" not in decision2.rationale
 
 
+# ────────────────────────────────────────────────────────────────────────────
+# Phase Q aggressive: MMD_ABSTAIN_BY_SIDE side-specific gate
+# ────────────────────────────────────────────────────────────────────────────
+
+
+async def test_strategy_side_gate_abstains_matching_label_and_side() -> None:
+    """MMD_ABSTAIN_BY_SIDE=(MIXED,UP): abstain UP-side fires in MIXED regime."""
+    strat = SpotAwareStrategyV2_1(
+        priors=_StubPriors(p_win=0.55),
+        bankroll_getter=_bankroll(),
+        mmd_getter=lambda: _FakeReading(label="MIXED", confidence=0.5),
+        mmd_mode="gate",
+        mmd_labels_to_abstain=(),
+        mmd_abstain_by_side=(("MIXED", "UP"),),
+    )
+    # UP-side fire in MIXED → should abstain (side gate matches)
+    decision = await _drive_simple_window(strat, open_spot=80_000.0, end_spot=80_016.0, ask_up=0.40)
+    assert decision is None
+
+
+async def test_strategy_side_gate_allows_unmatched_side() -> None:
+    """MMD_ABSTAIN_BY_SIDE=(MIXED,UP): DOWN-side fires in MIXED still fire."""
+    strat = SpotAwareStrategyV2_1(
+        priors=_StubPriors(p_win=0.55),
+        bankroll_getter=_bankroll(),
+        mmd_getter=lambda: _FakeReading(label="MIXED", confidence=0.5),
+        mmd_mode="gate",
+        mmd_abstain_by_side=(("MIXED", "UP"),),
+    )
+    # DOWN-side fire in MIXED → side gate does NOT match → fire
+    decision = await _drive_simple_window(strat, open_spot=80_000.0, end_spot=79_984.0, ask_up=0.40)
+    assert decision is not None
+    assert "mmd=MIXED" in decision.rationale
+    # `Decision.side` is BUY/SELL (order side); bet direction is in the rationale.
+    assert "side=DOWN" in decision.rationale
+
+
+async def test_strategy_side_gate_allows_unmatched_label() -> None:
+    """MMD_ABSTAIN_BY_SIDE=(MIXED,UP): UP-side fires in DOWN regime still fire."""
+    strat = SpotAwareStrategyV2_1(
+        priors=_StubPriors(p_win=0.55),
+        bankroll_getter=_bankroll(),
+        mmd_getter=lambda: _FakeReading(label="DOWN", confidence=0.7),
+        mmd_mode="gate",
+        mmd_abstain_by_side=(("MIXED", "UP"),),
+    )
+    # UP-side fire in DOWN-label → side gate does not match
+    decision = await _drive_simple_window(strat, open_spot=80_000.0, end_spot=80_016.0, ask_up=0.40)
+    assert decision is not None
+    assert "mmd=DOWN" in decision.rationale
+
+
+async def test_strategy_side_gate_unknown_label_passes_through() -> None:
+    """UNKNOWN always passes through, even if side gate would otherwise match."""
+    strat = SpotAwareStrategyV2_1(
+        priors=_StubPriors(p_win=0.55),
+        bankroll_getter=_bankroll(),
+        mmd_getter=lambda: _FakeReading(label="UNKNOWN", confidence=0.0),
+        mmd_mode="gate",
+        mmd_abstain_by_side=(("UNKNOWN", "UP"),),
+    )
+    decision = await _drive_simple_window(strat, open_spot=80_000.0, end_spot=80_016.0, ask_up=0.40)
+    assert decision is not None  # UNKNOWN is pass-through; never abstains
+    assert "mmd=UNKNOWN" in decision.rationale
+
+
+async def test_strategy_side_gate_shadow_mode_never_abstains() -> None:
+    """Side gate is ONLY active in gate mode; shadow ignores it."""
+    strat = SpotAwareStrategyV2_1(
+        priors=_StubPriors(p_win=0.55),
+        bankroll_getter=_bankroll(),
+        mmd_getter=lambda: _FakeReading(label="MIXED", confidence=0.5),
+        mmd_mode="shadow",  # not gate
+        mmd_abstain_by_side=(("MIXED", "UP"),),
+    )
+    decision = await _drive_simple_window(strat, open_spot=80_000.0, end_spot=80_016.0, ask_up=0.40)
+    assert decision is not None  # shadow mode never abstains
+    assert "mmd=MIXED" in decision.rationale
+
+
+async def test_strategy_side_gate_init_rejects_bad_format() -> None:
+    """Init must reject side-gate entries that aren't (label, 'UP'|'DOWN') tuples."""
+    with pytest.raises(ValueError, match=r"mmd_abstain_by_side"):
+        SpotAwareStrategyV2_1(
+            priors=_StubPriors(p_win=0.55),
+            bankroll_getter=_bankroll(),
+            mmd_abstain_by_side=(("MIXED", "WRONG_SIDE"),),
+        )
+
+
+async def test_strategy_side_gate_combined_with_label_abstain() -> None:
+    """Both gates run: label abstain takes effect first; side gate is secondary."""
+    # In MIXED-UP: side gate abstains. In CHOPPY-anything: label abstain.
+    strat = SpotAwareStrategyV2_1(
+        priors=_StubPriors(p_win=0.55),
+        bankroll_getter=_bankroll(),
+        mmd_getter=lambda: _FakeReading(label="CHOPPY", confidence=0.7),
+        mmd_mode="gate",
+        mmd_labels_to_abstain=("CHOPPY",),  # label abstain
+        mmd_abstain_by_side=(("MIXED", "UP"),),  # side abstain
+    )
+    decision = await _drive_simple_window(strat, open_spot=80_000.0, end_spot=80_016.0, ask_up=0.40)
+    assert decision is None  # CHOPPY label triggers label-abstain
+
+
 async def test_mmd_reading_dataclass_is_frozen() -> None:
     r = MmdReading(
         label="MIXED",
