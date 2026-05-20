@@ -237,6 +237,19 @@ def tier_for_price(price: float) -> str | None:
     return "85-100%"
 
 
+# Per-tier-side blocklist locked from `runbooks/research/mmb-deep-edge-audit-
+# 2026-05-20.md` §2 Edge 1. These three cells were measured at NEGATIVE $/tr
+# across n=8,000+ fresh weekly fills (bonereaper 2026-05-19) — keeping them
+# enabled in MMB at our scale is a guaranteed weekly leak.
+DEFAULT_TIER_SIDE_BLOCKLIST: Final[frozenset[tuple[str, str]]] = frozenset(
+    {
+        ("50-70%", "DOWN"),  # -$0.76/tr x 3366 fills = -$2,563/wk leak
+        ("15-30%", "UP"),  # -$0.61/tr x 1345 fills = -$820/wk leak
+        ("30-50%", "UP"),  # -$0.11/tr x 3079 fills = -$325/wk marginal leak
+    }
+)
+
+
 @dataclass(slots=True)
 class LadderPlanner:
     """Pure planner: produces ladder levels + cancel/replace actions.
@@ -245,6 +258,14 @@ class LadderPlanner:
     `J7Priors` is the priors source for per-level sizing. `RiskCaps` is
     read for the per-token inventory cap; gross + daily checks happen in
     `RiskGate`.
+
+    `blocklist` is a set of (tier, side-string) pairs the planner will
+    refuse to ladder. Default set comes from the 2026-05-20 deep edge audit
+    (`runbooks/research/mmb-deep-edge-audit-2026-05-20.md` §2 Edge 1) which
+    found 3 cells with statistically-real negative $/tr in bonereaper's
+    fresh weekly fills. Side is stored as the StrEnum value (`"UP"` /
+    `"DOWN"`) so the literal set is JSON-serialisable for env-driven
+    overrides without depending on the Side enum at module load time.
     """
 
     priors: J7Priors
@@ -254,6 +275,7 @@ class LadderPlanner:
     l2l3_repost_threshold: float = DEFAULT_L2L3_REPOST_THRESHOLD
     window_cleanup_secs: float = DEFAULT_WINDOW_CLEANUP_SECS
     price_floor: float = DEFAULT_PRICE_FLOOR
+    blocklist: frozenset[tuple[str, str]] = DEFAULT_TIER_SIDE_BLOCKLIST
 
     def plan_levels(
         self,
@@ -287,6 +309,14 @@ class LadderPlanner:
                 continue
             tier = tier_for_price(price)
             if tier is None:
+                continue
+            # Edge 1 (audit §2): refuse to ladder cells the data marks as
+            # statistically-negative-$/tr. Skip per-level (not per-side)
+            # because ladder depths can span tier boundaries — e.g. at
+            # best_ask=0.55 the L3 lands in 30-50% which is blocked for UP
+            # but L1+L2 are in 50-70% (also blocked for DOWN). Per-level
+            # check catches both cases cleanly.
+            if (tier, side.value) in self.blocklist:
                 continue
             size_usd = self.priors.bet_size(tier=tier, fill_price=price, bankroll=bankroll_usd)
             if size_usd <= 0.0:
@@ -588,13 +618,16 @@ class MarketMakerStrategy:
     name: str = "market_maker"
     tracker: InventoryTracker = field(default_factory=InventoryTracker)
     gate: RiskGate = field(default_factory=RiskGate)
+    blocklist: frozenset[tuple[str, str]] = DEFAULT_TIER_SIDE_BLOCKLIST
     planner: LadderPlanner = field(init=False)
     resolver: PayoutResolver = field(init=False)
     open_orders: dict[str, OpenOrder] = field(default_factory=dict)
     previous_best_ask: dict[tuple[str, Side], float] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        self.planner = LadderPlanner(priors=self.priors, caps=self.gate.caps)
+        self.planner = LadderPlanner(
+            priors=self.priors, caps=self.gate.caps, blocklist=self.blocklist
+        )
         self.resolver = PayoutResolver(tracker=self.tracker, gate=self.gate)
 
     def on_book_update(

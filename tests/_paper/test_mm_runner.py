@@ -69,6 +69,7 @@ def _make_runner(
         priors=_priors(),
         bankroll_getter=lambda: 1000.0,
         gate=RiskGate(caps=RiskCaps()),
+        blocklist=frozenset(),  # isolate runner mechanics from default blocklist
     )
     log = MmDecisionLog(root=tmp_path / "mm-decisions")
     runner = MmRunner(

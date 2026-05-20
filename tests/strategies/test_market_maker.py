@@ -23,6 +23,7 @@ import pytest
 from polymarket_bot.strategies.j7_priors import J7Priors
 from polymarket_bot.strategies.market_maker import (
     DEFAULT_PRICE_FLOOR,
+    DEFAULT_TIER_SIDE_BLOCKLIST,
     CancelOrder,
     InventoryTracker,
     LadderPlanner,
@@ -106,7 +107,7 @@ def test_tier_for_price_returns_none_on_degenerate() -> None:
 
 def test_plan_levels_full_ladder_at_mid_ask(priors: J7Priors) -> None:
     """best_ask=$0.40: levels at $0.35, $0.30, $0.20 — all in +EV tiers."""
-    planner = LadderPlanner(priors=priors)
+    planner = LadderPlanner(priors=priors, blocklist=frozenset())
     levels = planner.plan_levels(
         market_id="m1",
         token_id="t_up",
@@ -127,7 +128,7 @@ def test_plan_levels_full_ladder_at_mid_ask(priors: J7Priors) -> None:
 
 def test_plan_levels_skips_side_when_ask_too_low(priors: J7Priors) -> None:
     """best_ask < $0.10 → entire side skipped (every depth clips the floor)."""
-    planner = LadderPlanner(priors=priors)
+    planner = LadderPlanner(priors=priors, blocklist=frozenset())
     levels = planner.plan_levels(
         market_id="m1",
         token_id="t",
@@ -142,7 +143,7 @@ def test_plan_levels_skips_side_when_ask_too_low(priors: J7Priors) -> None:
 
 def test_plan_levels_skips_individual_level_below_floor(priors: J7Priors) -> None:
     """best_ask=$0.20: -$0.05=0.15 OK; -$0.10=0.10 OK; -$0.20=0.00 below floor → skip."""
-    planner = LadderPlanner(priors=priors)
+    planner = LadderPlanner(priors=priors, blocklist=frozenset())
     levels = planner.plan_levels(
         market_id="m1",
         token_id="t",
@@ -158,7 +159,7 @@ def test_plan_levels_skips_individual_level_below_floor(priors: J7Priors) -> Non
 
 def test_plan_levels_skips_when_below_min_order_size(priors: J7Priors) -> None:
     """If size_shares < min_order_size_shares, skip the level."""
-    planner = LadderPlanner(priors=priors)
+    planner = LadderPlanner(priors=priors, blocklist=frozenset())
     # min_order_size_shares of 1000 will reject any level whose Kelly bet
     # in shares is below 1000 — at $5-$10 sizes that's everything.
     levels = planner.plan_levels(
@@ -186,7 +187,7 @@ def test_plan_levels_skip_when_negative_ev(tmp_path: Path) -> None:
     bad_path = tmp_path / "bad.json"
     bad_path.write_text(json.dumps(bad))
     priors = J7Priors.load(refresh_path=bad_path, bootstrap_path=bad_path)
-    planner = LadderPlanner(priors=priors)
+    planner = LadderPlanner(priors=priors, blocklist=frozenset())
     # All ladder levels in 30-50% tier will price > p_win=0.40 → -EV.
     levels = planner.plan_levels(
         market_id="m1",
@@ -207,7 +208,7 @@ def test_plan_levels_skip_when_negative_ev(tmp_path: Path) -> None:
 
 def test_plan_update_initial_places_full_ladder(priors: J7Priors) -> None:
     """First book update (no previous_ask) → place all 3 levels."""
-    planner = LadderPlanner(priors=priors)
+    planner = LadderPlanner(priors=priors, blocklist=frozenset())
     actions = planner.plan_update(
         market_id="m1",
         token_id="t",
@@ -226,7 +227,7 @@ def test_plan_update_initial_places_full_ladder(priors: J7Priors) -> None:
 
 def test_plan_update_no_op_when_book_stable(priors: J7Priors) -> None:
     """Small book move (< l1_repost_threshold) → no actions."""
-    planner = LadderPlanner(priors=priors)
+    planner = LadderPlanner(priors=priors, blocklist=frozenset())
     # Open orders representing an active ladder.
     open_orders = [
         OpenOrder(
@@ -262,7 +263,7 @@ def test_plan_update_no_op_when_book_stable(priors: J7Priors) -> None:
 
 def test_plan_update_cancels_L1_only_on_small_move(priors: J7Priors) -> None:
     """Move > 0.02 but < 0.05 → cancel L1, place fresh L1, leave L2+L3."""
-    planner = LadderPlanner(priors=priors)
+    planner = LadderPlanner(priors=priors, blocklist=frozenset())
     base_levels = planner.plan_levels(
         market_id="m1",
         token_id="t",
@@ -300,7 +301,7 @@ def test_plan_update_cancels_L1_only_on_small_move(priors: J7Priors) -> None:
 
 def test_plan_update_cancels_all_on_big_move(priors: J7Priors) -> None:
     """Move > 0.05 → cancel all 3 + repost full ladder."""
-    planner = LadderPlanner(priors=priors)
+    planner = LadderPlanner(priors=priors, blocklist=frozenset())
     base_levels = planner.plan_levels(
         market_id="m1",
         token_id="t",
@@ -338,7 +339,7 @@ def test_plan_update_cancels_all_on_big_move(priors: J7Priors) -> None:
 
 def test_plan_update_window_end_cancels_all_no_replace(priors: J7Priors) -> None:
     """Seconds-remaining < 15 → cancel ALL, place NOTHING (no carry into resolve)."""
-    planner = LadderPlanner(priors=priors)
+    planner = LadderPlanner(priors=priors, blocklist=frozenset())
     base_levels = planner.plan_levels(
         market_id="m1",
         token_id="t",
@@ -546,8 +547,13 @@ def test_payout_resolver_records_realized_pnl_into_gate() -> None:
 
 
 def test_strategy_on_book_update_places_initial_ladder(priors: J7Priors) -> None:
-    """First tick: strategy returns the full ladder as PlaceOrder actions."""
-    strat = MarketMakerStrategy(priors=priors, bankroll_getter=lambda: 1000.0)
+    """First tick: strategy returns the full ladder as PlaceOrder actions.
+    Passes blocklist=frozenset() to bypass the default tier-side filter
+    so this test isolates the placement mechanic (blocklist behavior has
+    dedicated tests below)."""
+    strat = MarketMakerStrategy(
+        priors=priors, bankroll_getter=lambda: 1000.0, blocklist=frozenset()
+    )
     actions = strat.on_book_update(
         market_id="m1",
         token_id="t_up",
@@ -608,7 +614,9 @@ def test_strategy_reset_clears_all_state(priors: J7Priors) -> None:
 def test_strategy_multi_market_isolation(priors: J7Priors) -> None:
     """Inventory on m1 must not affect placement on m2 (gross_exposure is per-market)."""
     gate = RiskGate(caps=RiskCaps(max_gross_exposure_per_window_usd=50.0))
-    strat = MarketMakerStrategy(priors=priors, bankroll_getter=lambda: 1000.0, gate=gate)
+    strat = MarketMakerStrategy(
+        priors=priors, bankroll_getter=lambda: 1000.0, gate=gate, blocklist=frozenset()
+    )
     # Saturate m1 to its gross cap.
     strat.tracker.confirm_in_flight("m1", Side.UP, 25.0, 50.0)
     strat.tracker.confirm_in_flight("m1", Side.DOWN, 25.0, 50.0)
@@ -648,3 +656,123 @@ def test_strategy_in_flight_counts_toward_cap(priors: J7Priors) -> None:
     )
     assert not allowed
     assert reason == "max_inventory_per_token"
+
+
+# ---------- 8. Blocklist (Edge 1, audit 2026-05-20) ----------
+
+
+def test_default_blocklist_contains_audited_cells() -> None:
+    """The default blocklist must contain the 3 cells the audit identified
+    as statistically-negative-$/tr from n=8,000+ fresh weekly fills."""
+    assert ("50-70%", "DOWN") in DEFAULT_TIER_SIDE_BLOCKLIST
+    assert ("15-30%", "UP") in DEFAULT_TIER_SIDE_BLOCKLIST
+    assert ("30-50%", "UP") in DEFAULT_TIER_SIDE_BLOCKLIST
+
+
+def test_blocklist_skips_levels_in_blocked_tier_side(priors: J7Priors) -> None:
+    """At best_ask=0.40 UP-side, all 3 ladder depths land in tiers
+    (30-50%, 30-50%, 15-30%) that are blocked for UP. Expect no levels."""
+    planner = LadderPlanner(priors=priors)  # default blocklist active
+    levels = planner.plan_levels(
+        market_id="m1",
+        token_id="t",
+        side=Side.UP,
+        best_ask=0.40,
+        bankroll_usd=1000.0,
+        tick_size="0.01",
+        min_order_size_shares=1.0,
+    )
+    assert levels == []
+
+
+def test_blocklist_allows_non_blocked_side_at_same_ask(priors: J7Priors) -> None:
+    """Same best_ask=0.40 but Side.DOWN — 30-50% x DOWN is NOT in the
+    default blocklist (only 30-50% x UP is). Expect at least one level."""
+    planner = LadderPlanner(priors=priors)  # default blocklist active
+    levels = planner.plan_levels(
+        market_id="m1",
+        token_id="t",
+        side=Side.DOWN,
+        best_ask=0.40,
+        bankroll_usd=1000.0,
+        tick_size="0.01",
+        min_order_size_shares=1.0,
+    )
+    assert len(levels) >= 1
+    for lvl in levels:
+        # No level should be in a (tier, "DOWN") blocked cell.
+        from polymarket_bot.strategies.market_maker import tier_for_price
+
+        tier = tier_for_price(lvl.price)
+        assert (tier, "DOWN") not in DEFAULT_TIER_SIDE_BLOCKLIST
+
+
+def test_blocklist_blocks_50_70_down_at_high_ask(priors: J7Priors) -> None:
+    """At best_ask=0.55 DOWN-side, L1 (0.50) and L2 (0.45) are at the
+    50-70%/30-50% boundary; L3 (0.35) is in 30-50% which is allowed for
+    DOWN AND has enough Kelly edge to size above MIN_BET. The 0.50 level
+    falls in 50-70% which is blocked for DOWN. Expect L3 placed."""
+    planner = LadderPlanner(priors=priors)  # default blocklist active
+    levels = planner.plan_levels(
+        market_id="m1",
+        token_id="t",
+        side=Side.DOWN,
+        best_ask=0.55,
+        bankroll_usd=1000.0,
+        tick_size="0.01",
+        min_order_size_shares=1.0,
+    )
+    # At least one level survives at < 0.50 (in 30-50% allowed for DOWN);
+    # nothing in 50-70% blocked cell.
+    for lvl in levels:
+        # No surviving level lands in the 50-70% x DOWN blocked cell.
+        assert lvl.price < 0.50, f"level price {lvl.price} should be in 30-50% tier"
+    assert len(levels) >= 1, "expected at least the L3 level at 0.35 in 30-50%"
+
+
+def test_empty_blocklist_restores_full_ladder(priors: J7Priors) -> None:
+    """Explicit empty blocklist disables the filter — original ladder
+    behavior returns."""
+    planner = LadderPlanner(priors=priors, blocklist=frozenset())
+    levels = planner.plan_levels(
+        market_id="m1",
+        token_id="t",
+        side=Side.UP,
+        best_ask=0.40,
+        bankroll_usd=1000.0,
+        tick_size="0.01",
+        min_order_size_shares=1.0,
+    )
+    assert len(levels) == 3
+
+
+def test_custom_blocklist_can_extend_default(priors: J7Priors) -> None:
+    """Operator can extend the default blocklist with additional cells."""
+    custom = DEFAULT_TIER_SIDE_BLOCKLIST | frozenset({("<15%", "UP")})
+    planner = LadderPlanner(priors=priors, blocklist=custom)
+    # best_ask=0.20 with UP → L1=0.15 (15-30% UP blocked default),
+    # L2=0.10 (<15% UP, blocked by custom extension), L3 would clip floor.
+    levels = planner.plan_levels(
+        market_id="m1",
+        token_id="t",
+        side=Side.UP,
+        best_ask=0.20,
+        bankroll_usd=1000.0,
+        tick_size="0.01",
+        min_order_size_shares=1.0,
+    )
+    assert levels == []
+
+
+def test_strategy_blocklist_passthrough_to_planner(priors: J7Priors) -> None:
+    """MarketMakerStrategy passes its blocklist through to the
+    LadderPlanner it builds in __post_init__."""
+    custom = frozenset({("85-100%", "UP")})
+    strat = MarketMakerStrategy(priors=priors, bankroll_getter=lambda: 1000.0, blocklist=custom)
+    assert strat.planner.blocklist == custom
+
+
+def test_strategy_default_blocklist_matches_module_default(priors: J7Priors) -> None:
+    """Strategy without an explicit blocklist uses the module default."""
+    strat = MarketMakerStrategy(priors=priors, bankroll_getter=lambda: 1000.0)
+    assert strat.planner.blocklist == DEFAULT_TIER_SIDE_BLOCKLIST
