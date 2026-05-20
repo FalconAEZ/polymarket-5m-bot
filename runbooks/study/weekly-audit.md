@@ -2,34 +2,34 @@
 
 **Decision:** **ABORT**  (strict: 7-day win-rate ≥ 60%)
 
-Generated: 2026-05-06 06:15 UTC
+Generated: 2026-05-19 15:12 UTC
 Method: per-market enumeration via Polymarket Data API + Gamma API.
 
 ## Headline numbers
 
 | Metric | Value |
 |---|---|
-| Resolved BTC 5m trades, last 7d | **56,972** |
-| Wins | 29,995 |
-| Win-rate | **52.65%** (95% CI [52.24%, 53.06%]) |
-| Gross P&L | $+31,053.53 |
-| Total notional | $2,344,672 |
-| Avg trade size | 70.14 shares |
-| Earliest trade | 2026-04-29 06:11:14+00:00 |
-| Latest trade | 2026-05-06 06:04:06+00:00 |
+| Resolved BTC 5m trades, last 7d | **21,630** |
+| Wins | 11,016 |
+| Win-rate | **50.93%** (95% CI [50.26%, 51.60%]) |
+| Gross P&L | $+11,024.61 |
+| Total notional | $765,956 |
+| Avg trade size | 69.89 shares |
+| Earliest trade | 2026-05-12 15:10:50+00:00 |
+| Latest trade | 2026-05-19 15:03:59+00:00 |
 
 ## Coverage
 
-- BTC 5-min markets enumerated (closed + resolved in window): **2,015**
-- Markets where bonereaper traded: **1,927** (96%)
+- BTC 5-min markets enumerated (closed + resolved in window): **808**
+- Markets where bonereaper traded: **723** (89%)
 
 ## Gate
 
 | Criterion | Measured | Threshold | Pass? |
 |---|---|---|---|
-| 7-day BTC 5m win-rate | 52.65% | ≥ 60% | ❌ |
-| 7-day BTC 5m trades | 56,972 | ≥ 500 | ✅ |
-| 95% CI upper bound | 53.06% | ≥ 60% | ❌ |
+| 7-day BTC 5m win-rate | 50.93% | ≥ 60% | ❌ |
+| 7-day BTC 5m trades | 21,630 | ≥ 500 | ✅ |
+| 95% CI upper bound | 51.60% | ≥ 60% | ❌ |
 
 ## Method
 

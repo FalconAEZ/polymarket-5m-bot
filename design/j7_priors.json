@@ -1,0 +1,69 @@
+{
+  "schema_version": 1,
+  "name": "j7_priors",
+  "description": "Per-tier aligned-WR priors derived from the bonereaper 30-day spot-vs-book audit (n=306,966 BTC 5-min trades). Used by MarketMakerStrategy (Phase S) for per-ladder-level p_win estimation and by SpotAwareStrategyV2_1 (J.7 sketch, design/bonereaper_blended_priors.md) for Bayesian-blended priors.",
+  "source": {
+    "audit_file": "runbooks/research/bonereaper-spot-vs-book-30d-2026-05-08.md",
+    "audit_run_date": "2026-05-07",
+    "lookback_days": 30,
+    "wallet": "0xeebde7a0e019a63e6b476eb425505b7b3e6eba30",
+    "n_trades_joined": 306966,
+    "overall_direct_wr": 0.517,
+    "overall_aligned_wr": 0.674,
+    "overall_contrarian_wr": 0.364,
+    "overall_flat_wr": 0.539,
+    "alignment_gap_pp": 30.9,
+    "gross_pnl_dollars": 234864.16,
+    "gross_notional_dollars": 12133403.29
+  },
+  "freshness_check": {
+    "audit_file": "runbooks/study/weekly-audit.md",
+    "audit_run_date": "2026-05-19",
+    "lookback_days": 7,
+    "n_trades_resolved": 21630,
+    "direct_wr": 0.5093,
+    "gross_pnl_dollars": 11024.61,
+    "gross_notional_dollars": 765956,
+    "verdict": "Direct WR stable within 0.8pp of 30d baseline (50.93% vs 51.7%); priors table considered current. Session 2 backtest WILL re-derive an aligned table on the 2026-05-19 data via scripts/research/bonereaper_spot_vs_book.py before final sizing."
+  },
+  "tiers": {
+    "<15%": {
+      "aligned":    {"n":    722, "wr": 0.137, "notional":     6794, "gross_pnl":  6377, "per_trade_pnl":  8.83},
+      "contrarian": {"n":  16622, "wr": 0.099, "notional":   164751, "gross_pnl":  8230, "per_trade_pnl":  0.50},
+      "flat":       {"n":    143, "wr": 0.105, "notional":     1558, "gross_pnl":  -394, "per_trade_pnl": -2.75}
+    },
+    "15-30%": {
+      "aligned":    {"n":   3167, "wr": 0.250, "notional":    37718, "gross_pnl":    336, "per_trade_pnl":  0.11},
+      "contrarian": {"n":  32174, "wr": 0.244, "notional":   383906, "gross_pnl":  22938, "per_trade_pnl":  0.71},
+      "flat":       {"n":   3523, "wr": 0.256, "notional":    44582, "gross_pnl":   1015, "per_trade_pnl":  0.29}
+    },
+    "30-50%": {
+      "aligned":    {"n":  14802, "wr": 0.454, "notional":   262680, "gross_pnl":  17307, "per_trade_pnl":  1.17},
+      "contrarian": {"n":  44300, "wr": 0.410, "notional":   736611, "gross_pnl":  27000, "per_trade_pnl":  0.61},
+      "flat":       {"n":  30737, "wr": 0.462, "notional":   569289, "gross_pnl":  48072, "per_trade_pnl":  1.56}
+    },
+    "50-70%": {
+      "aligned":    {"n":  39681, "wr": 0.631, "notional":  1068239, "gross_pnl":  37878, "per_trade_pnl":  0.95},
+      "contrarian": {"n":  19319, "wr": 0.582, "notional":   482580, "gross_pnl":   3312, "per_trade_pnl":  0.17},
+      "flat":       {"n":  47471, "wr": 0.583, "notional":  1197259, "gross_pnl":  32050, "per_trade_pnl":  0.68}
+    },
+    "70-85%": {
+      "aligned":    {"n":  28674, "wr": 0.780, "notional":  1302481, "gross_pnl":  11508, "per_trade_pnl":  0.40},
+      "contrarian": {"n":   3740, "wr": 0.779, "notional":   165992, "gross_pnl":   1410, "per_trade_pnl":  0.38},
+      "flat":       {"n":   5755, "wr": 0.750, "notional":   244621, "gross_pnl":   2219, "per_trade_pnl":  0.39}
+    },
+    "85-100%": {
+      "aligned":    {"n":  14916, "wr": 0.917, "notional":  5285199, "gross_pnl":   9648, "per_trade_pnl":  0.65},
+      "contrarian": {"n":    885, "wr": 0.924, "notional":   150150, "gross_pnl":   4421, "per_trade_pnl":  4.99},
+      "flat":       {"n":    335, "wr": 0.913, "notional":    28991, "gross_pnl":   1538, "per_trade_pnl":  4.59}
+    }
+  },
+  "notes": [
+    "Tier boundaries are inclusive-lower / exclusive-upper (15-30% = [0.15, 0.30)).",
+    "Aligned = spot-Δ aligned with bet side (UP+Δ>0 or DOWN+Δ<0). Contrarian = opposed. Flat = |Δ_bps|<5.",
+    "MarketMakerStrategy (Phase S) does NOT condition on alignment at order-place time — it ladders both sides. Use aligned_wr as p_win prior for the LADDER LEVEL's tier; the alignment of any fill is incidental to the ladder design.",
+    "Bonereaper's $/trade is highest in the <15% tier (+$8.83 aligned, +$0.50 contrarian) because favored-side losing fills there cost only the fill price ($0.05-$0.15). MMB must size CONSERVATIVELY here: low-tier wins are huge but losing-side fills accumulate fast at $20-$50/level.",
+    "85-100% tier is bonereaper's volume sink ($5.46M of $12.13M notional, 45% of book). MMB at $3k bankroll cannot replicate the depth in this tier; expect lower per-level sizes there.",
+    "Session 2's backtest harness will produce a refreshed table keyed on (tier, abs_delta_bucket, side) for finer-grained sizing. This file is the bootstrap table — bonereaper-blended priors §3.1 defines the upgrade path."
+  ]
+}
