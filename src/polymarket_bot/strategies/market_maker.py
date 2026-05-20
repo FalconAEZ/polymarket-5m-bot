@@ -64,6 +64,14 @@ DEFAULT_L2L3_REPOST_THRESHOLD: Final[float] = 0.05
 # Window-end cleanup trigger: cancel ALL when this much time remains.
 DEFAULT_WINDOW_CLEANUP_SECS: Final[float] = 15.0
 
+# Edge 2 (audit 2026-05-20 §2): late-window size multiplier. Bonereaper's
+# fresh weekly data showed the 0-30s + 30-60s buckets have $/tr 3-12x
+# higher than mid/early. Default doubles ladder-level size when
+# `seconds_remaining < 60`. Capped by RiskGate so it can't blow through
+# the per-token / per-window / max-bet limits.
+DEFAULT_LATE_WINDOW_THRESHOLD_S: Final[float] = 60.0
+DEFAULT_LATE_WINDOW_SIZE_MULTIPLIER: Final[float] = 2.0
+
 # Polymarket simulator floor (commit 46b3ce6, post-Phase-11.A): do not
 # post any order below $0.05. Below this, fill behavior is phantom.
 DEFAULT_PRICE_FLOOR: Final[float] = 0.05
@@ -276,6 +284,8 @@ class LadderPlanner:
     window_cleanup_secs: float = DEFAULT_WINDOW_CLEANUP_SECS
     price_floor: float = DEFAULT_PRICE_FLOOR
     blocklist: frozenset[tuple[str, str]] = DEFAULT_TIER_SIDE_BLOCKLIST
+    late_window_threshold_s: float = DEFAULT_LATE_WINDOW_THRESHOLD_S
+    late_window_size_multiplier: float = DEFAULT_LATE_WINDOW_SIZE_MULTIPLIER
 
     def plan_levels(
         self,
@@ -287,6 +297,7 @@ class LadderPlanner:
         bankroll_usd: float,
         tick_size: str,
         min_order_size_shares: float,
+        seconds_remaining: float | None = None,
     ) -> list[LadderLevel]:
         """Generate the 3-level ladder for one (market, side) at current book state.
 
@@ -295,6 +306,14 @@ class LadderPlanner:
         price falls below the floor, OR whose Kelly-sized USD bet is 0
         (no edge / below MIN_BET), OR whose share count would fall below
         the market's `min_order_size_shares`.
+
+        `seconds_remaining` enables Edge 2 (audit §2 Edge 2): when the
+        window is in its LATE phase (default < 60s remaining), size each
+        level by `late_window_size_multiplier` (default 2x). Bonereaper's
+        fresh weekly data shows 0-30s + 30-60s buckets have $/tr 3-12x
+        higher than mid/early — overweighting size there is the second
+        major audit edge. None (default) preserves the pre-Edge-2 behavior
+        for callers that don't supply window timing.
         """
         if best_ask < self.price_floor * 2.0:
             # best_ask < $0.10: every ladder level clips the floor.
@@ -321,6 +340,12 @@ class LadderPlanner:
             size_usd = self.priors.bet_size(tier=tier, fill_price=price, bankroll=bankroll_usd)
             if size_usd <= 0.0:
                 continue
+            # Edge 2 (audit §2): LATE-window size multiplier. Doubles size
+            # in the last `late_window_threshold_s` of the window. Capped
+            # by the per-token RiskCap to prevent blow-through.
+            if seconds_remaining is not None and seconds_remaining < self.late_window_threshold_s:
+                boosted = size_usd * self.late_window_size_multiplier
+                size_usd = min(boosted, self.caps.max_inventory_per_token_usd)
             size_shares = size_usd / price
             if size_shares < min_order_size_shares:
                 continue
@@ -372,6 +397,8 @@ class LadderPlanner:
 
         if previous_best_ask is None:
             # First book update for this market — place full ladder fresh.
+            # Pass seconds_remaining so Edge 2 late-window multiplier fires
+            # when this is also the LATE-bucket placement.
             for lvl in self.plan_levels(
                 market_id=market_id,
                 token_id=token_id,
@@ -380,6 +407,7 @@ class LadderPlanner:
                 bankroll_usd=bankroll_usd,
                 tick_size=tick_size,
                 min_order_size_shares=min_order_size_shares,
+                seconds_remaining=seconds_remaining,
             ):
                 actions.append(PlaceOrder(level=lvl))
             return actions
@@ -397,6 +425,7 @@ class LadderPlanner:
                 bankroll_usd=bankroll_usd,
                 tick_size=tick_size,
                 min_order_size_shares=min_order_size_shares,
+                seconds_remaining=seconds_remaining,
             ):
                 actions.append(PlaceOrder(level=lvl))
             return actions
@@ -415,6 +444,7 @@ class LadderPlanner:
                     bankroll_usd=bankroll_usd,
                     tick_size=tick_size,
                     min_order_size_shares=min_order_size_shares,
+                    seconds_remaining=seconds_remaining,
                 )
                 if fresh_levels:
                     fresh_l1 = min(fresh_levels, key=lambda lvl: lvl.depth_from_ask_usd)

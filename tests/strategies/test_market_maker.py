@@ -776,3 +776,132 @@ def test_strategy_default_blocklist_matches_module_default(priors: J7Priors) -> 
     """Strategy without an explicit blocklist uses the module default."""
     strat = MarketMakerStrategy(priors=priors, bankroll_getter=lambda: 1000.0)
     assert strat.planner.blocklist == DEFAULT_TIER_SIDE_BLOCKLIST
+
+
+# ---------- 9. Late-window size multiplier (Edge 2, audit 2026-05-20) ----------
+
+
+def test_late_window_multiplier_doubles_size(priors: J7Priors) -> None:
+    """Same ladder, seconds_remaining=30 (LATE) → sizes 2x vs no-multiplier."""
+    planner = LadderPlanner(priors=priors, blocklist=frozenset())
+    # Baseline (no seconds_remaining passed = no multiplier).
+    base_levels = planner.plan_levels(
+        market_id="m1",
+        token_id="t",
+        side=Side.DOWN,
+        best_ask=0.40,
+        bankroll_usd=1000.0,
+        tick_size="0.01",
+        min_order_size_shares=1.0,
+    )
+    # LATE-window placement (seconds_remaining < 60).
+    late_levels = planner.plan_levels(
+        market_id="m1",
+        token_id="t",
+        side=Side.DOWN,
+        best_ask=0.40,
+        bankroll_usd=1000.0,
+        tick_size="0.01",
+        min_order_size_shares=1.0,
+        seconds_remaining=30.0,
+    )
+    assert len(base_levels) == len(late_levels)
+    # Each level in late_levels should be sized larger (up to the
+    # max_inventory_per_token cap which is the multiplier ceiling).
+    cap = planner.caps.max_inventory_per_token_usd
+    for base, late in zip(
+        sorted(base_levels, key=lambda lvl: lvl.price),
+        sorted(late_levels, key=lambda lvl: lvl.price),
+        strict=True,
+    ):
+        # If base size is below half the cap, late should be exactly 2x.
+        if base.size_usd * 2 <= cap:
+            assert late.size_usd == pytest.approx(base.size_usd * 2)
+        else:
+            # Otherwise clamped to the cap.
+            assert late.size_usd == pytest.approx(cap)
+
+
+def test_late_window_multiplier_inactive_outside_threshold(priors: J7Priors) -> None:
+    """seconds_remaining=120 (>60s, MID-window) → no multiplier applied."""
+    planner = LadderPlanner(priors=priors, blocklist=frozenset())
+    base = planner.plan_levels(
+        market_id="m1",
+        token_id="t",
+        side=Side.DOWN,
+        best_ask=0.40,
+        bankroll_usd=1000.0,
+        tick_size="0.01",
+        min_order_size_shares=1.0,
+    )
+    mid = planner.plan_levels(
+        market_id="m1",
+        token_id="t",
+        side=Side.DOWN,
+        best_ask=0.40,
+        bankroll_usd=1000.0,
+        tick_size="0.01",
+        min_order_size_shares=1.0,
+        seconds_remaining=120.0,
+    )
+    for b, m in zip(
+        sorted(base, key=lambda lvl: lvl.price), sorted(mid, key=lambda lvl: lvl.price), strict=True
+    ):
+        assert m.size_usd == pytest.approx(b.size_usd)
+
+
+def test_late_window_multiplier_capped_by_inventory_limit(priors: J7Priors) -> None:
+    """Boosted size cannot exceed max_inventory_per_token_usd."""
+    caps = RiskCaps(max_inventory_per_token_usd=15.0)
+    planner = LadderPlanner(priors=priors, caps=caps, blocklist=frozenset())
+    levels = planner.plan_levels(
+        market_id="m1",
+        token_id="t",
+        side=Side.DOWN,
+        best_ask=0.40,
+        bankroll_usd=1000.0,
+        tick_size="0.01",
+        min_order_size_shares=1.0,
+        seconds_remaining=10.0,
+    )
+    for lvl in levels:
+        assert lvl.size_usd <= 15.0
+
+
+def test_plan_update_threads_seconds_remaining_through(priors: J7Priors) -> None:
+    """plan_update must pass seconds_remaining to plan_levels so Edge 2
+    fires when the book-move-triggered placement also lands in LATE."""
+    planner = LadderPlanner(priors=priors, blocklist=frozenset())
+    # First call places ladder, seconds_remaining=30 (LATE).
+    actions = planner.plan_update(
+        market_id="m1",
+        token_id="t",
+        side=Side.DOWN,
+        current_best_ask=0.40,
+        previous_best_ask=None,
+        open_orders=[],
+        bankroll_usd=1000.0,
+        tick_size="0.01",
+        min_order_size_shares=1.0,
+        seconds_remaining=30.0,
+    )
+    places = [a for a in actions if isinstance(a, PlaceOrder)]
+    # Compare to a no-late call.
+    actions_no_late = planner.plan_update(
+        market_id="m1",
+        token_id="t",
+        side=Side.DOWN,
+        current_best_ask=0.40,
+        previous_best_ask=None,
+        open_orders=[],
+        bankroll_usd=1000.0,
+        tick_size="0.01",
+        min_order_size_shares=1.0,
+        seconds_remaining=200.0,
+    )
+    places_no_late = [a for a in actions_no_late if isinstance(a, PlaceOrder)]
+    assert len(places) == len(places_no_late)
+    # LATE-window places should be sized larger.
+    total_late = sum(p.level.size_usd for p in places)
+    total_no_late = sum(p.level.size_usd for p in places_no_late)
+    assert total_late > total_no_late
