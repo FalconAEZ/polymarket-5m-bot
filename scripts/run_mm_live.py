@@ -48,6 +48,7 @@ import contextlib
 import json
 import logging
 import os
+import signal
 import sys
 import time
 from collections.abc import Sequence
@@ -343,6 +344,23 @@ async def main(argv: Sequence[str] | None = None) -> int:
 
     stop_event = asyncio.Event()
 
+    # SIGTERM (systemd stop) + SIGINT (Ctrl-C) handlers — set the stop
+    # event so the main loop drops out of the polling while-loop and
+    # falls through to the drain + decision-log close. Without this,
+    # asyncio.run propagates CancelledError up, the drain() never runs,
+    # and orphan orders survive on the CLOB until the heartbeat-miss
+    # server-side timeout fires. TimeoutStopSec=30 in bot-mm.service
+    # gives us 30s to drain cleanly; the book-poll cadence is 1s so
+    # we exit the while-loop within 1s of the signal.
+    loop = asyncio.get_running_loop()
+
+    def _on_signal(signum: int) -> None:
+        LOG.warning("received signal %d; setting stop_event for clean drain", signum)
+        stop_event.set()
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, _on_signal, int(sig))
+
     # Start heartbeat task.
     heartbeat = asyncio.create_task(
         mm_heartbeat_loop(
@@ -385,10 +403,14 @@ async def main(argv: Sequence[str] | None = None) -> int:
         window_close,
     )
 
-    # Wait until the window closes OR halt sentinel detected.
+    # Wait until window closes OR halt sentinel OR signal received.
     while time.time() < window_close:
+        if stop_event.is_set():
+            LOG.warning("stop_event set (signal received); draining")
+            break
         if await asyncio.to_thread(args.halt_sentinel.exists):
             LOG.warning("halt sentinel detected; draining")
+            stop_event.set()
             break
         await asyncio.sleep(1.0)
 
