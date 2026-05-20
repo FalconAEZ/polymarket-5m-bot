@@ -314,3 +314,85 @@ async def test_runner_handles_burst_of_ticks(tmp_path: Path) -> None:
     # No exception thrown. After 1000 ticks at no book-move, no new orders
     # placed after the first ladder (move=0 < l1_repost_threshold).
     assert client.n_orders_placed <= 10  # initial ladder only
+
+
+# ---------- Edge 4 prep: metadata_getter (audit §2 Edge 4) ----------
+
+
+async def test_metadata_getter_appended_to_every_record(tmp_path: Path) -> None:
+    """When metadata_getter is set, its dict is merged into every
+    decision-log record so Day-7 audit can group fills by MMD label."""
+    runner, client, _strategy, _log = _make_runner(tmp_path)
+    captured_calls: list[None] = []
+
+    def _mmd_metadata() -> dict[str, str | float]:
+        captured_calls.append(None)
+        return {"mmd_label": "MIXED", "mmd_conf": 0.62}
+
+    runner.metadata_getter = _mmd_metadata
+    client.set_orderbook(_book("t1", best_ask=0.40))
+    await runner.on_book_update(
+        market_id="m1",
+        token_id="t1",
+        side=Side.DOWN,
+        best_ask=0.40,
+        tick_size="0.01",
+        min_order_size_shares=5.0,
+        seconds_remaining=200.0,
+    )
+    log_files = list((tmp_path / "mm-decisions").glob("*.jsonl"))
+    records = list(read_mm_jsonl(log_files[0]))
+    assert records, "expected at least one decision-log record"
+    for r in records:
+        assert r.get("mmd_label") == "MIXED"
+        assert r.get("mmd_conf") == 0.62
+    assert captured_calls, "metadata_getter must be called at least once"
+
+
+async def test_metadata_getter_none_means_no_extra_fields(tmp_path: Path) -> None:
+    """Default (metadata_getter=None) preserves the bare schema — no
+    extra fields appear in the record. Backward-compat."""
+    runner, client, _strategy, _log = _make_runner(tmp_path)
+    assert runner.metadata_getter is None
+    client.set_orderbook(_book("t1", best_ask=0.40))
+    await runner.on_book_update(
+        market_id="m1",
+        token_id="t1",
+        side=Side.DOWN,
+        best_ask=0.40,
+        tick_size="0.01",
+        min_order_size_shares=5.0,
+        seconds_remaining=200.0,
+    )
+    log_files = list((tmp_path / "mm-decisions").glob("*.jsonl"))
+    records = list(read_mm_jsonl(log_files[0]))
+    assert records
+    for r in records:
+        assert "mmd_label" not in r
+        assert "mmd_conf" not in r
+
+
+async def test_metadata_getter_exception_does_not_crash_record(tmp_path: Path) -> None:
+    """If the getter raises (e.g. MMD detector down), the record is
+    still written without metadata — observability data is best-effort,
+    safety + accounting records are authoritative."""
+    runner, client, _strategy, _log = _make_runner(tmp_path)
+
+    def _broken_getter() -> dict[str, str]:
+        raise RuntimeError("mmd detector unreachable")
+
+    runner.metadata_getter = _broken_getter
+    client.set_orderbook(_book("t1", best_ask=0.40))
+    # Must NOT raise.
+    await runner.on_book_update(
+        market_id="m1",
+        token_id="t1",
+        side=Side.DOWN,
+        best_ask=0.40,
+        tick_size="0.01",
+        min_order_size_shares=5.0,
+        seconds_remaining=200.0,
+    )
+    log_files = list((tmp_path / "mm-decisions").glob("*.jsonl"))
+    records = list(read_mm_jsonl(log_files[0]))
+    assert records, "record should still be written even when getter fails"

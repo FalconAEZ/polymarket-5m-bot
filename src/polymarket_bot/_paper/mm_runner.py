@@ -67,6 +67,12 @@ AlertCallback = Callable[[dict[str, Any]], Awaitable[None]]
 Production wires this to the alerter Redis queue; tests pass a mock
 that records payloads for assertion. None disables alerting entirely."""
 
+MetadataGetter = Callable[[], dict[str, Any]]
+"""Edge 4 prep (audit §2 Edge 4): synchronous callback returning a dict
+of contextual metadata to merge into every decision-log record. Typical
+fields: `mmd_label`, `mmd_conf`, `regime`. None = no metadata appended
+(decision-log records contain only the kind-specific fields)."""
+
 LOG = logging.getLogger("polymarket_bot._paper.mm_runner")
 
 DEFAULT_DECISION_LOG_ROOT: Path = Path("state/mm-decisions")
@@ -186,8 +192,21 @@ class MmRunner:
     halt_sentinel_path: Path = field(default_factory=lambda: Path("state/halt.sentinel"))
     dry_run: bool = True
     alert_callback: AlertCallback | None = None
+    metadata_getter: MetadataGetter | None = None
     _halt_engaged: bool = field(default=False, init=False)
     _sentinel_written: bool = field(default=False, init=False)
+
+    def _record(self, kind: str, payload: dict[str, Any], *, ts_ns: int | None = None) -> None:
+        """Edge 4 prep wrapper around decision_log.record — merges metadata_getter
+        output into the payload so Day-7 audit can group fills by MMD label,
+        regime, etc. without code changes at each callsite."""
+        merged: dict[str, Any] = dict(payload)
+        if self.metadata_getter is not None:
+            try:
+                merged.update(self.metadata_getter())
+            except Exception:
+                LOG.exception("metadata_getter raised; logging without metadata")
+        self.decision_log.record(kind, merged, ts_ns=ts_ns)
 
     def halt_sentinel_present(self) -> bool:
         """Returns True if the halt sentinel exists on disk OR if the
@@ -244,7 +263,7 @@ class MmRunner:
                 neg_risk=False,
             )
         except PostOnlyRejected as exc:
-            self.decision_log.record(
+            self._record(
                 "place_rejected",
                 {
                     "market_id": lvl.market_id,
@@ -260,7 +279,7 @@ class MmRunner:
             LOG.info("post-only rejected: %s @ %.4f", lvl.token_id, lvl.price)
             return False
         except ClobOrderError as exc:
-            self.decision_log.record(
+            self._record(
                 "place_failed",
                 {
                     "market_id": lvl.market_id,
@@ -290,7 +309,7 @@ class MmRunner:
             size_shares=lvl.size_shares,
             status=OrderStatus.LIVE,
         )
-        self.decision_log.record(
+        self._record(
             "place_succeeded",
             {
                 "market_id": lvl.market_id,
@@ -319,7 +338,7 @@ class MmRunner:
                 size_shares=order.level.size_shares,
                 status=OrderStatus.CANCELLED,
             )
-        self.decision_log.record(
+        self._record(
             "cancel_result",
             {
                 "order_id": order_id,
@@ -352,7 +371,7 @@ class MmRunner:
             size_shares=fill_size_shares,
             status=OrderStatus.CONFIRMED,
         )
-        self.decision_log.record(
+        self._record(
             "fill",
             {
                 "order_id": order_id,
@@ -373,7 +392,7 @@ class MmRunner:
         ts_ns: int | None = None,
     ) -> WindowPnl:
         result = self.strategy.on_resolution(market_id=market_id, winning_side=winning_side)
-        self.decision_log.record(
+        self._record(
             "resolve",
             {
                 "market_id": market_id,
@@ -434,7 +453,7 @@ class MmRunner:
                 size_shares=order.level.size_shares,
                 status=OrderStatus.CANCELLED,
             )
-        self.decision_log.record(
+        self._record(
             "drain",
             {"n_cancelled": n, "n_local_open_dropped": len(cancelled_ids)},
         )
