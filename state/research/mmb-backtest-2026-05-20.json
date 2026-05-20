@@ -1,0 +1,153 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-05-20T08:03:44.443497+00:00",
+  "data_window": "2026-05-12 \u2192 2026-05-19 (7-day refresh)",
+  "trades_source": "state/research/bonereaper/weekly_trades_2026-05-19.json",
+  "events_source": "state/research/bonereaper/weekly_events_2026-05-19.json",
+  "priors_source": "design/j7_priors.json",
+  "n_priors_trades_source": 306966,
+  "bankroll_usd": 1000.0,
+  "markets_resolved": 723,
+  "markets_unresolved": 0,
+  "markets_no_event": 0,
+  "n_bonereaper_fills": 21633,
+  "n_mmb_positions": 12332,
+  "mmb_pnl_total_usd": 1586.3665,
+  "mmb_gross_traded_usd": 114640.4716,
+  "bonereaper_pnl_total_usd": 11089.4137,
+  "bonereaper_gross_traded_usd": 766011.0863,
+  "ratio_mmb_over_bonereaper_pct": 14.3052,
+  "per_day": {
+    "2026-05-12": {
+      "mmb_pnl_usd": -512.394,
+      "bonereaper_pnl_usd": -396.2345,
+      "n_markets": 7
+    },
+    "2026-05-13": {
+      "mmb_pnl_usd": 319.4963,
+      "bonereaper_pnl_usd": 349.2429,
+      "n_markets": 48
+    },
+    "2026-05-16": {
+      "mmb_pnl_usd": -1259.1687,
+      "bonereaper_pnl_usd": -700.3938,
+      "n_markets": 79
+    },
+    "2026-05-17": {
+      "mmb_pnl_usd": -522.4396,
+      "bonereaper_pnl_usd": -1933.1124,
+      "n_markets": 121
+    },
+    "2026-05-18": {
+      "mmb_pnl_usd": 1906.1662,
+      "bonereaper_pnl_usd": 6747.1477,
+      "n_markets": 287
+    },
+    "2026-05-19": {
+      "mmb_pnl_usd": 1654.7063,
+      "bonereaper_pnl_usd": 7022.7638,
+      "n_markets": 181
+    }
+  },
+  "per_tier_mmb": {
+    "15-30%": {
+      "pnl_usd": 266.0823,
+      "n_positions": 1102
+    },
+    "85-100%": {
+      "pnl_usd": -606.7081,
+      "n_positions": 925
+    },
+    "70-85%": {
+      "pnl_usd": 707.3945,
+      "n_positions": 1586
+    },
+    "30-50%": {
+      "pnl_usd": 1261.3371,
+      "n_positions": 3306
+    },
+    "50-70%": {
+      "pnl_usd": 1399.0244,
+      "n_positions": 4406
+    },
+    "<15%": {
+      "pnl_usd": -1440.7637,
+      "n_positions": 1007
+    }
+  },
+  "n_days_positive": 3,
+  "n_days_non_catastrophic_per_day": 3,
+  "n_days_total": 6,
+  "sample_markets": [
+    {
+      "slug": "btc-updown-5m-1779199500",
+      "winner": "DOWN",
+      "mmb_pnl_usd": -84.74,
+      "bonereaper_pnl_usd": 15.63,
+      "mmb_usd_per_side": [
+        107.46,
+        57.75
+      ],
+      "br_cost_per_side": [
+        148.23,
+        4845.43
+      ]
+    },
+    {
+      "slug": "btc-updown-5m-1779201000",
+      "winner": "DOWN",
+      "mmb_pnl_usd": -39.18,
+      "bonereaper_pnl_usd": -273.32,
+      "mmb_usd_per_side": [
+        152.71,
+        180.69
+      ],
+      "br_cost_per_side": [
+        551.86,
+        564.1
+      ]
+    },
+    {
+      "slug": "btc-updown-5m-1779200700",
+      "winner": "UP",
+      "mmb_pnl_usd": 23.05,
+      "bonereaper_pnl_usd": -73.25,
+      "mmb_usd_per_side": [
+        153.25,
+        159.36
+      ],
+      "br_cost_per_side": [
+        461.27,
+        462.98
+      ]
+    },
+    {
+      "slug": "btc-updown-5m-1779202800",
+      "winner": "UP",
+      "mmb_pnl_usd": -86.69,
+      "bonereaper_pnl_usd": -108.61,
+      "mmb_usd_per_side": [
+        136.67,
+        155.54
+      ],
+      "br_cost_per_side": [
+        656.77,
+        380.7
+      ]
+    },
+    {
+      "slug": "btc-updown-5m-1779201900",
+      "winner": "DOWN",
+      "mmb_pnl_usd": 71.58,
+      "bonereaper_pnl_usd": 120.71,
+      "mmb_usd_per_side": [
+        32.37,
+        140.0
+      ],
+      "br_cost_per_side": [
+        165.28,
+        2456.37
+      ]
+    }
+  ]
+}

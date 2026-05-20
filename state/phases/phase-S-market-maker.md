@@ -25,7 +25,7 @@ Phase S ships MMB as a PARALLEL bot:
 | Session | Scope | Duration | Status |
 |---|---|---|---|
 | **S.1** | Research + design lock | 3-5d | **CLOSED 2026-05-19, updated 2026-05-20 for $1k pivot** |
-| S.2 | Core strategy + tests + backtest (plumbing-only) | 5-7d | **MODULES + TESTS GREEN 2026-05-20; backtest harness pending** |
+| **S.2** | Core strategy + tests + backtest (plumbing-only) | 5-7d | **CLOSED 2026-05-20: 54 tests green + backtest +$1,586/7d sim PnL + 14.3% MMB/BR ratio** |
 | S.3 | Order management + paper runner (shakedown-only) | 5-7d | not started |
 | S.4 | Dashboard + safety circuits + Telegram kill-switch | 5d | not started |
 | S.5 | **Live-micro deploy** ($5/level, $50 max gross, $50/day loss cap) — 7-day live soak | 7d | not started |
