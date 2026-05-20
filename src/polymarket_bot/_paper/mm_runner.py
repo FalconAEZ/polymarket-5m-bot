@@ -35,11 +35,12 @@ The script wires the loop.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
 import uuid
-from collections.abc import Iterator
+from collections.abc import Awaitable, Callable, Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -60,6 +61,11 @@ from polymarket_bot.strategies.market_maker import (
     Side,
     WindowPnl,
 )
+
+AlertCallback = Callable[[dict[str, Any]], Awaitable[None]]
+"""Async callback invoked when MmRunner emits an MMB alert payload.
+Production wires this to the alerter Redis queue; tests pass a mock
+that records payloads for assertion. None disables alerting entirely."""
 
 LOG = logging.getLogger("polymarket_bot._paper.mm_runner")
 
@@ -179,7 +185,9 @@ class MmRunner:
     decision_log: MmDecisionLog
     halt_sentinel_path: Path = field(default_factory=lambda: Path("state/halt.sentinel"))
     dry_run: bool = True
+    alert_callback: AlertCallback | None = None
     _halt_engaged: bool = field(default=False, init=False)
+    _sentinel_written: bool = field(default=False, init=False)
 
     def halt_sentinel_present(self) -> bool:
         """Returns True if the halt sentinel exists on disk OR if the
@@ -375,7 +383,40 @@ class MmRunner:
             },
             ts_ns=ts_ns,
         )
+        # If the gate self-halted on this resolution (daily loss cap), write
+        # the on-disk sentinel + push a CRITICAL alert. The in-process gate
+        # state is invisible to other processes (alerter, dashboard) without
+        # the sentinel file.
+        if self.strategy.gate.halted and not self._sentinel_written:
+            await self._engage_halt_from_gate()
         return result
+
+    async def _engage_halt_from_gate(self) -> None:
+        """Bridge in-process RiskGate halt to filesystem sentinel + alerter."""
+        from polymarket_bot._live.alerter.halt import write_halt_sentinel
+        from polymarket_bot._live.mm_alerts import mm_daily_loss_tripped_alert
+
+        reason = "mm_daily_loss_cap"
+        await asyncio.to_thread(
+            write_halt_sentinel,
+            reason,
+            time.time_ns(),
+            path=self.halt_sentinel_path,
+        )
+        self._sentinel_written = True
+        LOG.error(
+            "MMB gate halted on daily loss; sentinel written at %s",
+            self.halt_sentinel_path,
+        )
+        if self.alert_callback is not None:
+            payload = mm_daily_loss_tripped_alert(
+                realized_pnl_usd=self.strategy.gate.today_realized_pnl_usd,
+                cap_usd=self.strategy.gate.caps.max_daily_loss_usd,
+            )
+            try:
+                await self.alert_callback(payload)
+            except Exception:
+                LOG.exception("alert_callback raised during daily-loss halt")
 
     async def drain(self) -> int:
         """Cancel ALL open orders. Called at shutdown OR when halt

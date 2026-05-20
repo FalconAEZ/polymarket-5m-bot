@@ -1,0 +1,30 @@
+[Unit]
+Description=Polymarket 5m BTC bot — market-maker (Phase S)
+Documentation=file:///home/ops/polymarket-5m-bot/runbooks/phase-S-high-volume-plan-2026-05-20.md
+After=network-online.target redis-server.service chrony.service
+Wants=network-online.target redis-server.service chrony.service
+
+[Service]
+Type=simple
+User=ops
+Group=ops
+WorkingDirectory=/home/ops/polymarket-5m-bot
+# Paper-mode initially (Phase S Session 4). Live entrypoint
+# (scripts/run_mm_live.py) lands in Session 5 once USDC.e allowance is
+# set on the Signer. Operator flips ExecStart at S.5 deploy time.
+ExecStart=/bin/bash -c 'source /home/ops/polymarket-5m-bot/.envrc && exec /home/ops/.local/bin/uv run python -u scripts/run_mm_paper.py'
+Restart=on-failure
+RestartSec=30
+TimeoutStopSec=30
+KillSignal=SIGTERM
+StandardOutput=journal
+StandardError=journal
+# Hardening — matches bot-staging.service. ProtectHome=no because uv
+# writes to ~/.cache/uv + ~/.local/share/uv; the ops-user account is
+# the real isolation boundary.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target
