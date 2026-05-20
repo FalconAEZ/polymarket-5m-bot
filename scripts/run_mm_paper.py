@@ -111,9 +111,11 @@ async def main() -> int:
     halt_sentinel_path = Path(os.environ.get("MM_HALT_SENTINEL_PATH", "state/halt.sentinel"))
     kill_switch = os.environ.get("MM_KILL_SWITCH", "false").lower() == "true"
 
-    # If halt sentinel pre-exists, refuse to start. Sync check is fine
-    # here — script startup, before the event loop is hot.
-    if halt_sentinel_path.exists():
+    # If halt sentinel pre-exists, refuse to start. We're already inside
+    # an asyncio event loop here, so dispatch the path stat to a thread
+    # (ASYNC240) instead of blocking the loop on disk IO.
+    sentinel_present = await asyncio.to_thread(halt_sentinel_path.exists)
+    if sentinel_present:
         LOG.warning(
             "halt sentinel present at startup; refusing to start. remove %s and try again",
             halt_sentinel_path,
