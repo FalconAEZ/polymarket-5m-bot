@@ -103,3 +103,47 @@ def mm_first_fill_confirmed_alert(
         f"MMB first fill confirmed: market={market_id} side={side} "
         f"price={fill_price:.4f} shares={fill_size_shares:.2f}",
     )
+
+
+# ---------------- Redis push helper ----------------
+
+
+DEFAULT_REDIS_URL: Final[str] = "redis://localhost:6379"
+DEFAULT_ALERTER_QUEUE: Final[str] = "polybot:alerts"
+
+
+async def push_to_redis_alerter(
+    payload: AlertPayload,
+    *,
+    redis_url: str = DEFAULT_REDIS_URL,
+    queue_key: str = DEFAULT_ALERTER_QUEUE,
+) -> None:
+    """Best-effort push of an alert payload to the alerter's Redis queue.
+
+    The drain side (tg-alerter.service / `_live/alerter/service.py`) BRPOPs
+    from `polybot:alerts` and forwards to Telegram. We LPUSH so newest
+    alerts get delivered first (Telegram chats tolerate the order).
+
+    Alerts MUST NOT block trading. On any connection or serialization
+    error, we log + swallow the exception. The on-disk halt sentinel is
+    the authoritative safety signal; alerting is observability sugar.
+    """
+    import json
+    import logging
+
+    log = logging.getLogger("polymarket_bot._live.mm_alerts.push")
+    try:
+        # Import locally so unit tests that mock this function don't
+        # require redis-py to be installed.
+        from redis.asyncio import Redis
+    except ImportError:
+        log.error("redis-py not installed; cannot push MMB alert")
+        return
+    try:
+        client = Redis.from_url(redis_url)
+        # redis-py typing flags lpush as `Awaitable[int] | int`; we know
+        # the async client returns the awaitable. Cast suppresses the misc.
+        await client.lpush(queue_key, json.dumps(payload))  # type: ignore[misc]
+        await client.aclose()
+    except Exception:
+        log.exception("MMB alert push failed (best-effort)")

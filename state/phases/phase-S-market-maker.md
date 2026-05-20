@@ -28,7 +28,7 @@ Phase S ships MMB as a PARALLEL bot:
 | **S.2** | Core strategy + tests + backtest (plumbing-only) | 5-7d | **CLOSED 2026-05-20: 54 tests green + backtest +$1,586/7d sim PnL + 14.3% MMB/BR ratio** |
 | **S.3** | Order management + paper runner (shakedown-only) | 5-7d | **CLOSED 2026-05-20: 29 new tests (757 total) + 60s paper gate clean** |
 | **S.4** | Alerter MMB types + bot-mm.service + safety circuits + G11 probes | 2-3d | **CLOSED 2026-05-20: 13 new tests (770 total); MMB alerts + sentinel-on-gate-halt wiring + bot-mm.service unit. G11 probes + dashboard panel UI deferred to S.5 (USDC.e allowance unset).** |
-| S.5 | **Live-micro deploy** ($5/level, $50 max gross, $50/day loss cap) — 7-day live soak | 7d | not started |
+| S.5 | **Live-micro deploy** ($5/level, $50 max gross, $50/day loss cap) — 7-day live soak | 7d | **dev portion shipped 2026-05-20** (mm_set_allowance.py + run_mm_live.py + push_to_redis_alerter + 15 tests, 785 total). NOT yet deployed — pre-deploy needs: (1) operator USDC.e allowance tx, (2) G11 empirical probes, (3) VPS deploy + start. |
 | S.6 | Scale-up to full $1k bankroll caps + 5-day soak | 5d+ | not started |
 
 **Pivot 2026-05-20:** original S.5 "VPS shadow deploy" replaced with "live-micro deploy" — operator pushback: paper/shadow cannot validate market-maker mechanics because MMB's queue position + presence are part of the edge. Live-micro at minimum size ($5/level × 3 levels × 2 sides = $30/window max gross) is the smallest configuration that produces honest measurement.
