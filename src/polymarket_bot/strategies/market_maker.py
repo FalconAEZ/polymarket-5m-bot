@@ -85,6 +85,17 @@ DEFAULT_MAX_OPEN_ORDERS_GLOBAL: Final[int] = 20
 DEFAULT_MAX_DAILY_LOSS_USD: Final[float] = 50.0
 DEFAULT_MAX_ORDERS_PER_MINUTE: Final[int] = 30
 
+# Edge 3 (audit 2026-05-20 §4): pct-of-bankroll cap defaults. Conservative
+# initial values for S.5 — half of the §4 spec's "scale-up" values. Operator
+# ramps via MM_CAPS_MODE=pct_bankroll env-flip after Day-1 + Day-7 audits.
+DEFAULT_MAX_INVENTORY_PER_TOKEN_PCT: Final[float] = 0.025  # 2.5% of bankroll
+DEFAULT_MAX_GROSS_EXPOSURE_PER_WINDOW_PCT: Final[float] = 0.05  # 5% per window
+DEFAULT_MAX_DAILY_LOSS_PCT: Final[float] = 0.05  # 5% daily loss → halt
+# Absolute sanity ceiling on per-order bet. At $100k bankroll a 1% per-order
+# pct cap = $1,000; the absolute ceiling at $500 keeps us inside CLOB
+# liquidity at the upper bankroll bound (operator-decision to lift later).
+DEFAULT_MAX_BET_USD_CEILING: Final[float] = 500.0
+
 
 class Side(StrEnum):
     """Bet direction for a ladder level. Distinct from BUY/SELL order semantics —
@@ -178,13 +189,36 @@ class InventoryPosition:
 
 @dataclass(slots=True)
 class RiskCaps:
-    """Hard caps from design/S.1-market-maker-bot.md §2.4."""
+    """Hard caps from design/S.1-market-maker-bot.md §2.4 + audit §4 (Edge 3).
 
+    Two cap modes:
+
+      - `fixed_usd` (default, S.5 first-deploy): the *_usd fields bind
+        directly. Behavior identical to pre-Edge-3 code.
+      - `pct_bankroll`: the *_pct fields are evaluated against the live
+        bankroll at each `effective_*` call. As bankroll compounds, caps
+        scale proportionally — the operator-vision compounding trajectory.
+
+    `max_bet_usd_ceiling` is an absolute ceiling that ALWAYS applies (in
+    either mode), bounding runaway sizing if Kelly suggests > $500 per
+    order at large bankroll. Operator lifts this when comfortable.
+    """
+
+    # fixed_usd mode (existing behavior)
     max_inventory_per_token_usd: float = DEFAULT_MAX_INVENTORY_PER_TOKEN_USD
     max_gross_exposure_per_window_usd: float = DEFAULT_MAX_GROSS_EXPOSURE_PER_WINDOW_USD
     max_open_orders_global: int = DEFAULT_MAX_OPEN_ORDERS_GLOBAL
     max_daily_loss_usd: float = DEFAULT_MAX_DAILY_LOSS_USD
     max_orders_per_minute: int = DEFAULT_MAX_ORDERS_PER_MINUTE
+
+    # Edge 3 — pct-of-bankroll fields
+    max_inventory_per_token_pct: float = DEFAULT_MAX_INVENTORY_PER_TOKEN_PCT
+    max_gross_exposure_per_window_pct: float = DEFAULT_MAX_GROSS_EXPOSURE_PER_WINDOW_PCT
+    max_daily_loss_pct: float = DEFAULT_MAX_DAILY_LOSS_PCT
+    max_bet_usd_ceiling: float = DEFAULT_MAX_BET_USD_CEILING
+
+    # Mode selector: which set of fields wins.
+    caps_mode: str = "fixed_usd"
 
     def __post_init__(self) -> None:
         for fname in (
@@ -201,6 +235,45 @@ class RiskCaps:
             )
         if self.max_orders_per_minute <= 0:
             raise ValueError(f"max_orders_per_minute must be > 0; got {self.max_orders_per_minute}")
+        for pname in (
+            "max_inventory_per_token_pct",
+            "max_gross_exposure_per_window_pct",
+            "max_daily_loss_pct",
+        ):
+            v = getattr(self, pname)
+            if not 0 < v <= 1.0:
+                raise ValueError(f"{pname} must be in (0, 1]; got {v}")
+        if self.max_bet_usd_ceiling <= 0:
+            raise ValueError(f"max_bet_usd_ceiling must be > 0; got {self.max_bet_usd_ceiling}")
+        if self.caps_mode not in ("fixed_usd", "pct_bankroll"):
+            raise ValueError(
+                f"caps_mode must be 'fixed_usd' or 'pct_bankroll'; got {self.caps_mode!r}"
+            )
+
+    def effective_max_inventory_per_token(self, bankroll_usd: float) -> float:
+        """Resolve the per-token inventory cap against current bankroll.
+
+        In fixed_usd mode returns the static USD field. In pct_bankroll
+        mode returns `pct * bankroll`, clamped to max_bet_usd_ceiling
+        (defensive — prevents giant inventory if bankroll spikes)."""
+        if self.caps_mode == "pct_bankroll":
+            return min(self.max_inventory_per_token_pct * bankroll_usd, self.max_bet_usd_ceiling)
+        return self.max_inventory_per_token_usd
+
+    def effective_max_gross_exposure(self, bankroll_usd: float) -> float:
+        """Resolve the per-window gross cap against current bankroll."""
+        if self.caps_mode == "pct_bankroll":
+            return min(
+                self.max_gross_exposure_per_window_pct * bankroll_usd,
+                self.max_bet_usd_ceiling * 2.0,
+            )
+        return self.max_gross_exposure_per_window_usd
+
+    def effective_max_daily_loss(self, bankroll_usd: float) -> float:
+        """Resolve the daily-loss halt threshold against current bankroll."""
+        if self.caps_mode == "pct_bankroll":
+            return self.max_daily_loss_pct * bankroll_usd
+        return self.max_daily_loss_usd
 
 
 def round_to_tick(price: float, tick_size: str) -> float:
@@ -551,10 +624,16 @@ class RiskGate:
         size_usd: float,
         tracker: InventoryTracker,
         open_orders_count: int,
+        bankroll_usd: float = 0.0,
     ) -> tuple[bool, str]:
         """Approve or reject a single PlaceOrder action.
 
         Order of checks: cheapest first so we fail fast.
+
+        `bankroll_usd` is required when `caps.caps_mode == 'pct_bankroll'`;
+        in `fixed_usd` mode it's ignored. Defaults to 0.0 so a caller in
+        pct mode that forgets to pass bankroll will fail all checks
+        (safe) rather than silently disable the caps.
         """
         if self.halted:
             return False, "halted"
@@ -562,25 +641,29 @@ class RiskGate:
             return False, "zero_size"
         if open_orders_count >= self.caps.max_open_orders_global:
             return False, "max_open_orders"
-        if self.today_realized_pnl_usd <= -self.caps.max_daily_loss_usd:
+        if self.today_realized_pnl_usd <= -self.caps.effective_max_daily_loss(bankroll_usd):
             return False, "max_daily_loss"
         pos = tracker.position(market_id, side)
-        if pos.gross_usd + size_usd > self.caps.max_inventory_per_token_usd:
+        if pos.gross_usd + size_usd > self.caps.effective_max_inventory_per_token(bankroll_usd):
             return False, "max_inventory_per_token"
         gross_market = tracker.gross_exposure_for_market(market_id)
-        if gross_market + size_usd > self.caps.max_gross_exposure_per_window_usd:
+        if gross_market + size_usd > self.caps.effective_max_gross_exposure(bankroll_usd):
             return False, "max_gross_exposure"
         return True, "ok"
 
-    def record_realized_pnl(self, pnl_usd: float) -> None:
+    def record_realized_pnl(self, pnl_usd: float, bankroll_usd: float = 0.0) -> None:
         """Accumulate window-resolved PnL into the daily-loss tracker.
 
         On a sufficiently bad day, the next `can_place()` will return
         `max_daily_loss`. Callers are responsible for also writing the
         halt sentinel + Telegram alert; this is the in-process gate.
+
+        `bankroll_usd` matters in pct_bankroll mode — it sets the
+        daily-loss threshold at the time of recording. In fixed_usd mode
+        ignored.
         """
         self.today_realized_pnl_usd += pnl_usd
-        if self.today_realized_pnl_usd <= -self.caps.max_daily_loss_usd:
+        if self.today_realized_pnl_usd <= -self.caps.effective_max_daily_loss(bankroll_usd):
             self.halted = True
 
     def force_halt(self, reason: str = "operator") -> None:
@@ -605,10 +688,21 @@ class PayoutResolver:
     tracker: InventoryTracker
     gate: RiskGate
 
-    def resolve(self, *, market_id: str, winning_side: Side) -> WindowPnl:
-        """Resolve a window, update daily-loss tracker, and return the PnL record."""
+    def resolve(
+        self,
+        *,
+        market_id: str,
+        winning_side: Side,
+        bankroll_usd: float = 0.0,
+    ) -> WindowPnl:
+        """Resolve a window, update daily-loss tracker, and return the PnL record.
+
+        `bankroll_usd` is threaded into the gate's PnL accumulator so the
+        pct-mode daily-loss threshold resolves correctly. In fixed_usd
+        mode it's ignored.
+        """
         realized, gross = self.tracker.resolve_window(market_id, winning_side)
-        self.gate.record_realized_pnl(realized)
+        self.gate.record_realized_pnl(realized, bankroll_usd=bankroll_usd)
         return WindowPnl(
             market_id=market_id,
             winning_side=winning_side,
@@ -696,6 +790,7 @@ class MarketMakerStrategy:
         self.previous_best_ask[key] = best_ask
         approved: list[LadderAction] = []
         open_count = len(self.open_orders)
+        bankroll_usd = self.bankroll_getter()
         for action in actions:
             if isinstance(action, CancelOrder):
                 approved.append(action)
@@ -704,12 +799,15 @@ class MarketMakerStrategy:
             # Narrow explicitly without assert (ruff S101).
             if not isinstance(action, PlaceOrder):
                 continue
+            # Edge 3: thread bankroll through so pct-mode caps resolve.
+            # In fixed_usd mode the bankroll is ignored.
             allowed, _reason = self.gate.can_place(
                 market_id=action.level.market_id,
                 side=action.level.side,
                 size_usd=action.level.size_usd,
                 tracker=self.tracker,
                 open_orders_count=open_count,
+                bankroll_usd=bankroll_usd,
             )
             if allowed:
                 approved.append(action)
@@ -739,11 +837,17 @@ class MarketMakerStrategy:
             self.tracker.drop_in_flight(market_id, side, size_usd, size_shares)
 
     def on_resolution(self, *, market_id: str, winning_side: Side) -> WindowPnl:
-        """Resolve a window. Drains inventory for `market_id`, records realized PnL."""
+        """Resolve a window. Drains inventory for `market_id`, records realized PnL.
+        Threads current bankroll through so the resolver's daily-loss check uses
+        the pct-mode threshold (no-op in fixed_usd mode)."""
         self.previous_best_ask = {
             k: v for k, v in self.previous_best_ask.items() if k[0] != market_id
         }
-        return self.resolver.resolve(market_id=market_id, winning_side=winning_side)
+        return self.resolver.resolve(
+            market_id=market_id,
+            winning_side=winning_side,
+            bankroll_usd=self.bankroll_getter(),
+        )
 
     def reset(self) -> None:
         """Clear all state — used by tests + walk-forward folds."""

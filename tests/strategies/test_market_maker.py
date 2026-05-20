@@ -905,3 +905,138 @@ def test_plan_update_threads_seconds_remaining_through(priors: J7Priors) -> None
     total_late = sum(p.level.size_usd for p in places)
     total_no_late = sum(p.level.size_usd for p in places_no_late)
     assert total_late > total_no_late
+
+
+# ---------- 10. Pct-bankroll caps (Edge 3, audit 2026-05-20 §4) ----------
+
+
+def test_riskcaps_defaults_to_fixed_usd_mode() -> None:
+    """Backward-compat: default caps_mode is fixed_usd so existing tests
+    + first S.5 deploy behave identically to pre-Edge-3 code."""
+    caps = RiskCaps()
+    assert caps.caps_mode == "fixed_usd"
+
+
+def test_riskcaps_rejects_invalid_mode() -> None:
+    """Validation: caps_mode must be one of the documented values."""
+    with pytest.raises(ValueError, match="caps_mode"):
+        RiskCaps(caps_mode="bogus")
+
+
+def test_riskcaps_rejects_invalid_pct() -> None:
+    """Validation: each pct field must be in (0, 1]."""
+    for fname in (
+        "max_inventory_per_token_pct",
+        "max_gross_exposure_per_window_pct",
+        "max_daily_loss_pct",
+    ):
+        with pytest.raises(ValueError, match=fname):
+            RiskCaps(**{fname: 0.0})
+        with pytest.raises(ValueError, match=fname):
+            RiskCaps(**{fname: 1.5})
+
+
+def test_effective_caps_fixed_mode_ignores_bankroll() -> None:
+    """In fixed_usd mode, effective caps return static USD regardless of bankroll."""
+    caps = RiskCaps(caps_mode="fixed_usd", max_inventory_per_token_usd=25.0)
+    assert caps.effective_max_inventory_per_token(1000.0) == 25.0
+    assert caps.effective_max_inventory_per_token(100_000.0) == 25.0
+
+
+def test_effective_caps_pct_mode_scales_with_bankroll() -> None:
+    """In pct_bankroll mode, caps scale linearly with bankroll."""
+    caps = RiskCaps(
+        caps_mode="pct_bankroll",
+        max_inventory_per_token_pct=0.025,  # 2.5%
+        max_gross_exposure_per_window_pct=0.05,  # 5%
+        max_daily_loss_pct=0.05,  # 5%
+    )
+    assert caps.effective_max_inventory_per_token(1000.0) == pytest.approx(25.0)
+    assert caps.effective_max_inventory_per_token(10_000.0) == pytest.approx(250.0)
+    assert caps.effective_max_gross_exposure(1000.0) == pytest.approx(50.0)
+    assert caps.effective_max_gross_exposure(10_000.0) == pytest.approx(500.0)
+    assert caps.effective_max_daily_loss(1000.0) == pytest.approx(50.0)
+    assert caps.effective_max_daily_loss(10_000.0) == pytest.approx(500.0)
+
+
+def test_effective_caps_respect_max_bet_usd_ceiling() -> None:
+    """The absolute ceiling clamps pct-scaled caps at very high bankroll."""
+    caps = RiskCaps(
+        caps_mode="pct_bankroll",
+        max_inventory_per_token_pct=0.025,
+        max_bet_usd_ceiling=500.0,
+    )
+    # 2.5% of $100k = $2,500 → would exceed $500 ceiling.
+    assert caps.effective_max_inventory_per_token(100_000.0) == 500.0
+
+
+def test_riskgate_can_place_uses_effective_caps_in_pct_mode() -> None:
+    """can_place in pct mode rejects when size exceeds bankroll-scaled cap."""
+    caps = RiskCaps(
+        caps_mode="pct_bankroll",
+        max_inventory_per_token_pct=0.025,
+        max_gross_exposure_per_window_pct=0.05,
+        max_daily_loss_pct=0.05,
+    )
+    gate = RiskGate(caps=caps)
+    tracker = InventoryTracker()
+    # At $1k bankroll, inventory cap is $25. A $30 order is rejected.
+    allowed, reason = gate.can_place(
+        market_id="m1",
+        side=Side.UP,
+        size_usd=30.0,
+        tracker=tracker,
+        open_orders_count=0,
+        bankroll_usd=1000.0,
+    )
+    assert not allowed
+    assert reason == "max_inventory_per_token"
+    # At $10k bankroll, inventory cap is $250. Same $30 order passes.
+    allowed, reason = gate.can_place(
+        market_id="m1",
+        side=Side.UP,
+        size_usd=30.0,
+        tracker=tracker,
+        open_orders_count=0,
+        bankroll_usd=10_000.0,
+    )
+    assert allowed
+    assert reason == "ok"
+
+
+def test_riskgate_can_place_fixed_mode_ignores_bankroll_param() -> None:
+    """In fixed_usd mode the bankroll_usd kwarg has no effect."""
+    caps = RiskCaps(caps_mode="fixed_usd", max_inventory_per_token_usd=25.0)
+    gate = RiskGate(caps=caps)
+    tracker = InventoryTracker()
+    # Same fixed cap binds regardless of bankroll param.
+    allowed_low, _ = gate.can_place(
+        market_id="m1",
+        side=Side.UP,
+        size_usd=30.0,
+        tracker=tracker,
+        open_orders_count=0,
+        bankroll_usd=10.0,
+    )
+    allowed_high, _ = gate.can_place(
+        market_id="m1",
+        side=Side.UP,
+        size_usd=30.0,
+        tracker=tracker,
+        open_orders_count=0,
+        bankroll_usd=1_000_000.0,
+    )
+    assert allowed_low is False
+    assert allowed_high is False
+
+
+def test_daily_loss_pct_trips_halt_proportional_to_bankroll() -> None:
+    """record_realized_pnl with pct mode halts at pct * bankroll."""
+    caps = RiskCaps(caps_mode="pct_bankroll", max_daily_loss_pct=0.05)
+    gate = RiskGate(caps=caps)
+    # At $1k bankroll, halt threshold = -$50. Losing $30 doesn't halt.
+    gate.record_realized_pnl(-30.0, bankroll_usd=1000.0)
+    assert not gate.halted
+    # Another $25 loss → total -$55 < -$50 → halt.
+    gate.record_realized_pnl(-25.0, bankroll_usd=1000.0)
+    assert gate.halted

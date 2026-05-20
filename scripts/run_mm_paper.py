@@ -133,7 +133,15 @@ async def main() -> int:
     priors = J7Priors.load()
     LOG.info("loaded priors from %s", priors.source_path)
 
-    gate = RiskGate(caps=RiskCaps())
+    # Edge 3: MM_CAPS_MODE env selects fixed_usd or pct_bankroll. Paper
+    # mode honors the same flag so smoke tests exercise the production
+    # code path that S.5 deploy will use.
+    caps_mode = os.environ.get("MM_CAPS_MODE", "fixed_usd")
+    if caps_mode not in ("fixed_usd", "pct_bankroll"):
+        LOG.error("invalid MM_CAPS_MODE=%s; expected fixed_usd|pct_bankroll", caps_mode)
+        return 2
+    gate = RiskGate(caps=RiskCaps(caps_mode=caps_mode))
+    LOG.info("risk caps_mode=%s", caps_mode)
 
     def _bankroll_getter() -> float:
         return bankroll

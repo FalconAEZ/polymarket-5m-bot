@@ -317,7 +317,15 @@ async def main(argv: Sequence[str] | None = None) -> int:
     def _bankroll_getter() -> float:
         return bankroll
 
-    gate = RiskGate(caps=RiskCaps())
+    # Edge 3: MM_CAPS_MODE env selects fixed_usd (S.5 first deploy default)
+    # or pct_bankroll (S.6+ after Day-7 audit pass). Either way `RiskCaps`
+    # holds both sets of fields; `caps_mode` decides which set binds.
+    caps_mode = os.environ.get("MM_CAPS_MODE", "fixed_usd")
+    if caps_mode not in ("fixed_usd", "pct_bankroll"):
+        LOG.error("invalid MM_CAPS_MODE=%s; expected fixed_usd|pct_bankroll", caps_mode)
+        return 2
+    gate = RiskGate(caps=RiskCaps(caps_mode=caps_mode))
+    LOG.info("risk caps_mode=%s", caps_mode)
     strategy = MarketMakerStrategy(
         priors=priors,
         bankroll_getter=_bankroll_getter,
