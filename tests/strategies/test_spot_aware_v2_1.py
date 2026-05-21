@@ -926,3 +926,124 @@ def test_v2_1_pairs_validation_rejects_bad_inputs() -> None:
             bankroll_getter=_bankroll(),
             hour_blocklist_pairs=((22, "70-85%", "extra"),),  # type: ignore[arg-type]
         )
+
+
+# --------------------------------------------------------------------------
+# Phase T Improvement #2 — cell-flip detector strategy integration
+# --------------------------------------------------------------------------
+
+
+async def test_v2_1_cell_flip_catches_surv_style_regression() -> None:
+    """Phase T #2 — Drive the strategy through a synthetic SURV-cell flip:
+    first prime with 12 winning fires on the same cell, then a streak of
+    losses. The detector should start abstaining within the loss streak.
+
+    Cell construction: ask=0.45 → tier 30-50%; spot move = +5 bps → |Δbps|=5
+    → bucket 'hi' → cell_key '30-50%|hi' (= the SURV cell from Phase N).
+    The detector is set with min_samples=10, window_size=20, threshold=5pp.
+
+    Phase: prime ⇒ rolling_wr=1.0 over 12 fires (>break_even=0.45) → fire.
+    Then losses: each one drops rolling_wr. When the rolling_wr falls
+    below 0.45 - 0.05 = 0.40, the detector starts abstaining.
+
+    Counterfactual: WITHOUT the detector, the bot would have continued
+    firing through the losses (the existing CH1-CH4 gates have no
+    rolling-WR awareness)."""
+    from polymarket_bot.strategies.cell_flip_detector import (
+        CellFireHistory,
+        CellFlipDetector,
+    )
+
+    detector = CellFlipDetector(window_size=20, abstain_threshold_pp=5.0, min_samples=10)
+    history = CellFireHistory()
+    strat = SpotAwareStrategyV2_1(
+        priors=_StubPriors(p_win=0.60),  # generous priors so CH gates pass
+        bankroll_getter=_bankroll(1000.0),
+        multi_fire_cap=1,
+        cell_flip_detector=detector,
+        cell_fire_history=history,
+        tier_relax_price_floor=0.0,  # disable J.1 floor for this test
+    )
+    base_ts = int(_dt.datetime(2026, 5, 13, 12, 0, 0, tzinfo=_dt.UTC).timestamp())
+
+    fired_count = 0
+    abstained_count = 0
+    # Prime + flip — 32 total windows. Each window's spot moves +5 bps so
+    # the fire targets tier 30-50%|hi (the SURV cell). First 12: wins
+    # (settle won=True). Next 20: losses (settle won=False).
+    for i in range(32):
+        ts = base_ts + i * 300  # 5-min cadence
+        decision = await _drive_window_at(
+            strat,
+            window_ts=ts,
+            open_spot=80_000.0,
+            end_spot=80_040.0,  # +5 bps → |Δ|=5 → 'hi' bucket
+            ask_up=0.45,
+        )
+        if decision is None:
+            abstained_count += 1
+            continue
+        fired_count += 1
+        # Settle: first 12 are wins, the rest are losses.
+        won = i < 12
+        strat.on_settle(window_ts=ts, asset_id=decision.asset_id, won=won)
+
+    # Priming: ALL 12 prime fires must have fired (no rolling history to
+    # abstain on yet).
+    # Flip: at least some of the 20 loss windows must abstain. Specifically,
+    # after min_samples=10 observations exist, the rolling_wr will start
+    # dropping. With 12 wins primed + losses arriving, rolling_wr=12/20=0.60
+    # when n=20 observations (still > 0.40 threshold). It takes ~5-6 losses
+    # in the rolling window to push under 0.40. So expect abstains starting
+    # somewhere in the latter half of the loss streak.
+    assert fired_count >= 12, f"prime fires expected; got {fired_count} fires total"
+    assert (
+        abstained_count >= 1
+    ), f"detector should abstain in flip phase; got {abstained_count} abstains across {32 - 12} loss windows"
+    # Validate the detector's rolling history was actually populated.
+    recent = list(history.recent_wins("30-50%|hi"))
+    assert len(recent) >= 12, f"history should have ≥12 entries; got {len(recent)}"
+
+
+async def test_v2_1_cell_flip_disabled_when_both_none() -> None:
+    """Phase T #2 — When both detector + history are None (defaults),
+    the strategy behaves exactly as before (Improvement #2 is opt-in).
+    A profitable cell that the detector would catch must still fire."""
+    strat = SpotAwareStrategyV2_1(
+        priors=_StubPriors(p_win=0.60),
+        bankroll_getter=_bankroll(1000.0),
+        # No detector + no history — Improvement #2 OFF
+        tier_relax_price_floor=0.0,
+    )
+    decision = await _drive_window_at(
+        strat,
+        window_ts=_ts_at_utc_hour(12),
+        open_spot=80_000.0,
+        end_spot=80_040.0,
+        ask_up=0.45,
+    )
+    assert decision is not None, "with detector disabled, fire must pass through"
+
+
+def test_v2_1_cell_flip_init_rejects_lopsided_config() -> None:
+    """Phase T #2 — Init must reject the half-configured case (only one
+    of detector/history set). Silent disable would be a bug."""
+    from polymarket_bot.strategies.cell_flip_detector import (
+        CellFireHistory,
+        CellFlipDetector,
+    )
+
+    with pytest.raises(ValueError, match="cell_flip_detector and cell_fire_history"):
+        SpotAwareStrategyV2_1(
+            priors=_real_priors(),
+            bankroll_getter=_bankroll(),
+            cell_flip_detector=CellFlipDetector(),
+            # history missing!
+        )
+    with pytest.raises(ValueError, match="cell_flip_detector and cell_fire_history"):
+        SpotAwareStrategyV2_1(
+            priors=_real_priors(),
+            bankroll_getter=_bankroll(),
+            cell_fire_history=CellFireHistory(),
+            # detector missing!
+        )

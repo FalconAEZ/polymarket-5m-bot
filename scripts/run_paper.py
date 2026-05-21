@@ -497,6 +497,32 @@ def _build_strategy(name: str) -> Strategy:
             LOG.warning("MMD_MODE=%r invalid; falling back to 'shadow'", mmd_mode_env)
             mmd_mode_env = "shadow"
         mmd_labels_to_abstain = _env_csv("MMD_LABELS_TO_ABSTAIN")
+        # Phase T Improvement #2 — cell-flip detector env wiring. Opt-in
+        # via CELL_FLIP_ENABLED=true. Thresholds tunable; all three have
+        # sensible defaults matching the design doc. When enabled, both
+        # CellFlipDetector + CellFireHistory are constructed + passed
+        # to the strategy. When disabled, both stay None and the strategy
+        # validation accepts the consistent-None pair.
+        cell_flip_enabled = _env_bool("CELL_FLIP_ENABLED", False)
+        cell_flip_window_size = int(_env_float("CELL_FLIP_WINDOW_SIZE", 20) or 20)
+        cell_flip_abstain_pp = _env_float("CELL_FLIP_ABSTAIN_THRESHOLD_PP", 5.0) or 5.0
+        cell_flip_min_samples = int(_env_float("CELL_FLIP_MIN_SAMPLES", 10) or 10)
+        cell_flip_detector_obj = None
+        cell_fire_history_obj = None
+        if cell_flip_enabled:
+            from polymarket_bot.strategies.cell_flip_detector import (
+                CellFireHistory as _CFH,
+            )
+            from polymarket_bot.strategies.cell_flip_detector import (
+                CellFlipDetector as _CFD,
+            )
+
+            cell_flip_detector_obj = _CFD(
+                window_size=cell_flip_window_size,
+                abstain_threshold_pp=cell_flip_abstain_pp,
+                min_samples=cell_flip_min_samples,
+            )
+            cell_fire_history_obj = _CFH()
         # Phase Q aggressive — MMD_ABSTAIN_BY_SIDE=MIXED:UP,DOWN:DOWN format.
         # Parses csv of label:side pairs into tuple[(label, side), ...].
         mmd_abstain_by_side_raw = _env_csv("MMD_ABSTAIN_BY_SIDE")
@@ -555,6 +581,8 @@ def _build_strategy(name: str) -> Strategy:
             mmd_mode=mmd_mode_env,
             mmd_labels_to_abstain=mmd_labels_to_abstain,
             mmd_abstain_by_side=tuple(mmd_abstain_by_side),
+            cell_flip_detector=cell_flip_detector_obj,
+            cell_fire_history=cell_fire_history_obj,
             **v21_kwargs,
         )
     if name == "ensemble":

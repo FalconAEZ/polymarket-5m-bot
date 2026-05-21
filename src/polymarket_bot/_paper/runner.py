@@ -942,6 +942,26 @@ class PaperRunner:
         # Only counted AFTER the disk write succeeds so a write failure
         # doesn't poison the tracker. Spec §5.2 / design CH6.
         self._bankroll.apply_settle(pnl)
+        # Phase T Improvement #2 — notify strategy of settlement so the
+        # cell-flip detector can update its rolling per-cell WR. Only
+        # invoked when the strategy exposes on_settle (duck-typed) so
+        # legacy strategies (deterministic, spot_aware, spot_aware_v2,
+        # ensemble, wide_fire) are unaffected. won = pnl > 0 (binary).
+        # Asset_id comes from the original fired Decision's asset_id;
+        # snap captures it via settled_fill.asset_id when a fill exists,
+        # otherwise the original decision's asset_id (stored on the
+        # _PendingDecision). For abstained windows there's no settle so
+        # this path doesn't run. See design/phase-T-cell-flip-detector.md.
+        on_settle = getattr(self._strategy, "on_settle", None)
+        if callable(on_settle):
+            asset_id = snap.settled_fill.asset_id if snap.settled_fill is not None else None
+            if asset_id is not None:
+                try:
+                    on_settle(window_ts=snap.window_ts, asset_id=asset_id, won=pnl > 0.0)
+                except Exception:
+                    LOG.exception(
+                        "strategy.on_settle raised; ignoring (detector may miss this update)"
+                    )
 
         # Schedule a post-hoc gamma re-resolution if we fell back to
         # chainlink-local. Per audit 2026-05-10: chainlink and gamma

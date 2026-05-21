@@ -52,6 +52,7 @@ from collections.abc import Callable
 from dataclasses import replace as dc_replace
 
 from polymarket_bot.backtest.types import Decision, MarketEvent, Side, WindowBoundary
+from polymarket_bot.strategies.cell_flip_detector import CellFireHistory, CellFlipDetector
 from polymarket_bot.strategies.kelly_config import KellyConfig
 from polymarket_bot.strategies.spot_aware import delta_bps
 from polymarket_bot.strategies.spot_aware_priors import SpotAwarePriors
@@ -275,6 +276,18 @@ class SpotAwareStrategyV2_1(SpotAwareStrategyV2):
         # by setting MMD_ABSTAIN_BY_SIDE=MIXED:UP — keep firing DOWN-side
         # in MIXED regime, abstain UP-side. UNKNOWN remains pass-through.
         mmd_abstain_by_side: tuple[tuple[str, str], ...] = (),
+        # Phase T Improvement #2 — cell-flip detector. Both detector +
+        # history must be supplied together (consistency check at init).
+        # Default None → detector disabled. When enabled, after H.2.12
+        # and before super()._maybe_fire runs, a per-cell rolling-WR
+        # check abstains if WR has dropped below break-even by more
+        # than detector.abstain_threshold_pp. History is strategy-owned
+        # (NOT runner-owned per design deviation — see commit message);
+        # cross-restart persistence NOT implemented. Settlement
+        # feedback comes via on_settle() called by the runner after
+        # bankroll.apply_settle.
+        cell_flip_detector: CellFlipDetector | None = None,
+        cell_fire_history: CellFireHistory | None = None,
         **v2_kwargs: object,
     ) -> None:
         super().__init__(priors=priors, **v2_kwargs)  # type: ignore[arg-type]
@@ -325,6 +338,16 @@ class SpotAwareStrategyV2_1(SpotAwareStrategyV2):
                 raise ValueError(
                     f"mmd_abstain_by_side entries must be (label, 'UP'|'DOWN') tuples; got {pair!r}"
                 )
+        # Phase T #2 — detector + history consistency. Either both set or
+        # both None; supplying only one is a misconfiguration that would
+        # silently disable the feature.
+        if (cell_flip_detector is None) != (cell_fire_history is None):
+            raise ValueError(
+                "cell_flip_detector and cell_fire_history must be supplied together "
+                "(both set to enable, both None to disable). "
+                f"Got detector={cell_flip_detector is not None}, "
+                f"history={cell_fire_history is not None}."
+            )
         self._bankroll_getter = bankroll_getter
         self._kelly = kelly if kelly is not None else KellyConfig()
         self._multi_fire_cap = multi_fire_cap
@@ -351,6 +374,8 @@ class SpotAwareStrategyV2_1(SpotAwareStrategyV2):
         self._mmd_mode = mmd_mode
         self._mmd_labels_to_abstain = frozenset(mmd_labels_to_abstain)
         self._mmd_abstain_by_side = frozenset(mmd_abstain_by_side)
+        self._cell_flip_detector = cell_flip_detector
+        self._cell_fire_history = cell_fire_history
         self._fires_this_window: int = 0
 
     @property
@@ -450,6 +475,28 @@ class SpotAwareStrategyV2_1(SpotAwareStrategyV2):
             return None
         if side_guess == "DOWN" and tier in self._block_down_in_tiers:
             return None
+
+        # Phase T Improvement #2 — cell-flip detector. Compute cell-key
+        # from (tier, |Δbps|≥5) and check rolling per-cell WR against
+        # break-even (= fill_price). Abstain if rolling_wr has dropped
+        # > abstain_threshold_pp below break-even on >= min_samples
+        # observations. Default (both None) is pass-through. See
+        # design/phase-T-cell-flip-detector.md §2 + §5.
+        if self._cell_flip_detector is not None and self._cell_fire_history is not None:
+            cell_key = CellFireHistory.cell_key_for(tier=tier, abs_d_bps=abs(d_bps))
+            recent = self._cell_fire_history.recent_wins(cell_key)
+            abstain, reason = self._cell_flip_detector.should_abstain(
+                fill_price=ask_guess,
+                recent_wins=recent,
+            )
+            if abstain:
+                # Log to stderr-ish — operator audit trail without polluting
+                # the decision-log (which only records fires, not abstains).
+                # The reason string is machine-parseable per design doc §2.
+                import logging as _log
+
+                _log.getLogger(__name__).info("cell-flip abstain: cell=%s %s", cell_key, reason)
+                return None
 
         # v2's `_maybe_fire` reads `self._delta_min` and `self._priors`
         # directly. We swap both for this fire only (single-threaded
@@ -585,7 +632,37 @@ class SpotAwareStrategyV2_1(SpotAwareStrategyV2):
             new_rationale = f"{new_rationale} mmd={mmd_label} mmd_conf={mmd_conf:.2f}"
         if self._fires_this_window < self._multi_fire_cap:
             self._fired_for_window = None
-        return dc_replace(base_decision, size_usd=bet, rationale=new_rationale)
+        final_decision = dc_replace(base_decision, size_usd=bet, rationale=new_rationale)
+        # Phase T Improvement #2 — register the pending fire for the
+        # cell-flip detector. window_ts + asset_id uniquely identifies
+        # the fire across the strategy/runner boundary; the runner calls
+        # on_settle() with the same key after settlement. cell_key was
+        # computed above at the abstain check; recompute here on the
+        # final path (cheap; avoids carrying state across the super()
+        # call which may swap _priors).
+        if self._cell_fire_history is not None and self._window_ts is not None:
+            ck = CellFireHistory.cell_key_for(tier=tier, abs_d_bps=abs(d_bps))
+            self._cell_fire_history.register_pending(
+                window_ts=self._window_ts,
+                asset_id=final_decision.asset_id,
+                cell_key=ck,
+            )
+        return final_decision
+
+    def on_settle(self, *, window_ts: int, asset_id: str, won: bool) -> None:
+        """Phase T Improvement #2 — settlement feedback for the cell-flip
+        detector. Runner calls this after bankroll.apply_settle. Looks up
+        the cell_key registered at fire time, appends the win/loss outcome
+        to that cell's rolling history. No-op if the detector is disabled
+        or no pending entry exists for this (window_ts, asset_id) — the
+        latter happens after a bot restart (pending state is lost; the
+        cell history catches up over the next ~min_samples fires)."""
+        if self._cell_fire_history is None:
+            return
+        cell_key = self._cell_fire_history.pop_pending(window_ts=window_ts, asset_id=asset_id)
+        if cell_key is None:
+            return
+        self._cell_fire_history.apply_settle(cell_key=cell_key, won=won)
 
     async def on_event(self, event: MarketEvent) -> Decision | None:
         # Inherit v2's dispatch verbatim — no async I/O added in the
