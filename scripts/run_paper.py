@@ -455,6 +455,39 @@ def _build_strategy(name: str) -> Strategy:
                 )
                 hour_blocklist_utc = ()
         hour_blocklist_tiers = _env_csv("SPOT_AWARE_HOUR_BLOCKLIST_TIERS")
+        # Phase T Improvement #1 — explicit (hour, tier) pair blocklist.
+        # Format: "<hour>:<tier>,<hour>:<tier>,..." e.g.
+        # "22:70-85%,5:30-50%,21:30-50%". Whitespace tolerated. Malformed
+        # entries are logged + skipped, not fatal — defense in depth so a
+        # typo doesn't take down the bot. See
+        # design/phase-T-hour-blocklist-v2.md.
+        hour_blocklist_pairs_raw = _env_csv("SPOT_AWARE_HOUR_BLOCKLIST_PAIRS")
+        hour_blocklist_pairs: list[tuple[int, str]] = []
+        for entry in hour_blocklist_pairs_raw:
+            if ":" not in entry:
+                LOG.warning("SPOT_AWARE_HOUR_BLOCKLIST_PAIRS entry %r missing ':'; skipping", entry)
+                continue
+            h_str, tier_str = entry.split(":", 1)
+            h_str, tier_str = h_str.strip(), tier_str.strip()
+            try:
+                h_int = int(h_str)
+            except ValueError:
+                LOG.warning(
+                    "SPOT_AWARE_HOUR_BLOCKLIST_PAIRS entry %r has non-int hour; skipping", entry
+                )
+                continue
+            if not 0 <= h_int <= 23:
+                LOG.warning(
+                    "SPOT_AWARE_HOUR_BLOCKLIST_PAIRS entry %r hour out of range [0, 23]; skipping",
+                    entry,
+                )
+                continue
+            if not tier_str:
+                LOG.warning(
+                    "SPOT_AWARE_HOUR_BLOCKLIST_PAIRS entry %r has empty tier; skipping", entry
+                )
+                continue
+            hour_blocklist_pairs.append((h_int, tier_str))
         # Phase P Session 3 — MMD gate-config env read. The MMD getter
         # itself is bound in main() (after the poller exists); here we
         # only validate the operator-facing mode + abstain set so any
@@ -489,6 +522,7 @@ def _build_strategy(name: str) -> Strategy:
             "tier_relax_price_floor=%.3f "
             "block_up_in_tiers=%s block_down_in_tiers=%s "
             "hour_blocklist_utc=%s hour_blocklist_tiers=%s "
+            "hour_blocklist_pairs=%s "
             "mmd_mode=%s mmd_labels_to_abstain=%s mmd_abstain_by_side=%s "
             "overrides=%s",
             kelly_mult,
@@ -500,6 +534,7 @@ def _build_strategy(name: str) -> Strategy:
             block_down,
             hour_blocklist_utc,
             hour_blocklist_tiers,
+            tuple(hour_blocklist_pairs),
             mmd_mode_env,
             mmd_labels_to_abstain,
             tuple(mmd_abstain_by_side),
@@ -516,6 +551,7 @@ def _build_strategy(name: str) -> Strategy:
             tier_relax_price_floor=price_floor_val,
             hour_blocklist_utc=hour_blocklist_utc,
             hour_blocklist_tiers=hour_blocklist_tiers,
+            hour_blocklist_pairs=tuple(hour_blocklist_pairs),
             mmd_mode=mmd_mode_env,
             mmd_labels_to_abstain=mmd_labels_to_abstain,
             mmd_abstain_by_side=tuple(mmd_abstain_by_side),

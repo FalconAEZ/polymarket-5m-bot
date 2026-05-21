@@ -773,3 +773,156 @@ def test_v2_1_empty_tier_scope_is_rejected_at_init() -> None:
             hour_blocklist_utc=(24,),
             hour_blocklist_tiers=("70-85%",),
         )
+
+
+# --------------------------------------------------------------------------
+# Phase T Improvement #1 — per-(hour, tier) pair blocklist
+# --------------------------------------------------------------------------
+
+
+async def test_v2_1_pairs_blocks_at_explicit_pair() -> None:
+    """Phase T #1 — A fire at UTC 23:00 in tier 70-85% with the pair
+    (23, '70-85%') in the pairs blocklist MUST abstain. Same set-up as
+    the legacy utc+tiers test; the pair form is just the canonical
+    representation."""
+    strat = SpotAwareStrategyV2_1(
+        priors=_StubPriors(p_win=0.85),
+        bankroll_getter=_bankroll(1000.0),
+        hour_blocklist_pairs=((23, "70-85%"),),
+    )
+    ts_23 = _ts_at_utc_hour(23)
+    decision = await _drive_window_at(
+        strat, window_ts=ts_23, open_spot=80_000.0, end_spot=80_080.0, ask_up=0.72
+    )
+    assert decision is None, "pair (23, '70-85%') must abstain at 23Z x 70-85%"
+
+
+async def test_v2_1_pairs_does_not_cross_contaminate() -> None:
+    """Phase T #1 — Pairs are explicit. (23, '70-85%') in the blocklist
+    must NOT block (23, '30-50%') even though tier '30-50%' appears
+    elsewhere in the same config. This is the structural reason for the
+    pair form: the legacy 2D intersection (hours x tiers) would have
+    blocked both.
+
+    Construction: two pairs configured — (23, '70-85%') AND (5, '30-50%').
+    Fire at 23Z x 30-50% must pass through. Disables the J.1 floor so
+    the price (0.45) doesn't get caught by that filter."""
+    strat = SpotAwareStrategyV2_1(
+        priors=_StubPriors(p_win=0.55),
+        bankroll_getter=_bankroll(1000.0),
+        hour_blocklist_pairs=((23, "70-85%"), (5, "30-50%")),
+        tier_relax_price_floor=0.0,
+    )
+    ts_23 = _ts_at_utc_hour(23)
+    decision = await _drive_window_at(
+        strat, window_ts=ts_23, open_spot=80_000.0, end_spot=80_080.0, ask_up=0.45
+    )
+    assert decision is not None, "23Z x 30-50% must fire (pair not in blocklist)"
+    assert "side=UP" in decision.rationale
+
+
+async def test_v2_1_pairs_does_not_block_outside_hour() -> None:
+    """Phase T #1 — Pair (23, '70-85%') in blocklist; at 12Z x 70-85%
+    the fire passes through (only the exact (hour, tier) tuple matches)."""
+    strat = SpotAwareStrategyV2_1(
+        priors=_StubPriors(p_win=0.85),
+        bankroll_getter=_bankroll(1000.0),
+        hour_blocklist_pairs=((23, "70-85%"),),
+    )
+    ts_12 = _ts_at_utc_hour(12)
+    decision = await _drive_window_at(
+        strat, window_ts=ts_12, open_spot=80_000.0, end_spot=80_080.0, ask_up=0.72
+    )
+    assert decision is not None, "12Z x 70-85% must fire (hour not blocked)"
+    assert "side=UP" in decision.rationale
+
+
+async def test_v2_1_legacy_utc_tiers_expand_into_pairs() -> None:
+    """Phase T #1 — Backwards compatibility. Setting the legacy params
+    hour_blocklist_utc=(23,) + hour_blocklist_tiers=('70-85%', '30-50%')
+    expands internally to pairs {(23, '70-85%'), (23, '30-50%')}.
+    Both 23Z fires (in either tier) must abstain. Behavior must be
+    byte-identical to the pre-Phase-T code path."""
+    strat = SpotAwareStrategyV2_1(
+        priors=_StubPriors(p_win=0.85),
+        bankroll_getter=_bankroll(1000.0),
+        hour_blocklist_utc=(23,),
+        hour_blocklist_tiers=("70-85%", "30-50%"),
+        tier_relax_price_floor=0.0,
+    )
+    ts_23 = _ts_at_utc_hour(23)
+    # Tier 70-85% fire — blocked by expanded pair (23, '70-85%').
+    d_high = await _drive_window_at(
+        strat, window_ts=ts_23, open_spot=80_000.0, end_spot=80_080.0, ask_up=0.72
+    )
+    assert d_high is None, "expanded pair (23, '70-85%') must abstain"
+    # Tier 30-50% fire — blocked by expanded pair (23, '30-50%').
+    d_mid = await _drive_window_at(
+        strat, window_ts=ts_23, open_spot=80_000.0, end_spot=80_080.0, ask_up=0.45
+    )
+    assert d_mid is None, "expanded pair (23, '30-50%') must abstain"
+
+
+async def test_v2_1_pairs_and_legacy_merge_as_union() -> None:
+    """Phase T #1 — When BOTH pairs AND legacy utc/tiers are set, the
+    final pair set is the union. Tests that pair (5, '30-50%') AND
+    legacy (23, '70-85%') both fire abstain rules independently."""
+    strat = SpotAwareStrategyV2_1(
+        priors=_StubPriors(p_win=0.85),
+        bankroll_getter=_bankroll(1000.0),
+        hour_blocklist_pairs=((5, "30-50%"),),
+        hour_blocklist_utc=(23,),
+        hour_blocklist_tiers=("70-85%",),
+        tier_relax_price_floor=0.0,
+    )
+    # From legacy: 23Z x 70-85% abstains.
+    d_legacy = await _drive_window_at(
+        strat,
+        window_ts=_ts_at_utc_hour(23),
+        open_spot=80_000.0,
+        end_spot=80_080.0,
+        ask_up=0.72,
+    )
+    assert d_legacy is None, "legacy-expanded pair (23, '70-85%') must abstain"
+    # From explicit pair: 5Z x 30-50% abstains.
+    d_pair = await _drive_window_at(
+        strat,
+        window_ts=_ts_at_utc_hour(5),
+        open_spot=80_000.0,
+        end_spot=80_080.0,
+        ask_up=0.45,
+    )
+    assert d_pair is None, "explicit pair (5, '30-50%') must abstain"
+
+
+def test_v2_1_pairs_validation_rejects_bad_inputs() -> None:
+    """Phase T #1 — Init must raise on malformed pair entries: not a tuple,
+    wrong arity, non-int hour, out-of-range hour, non-str or empty tier."""
+    # Out-of-range hour
+    with pytest.raises(ValueError, match="hour_blocklist_pairs hour"):
+        SpotAwareStrategyV2_1(
+            priors=_real_priors(),
+            bankroll_getter=_bankroll(),
+            hour_blocklist_pairs=((24, "70-85%"),),
+        )
+    # Negative hour
+    with pytest.raises(ValueError, match="hour_blocklist_pairs hour"):
+        SpotAwareStrategyV2_1(
+            priors=_real_priors(),
+            bankroll_getter=_bankroll(),
+            hour_blocklist_pairs=((-1, "70-85%"),),
+        )
+    # Empty tier string
+    with pytest.raises(ValueError, match="hour_blocklist_pairs tier"):
+        SpotAwareStrategyV2_1(
+            priors=_real_priors(),
+            bankroll_getter=_bankroll(),
+            hour_blocklist_pairs=((22, ""),),
+        )
+    # Wrong arity tuple
+    with pytest.raises(ValueError, match="hour_blocklist_pairs entries"):
+        SpotAwareStrategyV2_1(
+            priors=_real_priors(),
+            bankroll_getter=_bankroll(),
+            hour_blocklist_pairs=((22, "70-85%", "extra"),),  # type: ignore[arg-type]
+        )

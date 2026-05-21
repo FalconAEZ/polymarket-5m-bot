@@ -103,6 +103,19 @@ DEFAULT_TIER_RELAX_PRICE_FLOOR: float = 0.42
 DEFAULT_HOUR_BLOCKLIST_UTC: tuple[int, ...] = ()
 DEFAULT_HOUR_BLOCKLIST_TIERS: tuple[str, ...] = ()
 
+# Phase T Improvement #1 — extend J.2 to per-(hour, tier) pairs. The
+# legacy `*_UTC` x `*_TIERS` form is a 2D intersection: it can express
+# tier-70-85% x {22,23,0} but NOT tier-30-50% x {05,06,17,21,23,0} on
+# the same instance (would cross-contaminate). The new pairs form is a
+# set of explicit (hour, tier) tuples. Empty by default; operator wires
+# via SPOT_AWARE_HOUR_BLOCKLIST_PAIRS env as "<hour>:<tier>,..." e.g.
+# "22:70-85%,23:70-85%,0:70-85%,5:30-50%,6:30-50%,17:30-50%,21:30-50%,
+# 23:30-50%,0:30-50%" (the Phase N forensic blocklist; quantified
+# -$1,748 prevented loss over 5 days). The legacy params remain
+# accepted: at init, they expand to all (h, t) combinations and merge
+# into the pair set. See design/phase-T-hour-blocklist-v2.md.
+DEFAULT_HOUR_BLOCKLIST_PAIRS: tuple[tuple[int, str], ...] = ()
+
 
 class _PriorsFallback:
     """Wraps the real ``SpotAwarePriors`` and synthesises a p_win for
@@ -240,6 +253,10 @@ class SpotAwareStrategyV2_1(SpotAwareStrategyV2):
         tier_relax_price_floor: float = DEFAULT_TIER_RELAX_PRICE_FLOOR,
         hour_blocklist_utc: tuple[int, ...] = DEFAULT_HOUR_BLOCKLIST_UTC,
         hour_blocklist_tiers: tuple[str, ...] = DEFAULT_HOUR_BLOCKLIST_TIERS,
+        # Phase T Improvement #1 — explicit (hour, tier) pair blocklist.
+        # If both this param AND the legacy utc/tiers params are set, the
+        # final pair set is the union. See design/phase-T-hour-blocklist-v2.md.
+        hour_blocklist_pairs: tuple[tuple[int, str], ...] = DEFAULT_HOUR_BLOCKLIST_PAIRS,
         # Phase P Session 3 — Market Mode Detector (MMD) wiring.
         # design/P.1-market-mode-detector-integration.md. When mmd_getter
         # is set, every fire decision gains `mmd=<label> mmd_conf=<conf>`
@@ -284,6 +301,23 @@ class SpotAwareStrategyV2_1(SpotAwareStrategyV2):
                 "is non-empty (no-tier-scope = block-all is not supported; "
                 "set both to empty tuples to disable)"
             )
+        # Phase T Improvement #1 — validate explicit pairs. Each entry must
+        # be a (hour, tier) tuple with hour in [0, 23] and a non-empty tier
+        # string. Tier-label canonicality is enforced downstream by the
+        # set-membership check against tier_label_for_price(ask); a bogus
+        # tier here just never matches. Distinct loop variable name from
+        # the MMD-pair loop below so mypy doesn't narrow the type across
+        # loops.
+        for ht_pair in hour_blocklist_pairs:
+            if not isinstance(ht_pair, tuple) or len(ht_pair) != 2:
+                raise ValueError(
+                    f"hour_blocklist_pairs entries must be (hour, tier) tuples; got {ht_pair!r}"
+                )
+            ph, pt = ht_pair
+            if not isinstance(ph, int) or not 0 <= ph <= 23:
+                raise ValueError(f"hour_blocklist_pairs hour must be int in [0, 23]; got {ph!r}")
+            if not isinstance(pt, str) or not pt:
+                raise ValueError(f"hour_blocklist_pairs tier must be a non-empty str; got {pt!r}")
         if mmd_mode not in ("shadow", "gate"):
             raise ValueError(f"mmd_mode must be one of 'shadow'|'gate'; got {mmd_mode!r}")
         for pair in mmd_abstain_by_side:
@@ -302,6 +336,17 @@ class SpotAwareStrategyV2_1(SpotAwareStrategyV2):
         self._tier_relax_price_floor = tier_relax_price_floor
         self._hour_blocklist_utc = frozenset(hour_blocklist_utc)
         self._hour_blocklist_tiers = frozenset(hour_blocklist_tiers)
+        # Phase T Improvement #1 — union of:
+        #   (a) explicit pairs from hour_blocklist_pairs
+        #   (b) cartesian product of legacy utc x tiers (backward-compat)
+        # The check at fire-time is a single membership test against this
+        # union; legacy params keep working with byte-identical semantics.
+        _pairs_from_legacy: frozenset[tuple[int, str]] = frozenset(
+            (h, t) for h in hour_blocklist_utc for t in hour_blocklist_tiers
+        )
+        self._hour_blocklist_pairs: frozenset[tuple[int, str]] = (
+            frozenset(hour_blocklist_pairs) | _pairs_from_legacy
+        )
         self._mmd_getter = mmd_getter
         self._mmd_mode = mmd_mode
         self._mmd_labels_to_abstain = frozenset(mmd_labels_to_abstain)
@@ -382,14 +427,18 @@ class SpotAwareStrategyV2_1(SpotAwareStrategyV2):
         # hour, tier label). H.3 audit 2026-05-13 H.5 era: tier 70-85% x
         # (22, 23, 0) UTC was the catastrophic bleed band (23Z WR 0% /
         # -$18.32/tr, 00Z -$7.02/tr). 21Z x 70-85% was profitable
-        # (+$2.13/tr) — the scope is intentionally narrow. Both
-        # blocklists empty → noop. Abstain BEFORE the multi-fire counter
-        # ticks; the window stays free for a later qualifying tick after
-        # the hour rolls over (though in practice a window spans only
-        # 5 min so hours don't roll mid-window).
-        if self._hour_blocklist_utc:
+        # (+$2.13/tr) — the scope is intentionally narrow. Phase T
+        # Improvement #1 (2026-05-21) extends to tier 30-50% x
+        # {05, 06, 17, 21, 23, 0} UTC per Phase N forensic F5 (n=131,
+        # -$1,748 over 5 days). The check is a single membership test
+        # against the union pair-set (which absorbs legacy utc/tiers
+        # via cartesian expansion). Empty pair set → noop. Abstain
+        # BEFORE the multi-fire counter ticks; the window stays free
+        # for a later qualifying tick after the hour rolls over (though
+        # in practice a 5-min window spans no hour boundary).
+        if self._hour_blocklist_pairs:
             hour = _dt.datetime.fromtimestamp(now_ts_utc_ns / 1_000_000_000, tz=_dt.UTC).hour
-            if hour in self._hour_blocklist_utc and tier in self._hour_blocklist_tiers:
+            if (hour, tier) in self._hour_blocklist_pairs:
                 return None
 
         # H.2.12 path A — per-tier side-direction block. Operator can
