@@ -1047,3 +1047,133 @@ def test_v2_1_cell_flip_init_rejects_lopsided_config() -> None:
             cell_fire_history=CellFireHistory(),
             # detector missing!
         )
+
+
+# --------------------------------------------------------------------------
+# Phase T Improvement #1.5 — per-cell fire mechanism
+# --------------------------------------------------------------------------
+
+
+async def test_v2_1_per_cell_disabled_legacy_unchanged() -> None:
+    """Phase T #1.5 — With per_cell_fire_enabled=False (default), behavior
+    is the legacy multi_fire_cap-only mode. Two fires on the same window
+    must be possible when cap >= 2 (the H.5 legacy behavior we're preserving
+    for backwards compat). This validates the default-off path doesn't
+    inadvertently change behavior."""
+    strat = SpotAwareStrategyV2_1(
+        priors=_StubPriors(p_win=0.85),
+        bankroll_getter=_bankroll(1000.0),
+        multi_fire_cap=2,
+        # per_cell_fire_enabled defaults to False
+        tier_relax_price_floor=0.0,
+    )
+    base_ts = int(_dt.datetime(2026, 5, 13, 12, 0, 0, tzinfo=_dt.UTC).timestamp())
+    open_ns = base_ts * 1_000_000_000
+    await strat.on_event(WindowBoundary(ts_utc_ns=open_ns, window_ts=base_ts, kind="open"))
+    await strat.on_event(_spot(80_000.0, ts_offset_s=1))
+    await strat.on_event(_book("UP", TOKEN_UP, ask=0.72, ts_offset_s=2))
+    await strat.on_event(_book("DOWN", TOKEN_DOWN, ask=0.72, ts_offset_s=2))
+    # First qualifying tick fires.
+    d1 = await strat.on_event(_spot(80_080.0, ts_offset_s=10))
+    assert d1 is not None, "first tick must fire (legacy multi_fire_cap=2)"
+    # Second qualifying tick fires too — same cell, but legacy mode allows it.
+    d2 = await strat.on_event(_spot(80_080.0, ts_offset_s=20))
+    assert d2 is not None, "second same-cell tick must fire in legacy mode (cap=2)"
+
+
+async def test_v2_1_per_cell_same_cell_2nd_fire_abstain() -> None:
+    """Phase T #1.5 — With per_cell_fire_enabled=True and cap=4, two fires
+    on the SAME cell within the same window must abstain on the second."""
+    strat = SpotAwareStrategyV2_1(
+        priors=_StubPriors(p_win=0.85),
+        bankroll_getter=_bankroll(1000.0),
+        multi_fire_cap=4,
+        per_cell_fire_enabled=True,
+        tier_relax_price_floor=0.0,
+    )
+    base_ts = int(_dt.datetime(2026, 5, 13, 12, 0, 0, tzinfo=_dt.UTC).timestamp())
+    open_ns = base_ts * 1_000_000_000
+    await strat.on_event(WindowBoundary(ts_utc_ns=open_ns, window_ts=base_ts, kind="open"))
+    await strat.on_event(_spot(80_000.0, ts_offset_s=1))
+    await strat.on_event(_book("UP", TOKEN_UP, ask=0.72, ts_offset_s=2))
+    await strat.on_event(_book("DOWN", TOKEN_DOWN, ask=0.72, ts_offset_s=2))
+    d1 = await strat.on_event(_spot(80_080.0, ts_offset_s=10))
+    assert d1 is not None, "first fire on cell 70-85%|UP|hi must land"
+    # Second tick — same direction, same tier, same |Δ| bucket → same cell key
+    d2 = await strat.on_event(_spot(80_096.0, ts_offset_s=20))
+    assert d2 is None, "second fire on same cell must abstain (per-cell enabled)"
+
+
+async def test_v2_1_per_cell_different_cell_2nd_fire_allowed() -> None:
+    """Phase T #1.5 — Fire on UP, then a DOWN-side fire (different cell)
+    must succeed. Validates side is part of the cell key."""
+    strat = SpotAwareStrategyV2_1(
+        priors=_StubPriors(p_win=0.85),
+        bankroll_getter=_bankroll(1000.0),
+        multi_fire_cap=4,
+        per_cell_fire_enabled=True,
+        tier_relax_price_floor=0.0,
+    )
+    base_ts = int(_dt.datetime(2026, 5, 13, 12, 0, 0, tzinfo=_dt.UTC).timestamp())
+    open_ns = base_ts * 1_000_000_000
+    await strat.on_event(WindowBoundary(ts_utc_ns=open_ns, window_ts=base_ts, kind="open"))
+    await strat.on_event(_spot(80_000.0, ts_offset_s=1))
+    await strat.on_event(_book("UP", TOKEN_UP, ask=0.72, ts_offset_s=2))
+    await strat.on_event(_book("DOWN", TOKEN_DOWN, ask=0.72, ts_offset_s=2))
+    # First fire on UP-side (spot moves up).
+    d1 = await strat.on_event(_spot(80_080.0, ts_offset_s=10))
+    assert d1 is not None
+    assert "side=UP" in d1.rationale
+    # Second tick — spot reverses down, side=DOWN, different cell key.
+    d2 = await strat.on_event(_spot(79_920.0, ts_offset_s=20))
+    assert d2 is not None, "different-cell second fire must land"
+    assert "side=DOWN" in d2.rationale
+
+
+async def test_v2_1_per_cell_outer_cap_still_binds() -> None:
+    """Phase T #1.5 — Even with per-cell enabled, the outer multi_fire_cap
+    still binds as a hard ceiling. With cap=1, the second fire abstains
+    regardless of cell."""
+    strat = SpotAwareStrategyV2_1(
+        priors=_StubPriors(p_win=0.85),
+        bankroll_getter=_bankroll(1000.0),
+        multi_fire_cap=1,  # hard cap=1
+        per_cell_fire_enabled=True,
+        tier_relax_price_floor=0.0,
+    )
+    base_ts = int(_dt.datetime(2026, 5, 13, 12, 0, 0, tzinfo=_dt.UTC).timestamp())
+    open_ns = base_ts * 1_000_000_000
+    await strat.on_event(WindowBoundary(ts_utc_ns=open_ns, window_ts=base_ts, kind="open"))
+    await strat.on_event(_spot(80_000.0, ts_offset_s=1))
+    await strat.on_event(_book("UP", TOKEN_UP, ask=0.72, ts_offset_s=2))
+    await strat.on_event(_book("DOWN", TOKEN_DOWN, ask=0.72, ts_offset_s=2))
+    d1 = await strat.on_event(_spot(80_080.0, ts_offset_s=10))
+    assert d1 is not None
+    # Different-cell second fire — would normally fire per-cell, but
+    # the outer cap=1 binds.
+    d2 = await strat.on_event(_spot(79_920.0, ts_offset_s=20))
+    assert d2 is None, "outer cap=1 must override per-cell allowance"
+
+
+async def test_v2_1_per_cell_window_open_resets() -> None:
+    """Phase T #1.5 — A new WindowBoundary 'open' clears the per-cell
+    tracking dict; the same cell can fire again in the new window."""
+    strat = SpotAwareStrategyV2_1(
+        priors=_StubPriors(p_win=0.85),
+        bankroll_getter=_bankroll(1000.0),
+        multi_fire_cap=4,
+        per_cell_fire_enabled=True,
+        tier_relax_price_floor=0.0,
+    )
+    # Window 1
+    ts1 = int(_dt.datetime(2026, 5, 13, 12, 0, 0, tzinfo=_dt.UTC).timestamp())
+    d1 = await _drive_window_at(
+        strat, window_ts=ts1, open_spot=80_000.0, end_spot=80_080.0, ask_up=0.72
+    )
+    assert d1 is not None
+    # Window 2 — same cell key, should fire again (per-cell state cleared).
+    ts2 = ts1 + 300
+    d2 = await _drive_window_at(
+        strat, window_ts=ts2, open_spot=80_000.0, end_spot=80_080.0, ask_up=0.72
+    )
+    assert d2 is not None, "new window must allow same cell to fire again"

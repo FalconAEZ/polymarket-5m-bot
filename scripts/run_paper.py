@@ -497,6 +497,12 @@ def _build_strategy(name: str) -> Strategy:
             LOG.warning("MMD_MODE=%r invalid; falling back to 'shadow'", mmd_mode_env)
             mmd_mode_env = "shadow"
         mmd_labels_to_abstain = _env_csv("MMD_LABELS_TO_ABSTAIN")
+        # Phase T Improvement #1.5 — per-cell fire mechanism. Opt-in via
+        # SPOT_AWARE_PER_CELL_FIRE_ENABLED=true. When enabled, the strategy
+        # allows at most 1 fire per (tier, side, |Δbps| bucket) per window;
+        # second fire on the same cell abstains. Outer multi_fire_cap still
+        # binds — recommended to raise MULTI_FIRE_CAP to >=4 when enabling.
+        per_cell_fire_enabled = _env_bool("SPOT_AWARE_PER_CELL_FIRE_ENABLED", False)
         # Phase T Improvement #2 — cell-flip detector env wiring. Opt-in
         # via CELL_FLIP_ENABLED=true. Thresholds tunable; all three have
         # sensible defaults matching the design doc. When enabled, both
@@ -583,6 +589,7 @@ def _build_strategy(name: str) -> Strategy:
             mmd_abstain_by_side=tuple(mmd_abstain_by_side),
             cell_flip_detector=cell_flip_detector_obj,
             cell_fire_history=cell_fire_history_obj,
+            per_cell_fire_enabled=per_cell_fire_enabled,
             **v21_kwargs,
         )
     if name == "ensemble":

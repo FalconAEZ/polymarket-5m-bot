@@ -288,6 +288,13 @@ class SpotAwareStrategyV2_1(SpotAwareStrategyV2):
         # bankroll.apply_settle.
         cell_flip_detector: CellFlipDetector | None = None,
         cell_fire_history: CellFireHistory | None = None,
+        # Phase T Improvement #1.5 — per-cell fire mechanism. When True,
+        # at most 1 fire per (tier, side, |Δbps| bucket) cell per window;
+        # second fire on the same cell is abstained even if the outer
+        # multi_fire_cap has headroom. A second fire on a DIFFERENT cell
+        # is allowed (subject to the outer cap). Default False = legacy
+        # cap-only behavior. See design/phase-T-per-cell-fire.md.
+        per_cell_fire_enabled: bool = False,
         **v2_kwargs: object,
     ) -> None:
         super().__init__(priors=priors, **v2_kwargs)  # type: ignore[arg-type]
@@ -376,6 +383,12 @@ class SpotAwareStrategyV2_1(SpotAwareStrategyV2):
         self._mmd_abstain_by_side = frozenset(mmd_abstain_by_side)
         self._cell_flip_detector = cell_flip_detector
         self._cell_fire_history = cell_fire_history
+        # Phase T Improvement #1.5 — per-cell fire mechanism state. The
+        # dict tracks which (tier, side, |Δ| bucket) cells have already
+        # fired in the current window. Cleared on every WindowBoundary
+        # open event in _on_boundary.
+        self._per_cell_fire_enabled = per_cell_fire_enabled
+        self._fires_per_cell_this_window: dict[str, int] = {}
         self._fires_this_window: int = 0
 
     @property
@@ -418,6 +431,10 @@ class SpotAwareStrategyV2_1(SpotAwareStrategyV2):
         result = super()._on_boundary(event)
         if event.kind == "open":
             self._fires_this_window = 0
+            # Phase T Improvement #1.5 — reset per-cell fire tracking on
+            # each new window. Always clear (not gated on enabled) so the
+            # state stays clean if operator flips the env mid-run.
+            self._fires_per_cell_this_window.clear()
         return result
 
     def _maybe_fire(self, now_ts_utc_ns: int) -> Decision | None:
@@ -464,6 +481,19 @@ class SpotAwareStrategyV2_1(SpotAwareStrategyV2):
         if self._hour_blocklist_pairs:
             hour = _dt.datetime.fromtimestamp(now_ts_utc_ns / 1_000_000_000, tz=_dt.UTC).hour
             if (hour, tier) in self._hour_blocklist_pairs:
+                return None
+
+        # Phase T Improvement #1.5 — per-cell fire mechanism. Cell key
+        # INCLUDES side (differs from #2 detector's side-agnostic key).
+        # Abstain if THIS exact (tier, side, |Δ| bucket) cell has already
+        # fired in this window; allow if a different cell. The outer
+        # multi_fire_cap still binds as a hard ceiling on TOTAL fires.
+        # Default off — operator opts in via SPOT_AWARE_PER_CELL_FIRE_ENABLED.
+        # See design/phase-T-per-cell-fire.md.
+        per_cell_key: str | None = None
+        if self._per_cell_fire_enabled:
+            per_cell_key = f"{tier}|{side_guess}|{'hi' if abs(d_bps) >= 5 else 'lo'}"
+            if per_cell_key in self._fires_per_cell_this_window:
                 return None
 
         # H.2.12 path A — per-tier side-direction block. Operator can
@@ -630,8 +660,18 @@ class SpotAwareStrategyV2_1(SpotAwareStrategyV2):
         # promote-to-gate counterfactual).
         if self._mmd_getter is not None:
             new_rationale = f"{new_rationale} mmd={mmd_label} mmd_conf={mmd_conf:.2f}"
-        if self._fires_this_window < self._multi_fire_cap:
+        # Phase T Improvement #1.5 — if per-cell is enabled, ALWAYS reset
+        # _fired_for_window so subsequent ticks can try OTHER cells, not
+        # just when the outer cap has headroom. The per-cell dict + outer
+        # cap together throttle the firing; the legacy single-fire flag
+        # would otherwise block all subsequent ticks once cap is hit.
+        # If per-cell is disabled, keep the legacy semantics exactly.
+        if self._per_cell_fire_enabled or self._fires_this_window < self._multi_fire_cap:
             self._fired_for_window = None
+        # Phase T Improvement #1.5 — register this cell as fired for the
+        # current window so a same-cell re-attempt this window abstains.
+        if self._per_cell_fire_enabled and per_cell_key is not None:
+            self._fires_per_cell_this_window[per_cell_key] = 1
         final_decision = dc_replace(base_decision, size_usd=bet, rationale=new_rationale)
         # Phase T Improvement #2 — register the pending fire for the
         # cell-flip detector. window_ts + asset_id uniquely identifies
