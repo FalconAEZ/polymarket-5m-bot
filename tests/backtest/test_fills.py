@@ -277,3 +277,58 @@ def test_size_guard_allows_normal_trade_above_floor() -> None:
     assert fill is not None
     # Sanity-check the size came out as expected (cost / fill_price).
     assert 24 < fill.size_filled < 26
+
+
+# --------------------------------------------------------------------------
+# Phase T 2026-05-21 — size-guard now price-conditional (gated to <0.10)
+# --------------------------------------------------------------------------
+
+
+def test_no_depth_at_mid_price_now_fills_above_old_cap() -> None:
+    """Phase T fix — At fill_price=0.45 (well above the 0.10 size-guard
+    threshold), a $90 bet that produces 200 shares (> 50-share old cap)
+    must now FILL when ask_size_top is unknown. Previously this case was
+    refused by the price-blind size cap. Spot_aware_v2_1 with Kelly + $3k
+    bankroll routinely produces this size."""
+    sim = FillSimulator()
+    book = _book(best_ask=0.45, ask_size_top=None)
+    fill = sim.attempt_fill(_decision(price_limit=0.46, size=90.0), book, is_taker=True)
+    assert fill is not None, "mid-price fill with unknown depth must now succeed"
+    # Sanity: $90 / ~$0.45 ≈ 200 shares — above the old 50-cap.
+    assert fill.size_filled > 100, f"expected large size, got {fill.size_filled}"
+
+
+def test_no_depth_near_floor_still_refused_by_price_guard() -> None:
+    """Phase T fix preserves the Phase 11.A defense at floor prices.
+    fill_price=0.04 hits the price-floor guard (<=0.05) regardless of
+    size or depth. Wide_fire-era phantom fills at $0.01-$0.04 still
+    correctly refused."""
+    sim = FillSimulator()
+    book = _book(best_ask=0.04, ask_size_top=None)
+    fill = sim.attempt_fill(_decision(price_limit=0.05, size=5.0), book, is_taker=True)
+    assert fill is None, "floor-price fill with unknown depth must refuse"
+
+
+def test_no_depth_below_size_guard_threshold_still_refused_by_size() -> None:
+    """Phase T fix scopes size-cap to fill_price<0.10. At fill_price=0.08
+    (above 0.05 floor, below 0.10 size-guard threshold), a $5 bet that
+    produces 62 shares (> 50-cap) MUST still be refused. This validates
+    the size-cap defense is preserved in the price zone where it was
+    designed to operate."""
+    sim = FillSimulator()
+    book = _book(best_ask=0.08, ask_size_top=None)
+    # $5 / $0.08 = 62.5 shares — above the 50-cap, below 0.10 price.
+    fill = sim.attempt_fill(_decision(price_limit=0.09, size=5.0), book, is_taker=True)
+    assert fill is None, "size-cap below 0.10 threshold must still refuse"
+
+
+def test_size_guard_max_price_constructor_override() -> None:
+    """Phase T fix — operator can pass size_guard_max_price=1.0 to
+    restore the original price-blind size-cap behavior if needed for
+    backward compatibility. Validates the param is wired."""
+    sim_old = FillSimulator(size_guard_max_price=1.0)
+    book = _book(best_ask=0.45, ask_size_top=None)
+    # Same mid-price case as the new-default test above — with size_guard
+    # set to 1.0, the cap applies at all prices, so this is refused.
+    fill = sim_old.attempt_fill(_decision(price_limit=0.46, size=90.0), book, is_taker=True)
+    assert fill is None, "size_guard_max_price=1.0 must restore price-blind cap"

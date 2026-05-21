@@ -47,6 +47,20 @@ DEFAULT_FLOOR_BEST_ASK = 0.05
 # at any price level when depth is unknown).
 DEFAULT_MAX_FILL_SIZE_NO_DEPTH = 50.0
 
+# Phase T 2026-05-21 — size-guard is now PRICE-CONDITIONAL. Historical
+# phantom over-fills (per Phase 11.A audit 2026-05-10) happened at
+# prices $0.011, $0.021, $0.03, $0.04 — all below 0.05. The original
+# price-floor guard catches those via _floor_best_ask. The size-cap
+# defense-in-depth is now scoped to fill_price < DEFAULT_SIZE_GUARD_MAX_PRICE
+# (= 0.10, 2x safety margin above the highest measured phantom-fill
+# price). Above 0.10, legitimate Kelly-sized bets at mid-prices
+# routinely produce 200-600 shares which real Polymarket depth absorbs
+# without difficulty. Pre-fix fill-rate audit (2026-05-21, n=38) found
+# the price-blind size cap rejected 23 legitimate mid-price fires
+# (60% of fires) while preventing zero phantom-fills. See
+# design/phase-T-fill-sim-size-guard-fix.md.
+DEFAULT_SIZE_GUARD_MAX_PRICE = 0.10
+
 
 class FillSimulator:
     """Simulates a buy-side fill against a single BookUpdate snapshot."""
@@ -61,6 +75,7 @@ class FillSimulator:
         max_impact_usd: float = DEFAULT_MAX_IMPACT_USD,
         floor_best_ask: float = DEFAULT_FLOOR_BEST_ASK,
         max_fill_size_no_depth: float = DEFAULT_MAX_FILL_SIZE_NO_DEPTH,
+        size_guard_max_price: float = DEFAULT_SIZE_GUARD_MAX_PRICE,
     ) -> None:
         if fee_bps < 0:
             raise ValueError(f"fee_bps must be >= 0, got {fee_bps}")
@@ -71,23 +86,31 @@ class FillSimulator:
         self._max_impact = max(0.0, max_impact_usd)
         self._floor_best_ask = max(0.0, floor_best_ask)
         self._max_fill_size_no_depth = max(0.0, max_fill_size_no_depth)
+        self._size_guard_max_price = max(0.0, size_guard_max_price)
 
     def _refuse_for_no_depth(self, fill_price: float, size_filled: float, book: BookUpdate) -> bool:
         """Returns True when the would-be fill should be refused due to
         missing depth info + phantom-floor or over-fill pattern.
 
-        Two conditions, EITHER triggers refusal when ask_size_top is unknown:
+        Two conditions when ask_size_top is unknown:
           (a) fill_price <= floor_best_ask (near-floor pricing where
               real-book depth is microscopic);
-          (b) size_filled >= max_fill_size_no_depth (over-fill zone where
-              the simulator is producing more shares than any plausible
-              real top-of-book depth).
+          (b) fill_price < size_guard_max_price AND
+              size_filled >= max_fill_size_no_depth (defense-in-depth
+              for the near-floor over-fill zone; gated to prices below
+              size_guard_max_price=0.10 per Phase T fill-rate audit
+              2026-05-21 — see design/phase-T-fill-sim-size-guard-fix.md).
+
+        Either condition triggers refusal. Above size_guard_max_price the
+        size cap does NOT apply: legitimate Kelly-sized bets at mid-prices
+        (0.30-0.85) routinely produce 200+ shares which real Polymarket
+        depth absorbs without difficulty.
         """
         if book.ask_size_top is not None:
             return False
         if fill_price <= self._floor_best_ask:
             return True
-        if size_filled >= self._max_fill_size_no_depth:
+        if fill_price < self._size_guard_max_price and size_filled >= self._max_fill_size_no_depth:
             return True
         return False
 
