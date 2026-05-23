@@ -27,6 +27,8 @@ from typing import Any
 
 import httpx
 
+from polymarket_bot._live.alerter.halt import write_halt_sentinel
+from polymarket_bot._paper.daily_loss_guard import DailyLossGuard
 from polymarket_bot._paper.decision_log import DecisionLog, read_jsonl
 from polymarket_bot._paper.shadow_book import ShadowBook
 from polymarket_bot.alerts import Alert, AlertSink, Level, NullAlertSink
@@ -187,6 +189,13 @@ class PaperRunner:
         # per-window invariant for v1/v2/v3/wide_fire. v2.1 wires 2 from
         # the MULTI_FIRE_CAP env var via run_paper.py. Spec §6.2.
         multi_fire_cap: int = 1,
+        # Phase T Session 2 P1 — runner-level daily-loss guard. Continuous
+        # check after every bankroll mutation; on trip, writes the standard
+        # state/halt.sentinel so the run_paper.py halt watcher exits the bot
+        # gracefully. 0.0 (default) disables. Wired via DAILY_LOSS_HALT_USD
+        # env var in run_paper.py. See design/phase-T-l5-runner-daily-loss-
+        # guard.md.
+        daily_loss_halt_usd: float = 0.0,
     ) -> None:
         if not feeds:
             raise ValueError("PaperRunner requires at least one Feed")
@@ -231,6 +240,50 @@ class PaperRunner:
         self._bankroll = BankrollTracker(starting_usd=bankroll_starting_usd)
         self._bankroll_replay_on_start = bankroll_replay_on_start
         self._bankroll_replay_lookback_days = bankroll_replay_lookback_days
+        # Phase T Session 2 P1 — construct the daily-loss guard once at
+        # __init__ so the same instance threads through both bankroll
+        # mutation sites (settle + post-hoc correction). Disabled state
+        # is represented by guard is None — keeps the hot path branch-free
+        # when the operator has the env var off.
+        self._daily_loss_guard: DailyLossGuard | None = None
+        if daily_loss_halt_usd > 0.0:
+            self._daily_loss_guard = DailyLossGuard(
+                threshold_usd=daily_loss_halt_usd,
+                log_root=self._log.root,
+                halt_writer=lambda reason, ts_ns: write_halt_sentinel(
+                    reason,
+                    ts_ns,
+                    by="auto-halt-daily-loss",
+                ),
+            )
+
+    def _maybe_trip_daily_loss_guard(self) -> None:
+        """Phase T Session 2 P1 — call after every bankroll mutation
+        (settle + post-hoc correction). On trip, the guard writes
+        ``state/halt.sentinel``; this method only emits the alert/log so
+        the operator sees why. The existing _halt_watcher in run_paper.py
+        observes the sentinel and stops the runner gracefully."""
+        if self._daily_loss_guard is None:
+            return
+        result = self._daily_loss_guard.evaluate(bankroll_current=self._bankroll.current())
+        if result is None or not result.tripped:
+            return
+        LOG.critical(
+            "daily-loss guard tripped: today_pnl=%.2f threshold=-%.2f day=%s",
+            result.today_pnl_usd,
+            result.threshold_usd,
+            result.anchored_day.isoformat(),
+        )
+        self._alert(
+            Level.CRITICAL,
+            (
+                f"auto-halt daily-loss: today=${result.today_pnl_usd:.2f} "
+                f"<= -${result.threshold_usd:.2f}"
+            ),
+            today_pnl_usd=result.today_pnl_usd,
+            threshold_usd=result.threshold_usd,
+            anchored_day=result.anchored_day.isoformat(),
+        )
 
     def _alert(self, level: Level, message: str, **fields: str | int | float) -> None:
         try:
@@ -942,6 +995,10 @@ class PaperRunner:
         # Only counted AFTER the disk write succeeds so a write failure
         # doesn't poison the tracker. Spec §5.2 / design CH6.
         self._bankroll.apply_settle(pnl)
+        # Phase T Session 2 P1 — continuous daily-loss guard. No-op when
+        # DAILY_LOSS_HALT_USD=0; otherwise compares today's realised PnL
+        # against the operator threshold and writes halt.sentinel on trip.
+        self._maybe_trip_daily_loss_guard()
         # Phase T Improvement #2 — notify strategy of settlement so the
         # cell-flip detector can update its rolling per-cell WR. Only
         # invoked when the strategy exposes on_settle (duck-typed) so
@@ -1076,6 +1133,8 @@ class PaperRunner:
                         original_pnl_usd=original_pnl_usd,
                         corrected_pnl_usd=corrected_pnl,
                     )
+                    # Phase T Session 2 P1 — corrections shift today's PnL too.
+                    self._maybe_trip_daily_loss_guard()
                     LOG.info(
                         "post-hoc gamma correction for window %s: %s -> %s " "(pnl %.4f -> %.4f)",
                         snap.window_ts,

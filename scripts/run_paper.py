@@ -924,6 +924,15 @@ async def main() -> int:
     is_v2_1 = isinstance(strategy, _V2_1)
     bankroll_replay_enabled = _env_bool("BANKROLL_REPLAY_ENABLED", default=is_v2_1)
     runner_multi_fire_cap = strategy.multi_fire_cap if is_v2_1 else 1
+    # Phase T Session 2 P1 — runner-level daily-loss guard. Positive
+    # magnitude USD threshold; 0.0 disables. design/phase-T-l5-runner-daily-
+    # loss-guard.md.
+    daily_loss_halt_usd = _env_float("DAILY_LOSS_HALT_USD", 0.0) or 0.0
+    if daily_loss_halt_usd > 0:
+        LOG.info(
+            "daily-loss guard ENABLED: threshold=$%.2f",
+            daily_loss_halt_usd,
+        )
 
     needs_gamma_client = instant_settle_enabled or orphan_recovery_enabled or post_hoc_retry_enabled
     gamma_client_for_settle = _httpx.Client() if needs_gamma_client else None
@@ -969,6 +978,7 @@ async def main() -> int:
         bankroll_starting_usd=starting_bankroll,
         bankroll_replay_on_start=bankroll_replay_enabled,
         multi_fire_cap=runner_multi_fire_cap,
+        daily_loss_halt_usd=daily_loss_halt_usd,
     )
 
     # Phase H — rebind v2.1's bankroll_getter to the live runner tracker
