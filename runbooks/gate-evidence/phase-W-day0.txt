@@ -1,0 +1,5 @@
+UTC 2026-07-23T09:00:21+00:00 | events open: 200 | scannable city-days: 129 | buckets logged: 456 | provisional: 127 | verified (tradeable): 0
+cities without coords (add to CITY_COORDS): ['panama-city']
+  no verified ladder-zone candidates this run (normal on many days — dust-quote provisionals do not count)
+resolved outcomes newly scored: 0 (cumulative file: results.jsonl)
+snapshot: state/research/weather/scan-20260723T090021Z.jsonl
