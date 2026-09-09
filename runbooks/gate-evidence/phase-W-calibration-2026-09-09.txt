@@ -1,0 +1,4 @@
+city-days: fetched 130, resolved+scored 130, bucket rows scored 546
+G2 CALIBRATION — mean Brier: model 0.0538 vs market 0.0409 (MARKET BETTER by 0.0130)
+taker-slice sim (provisional, ask 2-20c, AT GAMMA ASK, depth ignored): n=47, wins=5 (WR 10.6%), net per $1 staked: +0.38
+caveats: 2 trading days only; last-snapshot prices (hours before close); taker sim ignores depth (verified depth was ~$0-10) and assumes fills at logged ask

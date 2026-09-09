@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import math
 import re
+import time
 import urllib.parse
 import urllib.request
 from dataclasses import asdict, dataclass
@@ -93,9 +94,20 @@ class BucketRow:
 
 
 def get_json(url: str) -> Any:
-    req = urllib.request.Request(url, headers=UA)
-    with urllib.request.urlopen(req, timeout=25) as resp:
-        return json.load(resp)
+    """Fetch with retries: launchd fires on wake before the network is up, which killed
+    54 scheduled runs Jul-Sep 2026 (instrument-repair note in design/W.1)."""
+    delays = (0.0, 20.0, 60.0, 120.0, 240.0, 300.0)
+    last_err: Exception = RuntimeError("unreachable")
+    for delay in delays:
+        if delay:
+            time.sleep(delay)
+        try:
+            req = urllib.request.Request(url, headers=UA)
+            with urllib.request.urlopen(req, timeout=25) as resp:
+                return json.load(resp)
+        except Exception as exc:
+            last_err = exc
+    raise last_err
 
 
 def fetch_weather_events() -> list[dict[str, Any]]:
@@ -352,6 +364,9 @@ def main() -> int:
     for w in warnings[:10]:
         print(f"  warn: {w}")
     print(f"snapshot: {snap_path.relative_to(repo_root)}")
+    status = {"last_success_utc": ts, "snapshot": snap_path.name, "buckets": len(rows),
+              "provisional": len(provisional), "verified": len(verified_rows)}
+    (out_dir / "status.json").write_text(json.dumps(status, indent=1))
     return 0
 
 

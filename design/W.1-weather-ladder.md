@@ -56,7 +56,17 @@ minimum. Zero config changes mid-soak (change ⇒ restart the 14-day clock). Aft
 resolves, the next run auto-scores prior snapshots against realized outcomes (winning bucket from
 the resolved market's 1.00/0.00 prices).
 
-## Pre-registered gate (evaluate 2026-08-06 or later — no peeking-based edits)
+### Instrument repair — 2026-09-09
+
+The Jul-23 soak never ran: launchd fired on wake before the network was up and the scanner had no
+retry, so 54 scheduled runs died on DNS errors, silently (2 usable days of data, no failure
+alerting). Repairs (operational only — model/filter/gate untouched): (a) `get_json` retries with
+backoff up to ~12 min; (b) each success writes `state/research/weather/status.json` heartbeat —
+any session/review MUST check its `last_success_utc` staleness first. **Soak clock restarted
+2026-09-09; gate evaluates 2026-09-23 or later.** Lesson recorded: an unattended instrument
+without a heartbeat is not running — assume dead until proven alive.
+
+## Pre-registered gate (evaluate 2026-09-23 or later — no peeking-based edits)
 
 - **G1 edge:** verified candidates, n ≥ 25: realized win rate ≥ 1.3 × mean breakeven P*.
 - **G2 calibration:** model Brier score ≤ market Brier score over all logged buckets (model must
